@@ -21,4 +21,7 @@ RUN mkdir -p /app/uploads
 RUN addgroup --system botuser && adduser --system --ingroup botuser botuser
 USER botuser
 
+# Expose API port (used only in --api mode)
+EXPOSE 8000
+
 CMD ["python", "main.py"]

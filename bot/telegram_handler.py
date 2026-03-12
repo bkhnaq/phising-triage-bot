@@ -105,119 +105,13 @@ def _run_analysis(eml_path: str) -> str:
     """
     Run the full analysis pipeline on an .eml file and return the report text.
 
-    This function imports and calls all analysis modules so that the bot module
-    stays thin and the heavy logic lives in dedicated packages.
+    Uses the modular PhishingPipeline orchestrator.
     """
-    from email_analysis.email_parser import parse_eml_file
-    from email_analysis.header_analyzer import analyze_headers
-    from email_analysis.header_forensics import run_header_forensics
-    from email_analysis.url_extractor import extract_urls
-    from email_analysis.attachment_analyzer import extract_attachments
-    from threat_intel.virustotal_checker import check_url as vt_check_url
-    from threat_intel.virustotal_checker import check_file_hash as vt_check_hash
-    from threat_intel.alienvault_checker import check_domain as otx_check_domain
-    from threat_intel.alienvault_checker import check_file_hash as otx_check_hash
-    from threat_intel.ip_reputation import check_ip_reputation
-    from threat_intel.passive_dns import check_passive_dns
-    from email_analysis.qr_code_analyzer import scan_attachments_for_qr, extract_qr_urls
-    from email_analysis.heuristic_analyzer import run_heuristics
-    from email_analysis.ai_classifier import classify_email
-    from scoring.risk_scoring import calculate_risk
-    from report.report_generator import generate_report
+    from email_analysis.pipeline import PhishingPipeline
 
-    # 1. Parse the email
-    email_data = parse_eml_file(eml_path)
-
-    # 2. Analyze authentication headers
-    auth_results = analyze_headers(email_data["headers"])
-
-    # 2b. SMTP relay chain forensics (origin IP, geolocation, relay path)
-    header_forensics = run_header_forensics(email_data)
-
-    # 3. Extract URLs
-    urls = extract_urls(email_data["body_text"], email_data["body_html"])
-
-    # 4. Extract attachments
-    attachments = extract_attachments(email_data["raw_message"], save_dir=UPLOAD_DIR)
-
-    # 5. Query VirusTotal for URLs
-    vt_url_reports: list[dict] = []
-    for u in urls:
-        target = u.get("expanded_url", u["url"])
-        report = vt_check_url(target)
-        report["url"] = u["url"]
-        report["is_shortened"] = u.get("is_shortened", False)
-        vt_url_reports.append(report)
-
-    # 6. Query VirusTotal for attachment hashes
-    vt_hash_reports = [vt_check_hash(a["sha256"]) for a in attachments]
-
-    # 7. Query AlienVault OTX for domains and hashes
-    otx_reports: list[dict] = []
-    seen_domains: set[str] = set()
-    for u in urls:
-        domain = u.get("domain", "")
-        if domain and domain not in seen_domains:
-            seen_domains.add(domain)
-            otx_reports.append(otx_check_domain(domain))
-    for a in attachments:
-        otx_reports.append(otx_check_hash(a["sha256"]))
-
-    # 8. Scan attachments for QR codes
-    qr_findings = scan_attachments_for_qr(attachments)
-    qr_urls = extract_qr_urls(qr_findings)
-
-    # 8b. Run QR-extracted URLs through VT + OTX
-    for qu in qr_urls:
-        target = qu["url"]
-        report = vt_check_url(target)
-        report["url"] = target
-        report["is_shortened"] = False
-        vt_url_reports.append(report)
-
-        domain = qu.get("domain", "")
-        if domain and domain not in seen_domains:
-            seen_domains.add(domain)
-            otx_reports.append(otx_check_domain(domain))
-
-    # 9. Combine body URLs + QR URLs for heuristic analysis
-    all_urls = urls + qr_urls
-    heuristics = run_heuristics(all_urls)
-
-    # 10. IP reputation (AbuseIPDB + Spamhaus)
-    all_domains = list(seen_domains)
-    ip_reputation = check_ip_reputation(all_domains)
-
-    # 11. Passive DNS (SecurityTrails)
-    passive_dns = check_passive_dns(ip_reputation)
-
-    # 11b. Display name spoofing & lookalike domain detection
-    from email_analysis.phishing_rules import detect_display_name_spoofing, detect_lookalike_domains
-    display_name_spoofing = detect_display_name_spoofing(email_data.get("from", ""))
-    lookalike_domains = detect_lookalike_domains(all_urls)
-
-    # 12. AI phishing classifier (augmented with rule-based findings)
-    rule_findings = _build_rule_findings(auth_results, heuristics, header_forensics)
-    ai_verdict = classify_email(email_data, all_urls, rule_findings)
-
-    # 13. Calculate risk score
-    risk = calculate_risk(
-        auth_results, vt_url_reports, vt_hash_reports, otx_reports,
-        heuristics, qr_findings, ip_reputation, passive_dns, ai_verdict,
-        header_forensics=header_forensics,
-        display_name_spoofing=display_name_spoofing,
-        lookalike_domains=lookalike_domains,
-    )
-
-    # 14. Generate report
-    return generate_report(
-        email_data, auth_results, urls, attachments,
-        risk, vt_url_reports, vt_hash_reports, otx_reports,
-        heuristics, qr_findings, ip_reputation, passive_dns, ai_verdict,
-        header_forensics=header_forensics,
-        display_name_spoofing=display_name_spoofing,
-        lookalike_domains=lookalike_domains,
-    )
+    pipeline = PhishingPipeline()
+    result = pipeline.analyze_file(eml_path)
+    return result["report"]
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -231,52 +125,6 @@ def _split_message(text: str, max_len: int = _MAX_MSG_LEN) -> list[str]:
         chunks.append(text[:max_len])
         text = text[max_len:]
     return chunks
-
-
-def _build_rule_findings(
-    auth_results: dict,
-    heuristics: dict | None,
-    header_forensics: dict | None = None,
-) -> list[str]:
-    """Build concise rule-based findings for AI classifier context."""
-    findings: list[str] = []
-
-    # Auth status findings
-    for check in ("spf", "dkim", "dmarc"):
-        result = auth_results.get(check, {}).get("result", "none")
-        if result in ("fail", "softfail", "none"):
-            findings.append(f"{check.upper()} {result}")
-
-    # Header forensics findings (SPF/DKIM/DMARC-level header anomalies)
-    for h in auth_results.get("forensics", {}).get("findings", []):
-        summary = h.get("summary", "Header anomaly")
-        findings.append(summary)
-
-    # SMTP relay chain forensics warnings (network-level)
-    if header_forensics:
-        for w in header_forensics.get("warnings", []):
-            # Skip pure geo-informational warnings — they add noise without signal
-            if not w.startswith("Origin IP geolocation:"):
-                findings.append(w)
-
-    if heuristics:
-        for f in heuristics.get("homograph_brands", [])[:3]:
-            findings.append(
-                f"Homograph brand: {f['brand']} in {f['original_domain']}"
-            )
-        for f in heuristics.get("suspicious_keywords", [])[:3]:
-            findings.append(f"Suspicious keyword: {f['keyword']}")
-        for f in heuristics.get("brand_impersonation", [])[:3]:
-            findings.append(f"Brand impersonation: {f['brand']} in {f['domain']}")
-
-    # Deduplicate while preserving order
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for item in findings:
-        if item not in seen:
-            seen.add(item)
-            deduped.append(item)
-    return deduped[:15]
 
 
 # ── Bot entry point ──────────────────────────────────────────

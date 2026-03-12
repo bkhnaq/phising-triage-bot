@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ── Geolocation API (ip-api.com, free tier, no key required) ─────────────────
 _GEO_API = (
     "http://ip-api.com/json/{ip}"
-    "?fields=status,country,countryCode,regionName,city,isp,org,hosting,proxy"
+    "?fields=status,country,countryCode,regionName,city,isp,org,as,asname,hosting,proxy"
 )
 _GEO_TIMEOUT = 5  # seconds
 
@@ -114,6 +114,8 @@ def run_header_forensics(email_data: dict) -> dict:
             result["origin_city"]         = geo.get("city", "")
             result["origin_isp"]          = geo.get("isp", "")
             result["origin_org"]          = geo.get("org", "")
+            result["origin_asn"]          = geo.get("as", "")
+            result["origin_asname"]       = geo.get("asname", "")
             result["origin_is_hosting"]   = bool(geo.get("hosting", False))
             result["origin_is_proxy"]     = bool(geo.get("proxy", False))
 
@@ -344,6 +346,8 @@ def _empty_result() -> dict:
         "origin_city":         "",
         "origin_isp":          "",
         "origin_org":          "",
+        "origin_asn":          "",
+        "origin_asname":       "",
         "origin_is_hosting":   False,
         "origin_is_proxy":     False,
         "relay_chain":         [],

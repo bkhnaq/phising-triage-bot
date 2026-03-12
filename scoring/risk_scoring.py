@@ -1,19 +1,22 @@
 """
-Risk Scoring Module
--------------------
-Combines all analysis indicators into a single 0-100 risk score
-and a verdict: LOW / MEDIUM / HIGH / CRITICAL.
+Risk Scoring Engine (v3)
+-------------------------
+Deduplicated, weighted multi-layer scoring system that combines all
+detection indicators into a single 0–100 risk score with verdict.
 
-Scoring weights (adjustable):
-  - Email auth failures (SPF/DKIM/DMARC)
-  - Malicious URLs detected by VirusTotal
-  - Shortened / obfuscated URLs
-  - Malicious attachment hashes
-  - AlienVault OTX pulse hits
+Each indicator contributes to the score ONCE — overlapping legacy and
+comprehensive detection modules are reconciled so that the same signal
+(e.g. brand impersonation) is never double-counted.
+
+Score ranges:
+   0–30  LOW
+  30–60  MEDIUM
+  60–80  HIGH
+  80–100 CRITICAL
 
 Usage:
     from scoring.risk_scoring import calculate_risk
-    result = calculate_risk(auth_results, url_reports, hash_reports, otx_reports)
+    result = calculate_risk(auth_results, url_reports, hash_reports, otx_reports, ...)
 """
 
 import logging
@@ -48,6 +51,12 @@ def calculate_risk(
     header_forensics: dict | None = None,
     display_name_spoofing: list[dict] | None = None,
     lookalike_domains: list[dict] | None = None,
+    credential_harvesting: dict | None = None,
+    language_analysis: dict | None = None,
+    brand_impersonation: dict | None = None,
+    attachment_risks: list[dict] | None = None,
+    url_intelligence: dict | None = None,
+    domain_intelligence: dict | None = None,
 ) -> dict:
     """
     Calculate a risk score and verdict for an email.
@@ -87,7 +96,7 @@ def calculate_risk(
                 f"({finding.get('details', 'n/a')}) (+{pts})"
             )
 
-    # ── 2. URL analysis ──────────────────────────────────────
+    # ── 2. URL analysis (VirusTotal) ────────────────────────────
     for report in url_reports:
         if report.get("malicious", 0) > 0:
             score += _WEIGHTS["malicious_url"]
@@ -101,16 +110,7 @@ def calculate_risk(
                 f"Suspicious URL: {report.get('url', '?')} (+{_WEIGHTS['suspicious_url']})"
             )
 
-    # ── 3. Shortened URLs ────────────────────────────────────
-    # url_reports may carry an 'is_shortened' flag from the url_extractor step
-    for report in url_reports:
-        if report.get("is_shortened"):
-            score += _WEIGHTS["shortened_url"]
-            breakdown.append(
-                f"Shortened URL detected: {report.get('url', '?')} (+{_WEIGHTS['shortened_url']})"
-            )
-
-    # ── 4. Attachment hashes ─────────────────────────────────
+    # ── 3. Attachment hashes (VirusTotal) ─────────────────────
     for report in hash_reports:
         if report.get("malicious", 0) > 0:
             score += _WEIGHTS["malicious_hash"]
@@ -119,7 +119,7 @@ def calculate_risk(
                 f"({report['malicious']} engines) (+{_WEIGHTS['malicious_hash']})"
             )
 
-    # ── 5. AlienVault OTX ────────────────────────────────────
+    # ── 4. AlienVault OTX ────────────────────────────────────
     for report in otx_reports:
         if report.get("pulse_count", 0) > 0:
             score += _WEIGHTS["otx_pulse_hit"]
@@ -129,36 +129,24 @@ def calculate_risk(
                 f"(+{_WEIGHTS['otx_pulse_hit']})"
             )
 
-    # ── 6. Heuristic detections ──────────────────────────────
+    # ── 5. Heuristic detections (ONLY non-overlapping) ───────
+    #
+    # The following heuristic sub-categories overlap with
+    # comprehensive modules and are SKIPPED here:
+    #   brand_impersonation  → covered by section 11 (BrandDetector)
+    #   homograph_brands     → covered by section 11 (BrandDetector)
+    #   domain_entropy       → covered by section 14 (domain_intelligence)
+    #   domain_age           → covered by section 14 (domain_intelligence)
+    #   url_shorteners       → covered by section 13 (url_intelligence)
+    #   redirect_chains      → covered by section 13 (url_intelligence)
+    #
+    # Scored here: suspicious_keywords, homograph (IDN / Cyrillic)
     if heuristics:
-        for finding in heuristics.get("brand_impersonation", []):
-            pts = finding["risk_score"]
-            score += pts
-            breakdown.append(
-                f"Brand impersonation: '{finding['brand']}' in {finding['domain']} (+{pts})"
-            )
-
         for finding in heuristics.get("suspicious_keywords", []):
             pts = finding["risk_score"]
             score += pts
             breakdown.append(
                 f"Suspicious keyword '{finding['keyword']}' in {finding['source']} (+{pts})"
-            )
-
-        for finding in heuristics.get("domain_age", []):
-            pts = finding["risk_score"]
-            if pts > 0:
-                score += pts
-                age = finding.get("age_days", "?")
-                breakdown.append(
-                    f"Young domain: {finding['domain']} (created: {finding.get('created', 'N/A')}, {age}d old) (+{pts})"
-                )
-
-        for finding in heuristics.get("url_shorteners", []):
-            pts = finding["risk_score"]
-            score += pts
-            breakdown.append(
-                f"URL shortener: {finding['domain']} (+{pts})"
             )
 
         for finding in heuristics.get("homograph", []):
@@ -168,31 +156,7 @@ def calculate_risk(
                 f"Homograph attack: {finding['domain']} ({finding['details']}) (+{pts})"
             )
 
-        for finding in heuristics.get("homograph_brands", []):
-            pts = finding["risk_score"]
-            score += pts
-            breakdown.append(
-                f"Homograph brand: '{finding['brand']}' in {finding['original_domain']} "
-                f"(normalized: {finding['normalized_domain']}) (+{pts})"
-            )
-
-        for finding in heuristics.get("domain_entropy", []):
-            pts = finding["risk_score"]
-            score += pts
-            breakdown.append(
-                f"High-entropy domain: {finding['domain']} "
-                f"(entropy={finding['entropy']}) (+{pts})"
-            )
-
-        for finding in heuristics.get("redirect_chains", []):
-            pts = finding["risk_score"]
-            if pts > 0:
-                score += pts
-                breakdown.append(
-                    f"Redirect chain: {finding['url']} → {finding['hops']} hop(s) (+{pts})"
-                )
-
-    # ── 7. QR code findings ─────────────────────────────────
+    # ── 6. QR code findings ──────────────────────────────────
     if qr_findings:
         for finding in qr_findings:
             pts = finding["risk_score"]
@@ -202,7 +166,6 @@ def calculate_risk(
                 f"QR code in {finding['filename']}: {label} (+{pts})"
             )
 
-        # Extra penalty: check if any QR URL was flagged malicious by VT
         qr_urls_set = {f["url"] for f in qr_findings if f.get("url")}
         for report in url_reports:
             if report.get("url") in qr_urls_set and report.get("malicious", 0) > 0:
@@ -212,7 +175,7 @@ def calculate_risk(
                     f"({report['malicious']} engines) (+30)"
                 )
 
-    # ── 8. IP reputation ─────────────────────────────────────
+    # ── 7. IP reputation ─────────────────────────────────────
     if ip_reputation:
         for finding in ip_reputation:
             pts = finding["risk_score"]
@@ -225,7 +188,7 @@ def calculate_risk(
                     f"(abuse={abuse}%, spamhaus={spamhaus}) (+{pts})"
                 )
 
-    # ── 9. Passive DNS ───────────────────────────────────────
+    # ── 8. Passive DNS ───────────────────────────────────────
     if passive_dns:
         for finding in passive_dns:
             pts = finding["risk_score"]
@@ -236,7 +199,7 @@ def calculate_risk(
                     f"{finding['domain_count']} domain(s) (+{pts})"
                 )
 
-    # ── 10. AI classifier ────────────────────────────────────
+    # ── 9. AI classifier ────────────────────────────────────
     if ai_verdict:
         pts = ai_verdict.get("risk_score", 0)
         if pts > 0:
@@ -246,49 +209,126 @@ def calculate_risk(
                 f"(confidence={ai_verdict['confidence']:.0%}) (+{pts})"
             )
 
-    # ── 11. SMTP relay chain forensics ──────────────────────
+    # ── 10. SMTP relay chain forensics ──────────────────────
     if header_forensics and not header_forensics.get("error"):
         pts = header_forensics.get("risk_score", 0)
         if pts > 0:
             score += pts
-            # Emit one breakdown item per scored warning
             for warning in header_forensics.get("warnings", []):
-                # Skip pure geo-info lines (no score assigned to them)
                 if warning.startswith("Origin IP geolocation:"):
                     continue
                 breakdown.append(f"Relay forensic: {warning}")
-            # Append the cumulative score once
             breakdown.append(f"SMTP relay forensics total (+{pts})")
 
-    # ── 12. Display name spoofing ────────────────────────────
-    if display_name_spoofing:
-        for finding in display_name_spoofing:
+    # ── 11. Brand impersonation (comprehensive — single source of truth)
+    if brand_impersonation:
+        for finding in brand_impersonation.get("domain_impersonation", []):
+            pts = finding["risk_score"]
+            score += pts
+            breakdown.append(
+                f"Brand impersonation: {finding['brand']} "
+                f"({finding['detail']}) (+{pts})"
+            )
+
+        for finding in brand_impersonation.get("display_name_spoofing", []):
             pts = finding["risk_score"]
             score += pts
             breakdown.append(
                 f"Display name spoofing: brand '{finding['brand']}', "
-                f"sender domain {finding['sender_domain']} (+{pts})"
+                f"sender {finding['sender_domain']} (+{pts})"
             )
 
-    # ── 13. Lookalike domain detection ───────────────────────
-    if lookalike_domains:
-        for finding in lookalike_domains:
+    # ── 12. Credential harvesting ────────────────────────────
+    if credential_harvesting and credential_harvesting.get("detected"):
+        pts = credential_harvesting.get("risk_score", 0)
+        if pts > 0:
+            score += pts
+            for cf in credential_harvesting.get("findings", [])[:3]:
+                breakdown.append(f"Credential form: {cf}")
+            breakdown.append(f"Credential harvesting total (+{pts})")
+
+    # ── 13. URL intelligence (single source for shorteners + redirects)
+    if url_intelligence:
+        for finding in url_intelligence.get("shortener_findings", []):
+            pts = finding.get("risk_score", 0)
+            if pts > 0:
+                score += pts
+                breakdown.append(
+                    f"URL shortener: {finding['domain']} → "
+                    f"{finding.get('expanded_domain', '?')} (+{pts})"
+                )
+        for finding in url_intelligence.get("redirect_findings", []):
+            pts = finding.get("risk_score", 0)
+            if pts > 0:
+                score += pts
+                breakdown.append(
+                    f"URL redirect: {finding['url']} → {finding.get('hops', 0)} hop(s) "
+                    f"→ {finding.get('final_domain', '?')} (+{pts})"
+                )
+        for finding in url_intelligence.get("suspicious_endpoints", []):
+            pts = finding.get("risk_score", 0)
+            if pts > 0:
+                score += pts
+                breakdown.append(
+                    f"Suspicious endpoint: {', '.join(finding.get('keywords', []))} in URL (+{pts})"
+                )
+
+    # ── 14. Domain intelligence (single source for WHOIS, entropy, lookalike)
+    if domain_intelligence:
+        for w in domain_intelligence.get("whois_results", []):
+            pts = w.get("risk_score", 0)
+            if pts > 0:
+                score += pts
+                age = w.get("age_days", "?")
+                breakdown.append(
+                    f"Young domain: {w['domain']} ({age}d old) (+{pts})"
+                )
+
+        for e in domain_intelligence.get("entropy_results", []):
+            pts = e.get("risk_score", 0)
+            if pts > 0:
+                score += pts
+                breakdown.append(
+                    f"High-entropy domain: {e['domain']} "
+                    f"(entropy={e['entropy']}) (+{pts})"
+                )
+
+        for la in domain_intelligence.get("lookalike_results", []):
+            pts = la.get("risk_score", 0)
+            if pts > 0:
+                score += pts
+                breakdown.append(
+                    f"Lookalike domain: {la['domain']} → {la['brand']} "
+                    f"(distance={la['distance']}) (+{pts})"
+                )
+
+    # ── 15. Language analysis ────────────────────────────────
+    if language_analysis and language_analysis.get("risk_score", 0) > 0:
+        pts = language_analysis["risk_score"]
+        score += pts
+        for s in language_analysis.get("summary", [])[:3]:
+            breakdown.append(f"Language: {s}")
+        breakdown.append(f"Phishing language total (+{pts})")
+
+    # ── 16. Attachment risk assessment ───────────────────────
+    if attachment_risks:
+        for finding in attachment_risks:
             pts = finding["risk_score"]
             score += pts
             breakdown.append(
-                f"Lookalike domain: {finding['domain']} resembles "
-                f"'{finding['brand']}' (distance={finding['distance']}) (+{pts})"
+                f"Risky attachment: {finding['filename']} "
+                f"({finding['description']}) (+{pts})"
             )
 
     # ── Cap at 100 ───────────────────────────────────────────
     score = min(score, 100)
 
-    # ── Verdict ──────────────────────────────────────────────
-    if score >= 90:
+    # ── Verdict (updated thresholds) ─────────────────────────
+    if score >= 80:
         verdict = "CRITICAL"
-    elif score >= RISK_HIGH_THRESHOLD:
+    elif score >= 60:
         verdict = "HIGH"
-    elif score >= RISK_MEDIUM_THRESHOLD:
+    elif score >= 30:
         verdict = "MEDIUM"
     else:
         verdict = "LOW"

@@ -1,7 +1,7 @@
 """
 AI Phishing Classifier Module
 ------------------------------
-Uses Google Gemini API to classify an email as phishing or legitimate,
+Uses Groq API to classify an email as phishing or legitimate,
 complementing the existing rule-based detections.
 
 The classifier sends a structured prompt containing email metadata, body
@@ -22,13 +22,12 @@ import html
 
 import requests
 
-from config.settings import OPENAI_API_KEY
+from config.settings import GROQ_API_KEY, GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 
-# Gemini API configuration
-_GEMINI_MODEL = "gemini-1.5-flash"
-_GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{_GEMINI_MODEL}:generateContent"
+# Groq API configuration
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _TIMEOUT = 30
 _MAX_BODY_CHARS = 2000  # Truncate body to keep token usage low
 _MAX_URLS = 5
@@ -88,8 +87,8 @@ def classify_email(
         "error": None,
     }
 
-    if not OPENAI_API_KEY:
-        result["error"] = "GEMINI_API_KEY not configured (uses OPENAI_API_KEY env var)"
+    if not GROQ_API_KEY:
+        result["error"] = "GROQ_API_KEY not configured"
         logger.info("AI classifier skipped: no API key")
         return result
 
@@ -98,36 +97,30 @@ def classify_email(
 
     try:
         resp = requests.post(
-            f"{_GEMINI_URL}?key={OPENAI_API_KEY}",
+            _GROQ_URL,
             headers={
                 "Content-Type": "application/json",
+                "Authorization": f"Bearer {GROQ_API_KEY}",
             },
             json={
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [{"text": user_content}],
-                    }
+                "model": GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
                 ],
-                "systemInstruction": {
-                    "parts": [{"text": _SYSTEM_PROMPT}],
-                },
-                "generationConfig": {
-                    "temperature": 0.0,
-                    "maxOutputTokens": 300,
-                },
+                "temperature": 0.0,
+                "max_tokens": 300,
             },
             timeout=_TIMEOUT,
         )
         resp.raise_for_status()
 
         data = resp.json()
-        # Gemini response: candidates[0].content.parts[0].text
+        # Groq response: choices[0].message.content
         reply = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
             .strip()
         )
         if not reply:
@@ -261,7 +254,7 @@ def _parse_llm_response(text: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Gemini may wrap JSON in explanatory text — extract the JSON object
+    # LLM may wrap JSON in explanatory text — extract the JSON object
     json_match = re.search(r"\{[^{}]*\"verdict\"[^{}]*\}", cleaned, re.DOTALL)
     if json_match:
         return json.loads(json_match.group(0))

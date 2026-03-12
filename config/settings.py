@@ -30,12 +30,16 @@ ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
 SECURITYTRAILS_API_KEY = os.getenv("SECURITYTRAILS_API_KEY", "")
 
 # ── AI Classifier ────────────────────────────────────────────
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # ── Risk Scoring Thresholds ──────────────────────────────────
 RISK_HIGH_THRESHOLD = int(os.getenv("RISK_HIGH_THRESHOLD", "70"))
 RISK_MEDIUM_THRESHOLD = int(os.getenv("RISK_MEDIUM_THRESHOLD", "40"))
+
+# ── REST API (FastAPI) ───────────────────────────────────────
+API_HOST = os.getenv("API_HOST", "0.0.0.0")
+API_PORT = int(os.getenv("API_PORT", "8000"))
 
 # ── File Storage ─────────────────────────────────────────────
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
