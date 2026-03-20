@@ -40,7 +40,10 @@ class EmailAnalysisRequest(BaseModel):
 class RiskResult(BaseModel):
     """Risk scoring result."""
     score: int = Field(..., ge=0, le=100, description="Risk score 0-100")
-    verdict: str = Field(..., description="LOW / MEDIUM / HIGH / CRITICAL")
+    verdict: str = Field(..., description="INCONCLUSIVE / LOW / MEDIUM / SUSPICIOUS / HIGH / CRITICAL")
+    confidence: float = Field(0.0, ge=0.0, le=1.0, description="Classification confidence 0.0-1.0")
+    data_completeness: int = Field(0, ge=0, le=100, description="Evidence completeness 0-100")
+    category_scores: dict = Field(default_factory=dict)
     breakdown: list[str] = Field(default_factory=list)
 
 
@@ -170,6 +173,9 @@ def _build_response(result: dict) -> AnalysisResponse:
         risk=RiskResult(
             score=risk_data.get("score", 0),
             verdict=risk_data.get("verdict", "LOW"),
+            confidence=risk_data.get("confidence", 0.0),
+            data_completeness=risk_data.get("data_completeness", 0),
+            category_scores=risk_data.get("category_scores", {}),
             breakdown=risk_data.get("breakdown", []),
         ),
         report=result.get("report", ""),

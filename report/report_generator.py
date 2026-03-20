@@ -236,7 +236,14 @@ def generate_report(
     lines.append("━━━ EMAIL AUTHENTICATION ━━━")
     for check in ("spf", "dkim", "dmarc"):
         result = auth_results.get(check, {}).get("result", "none")
-        icon = "✅" if result == "pass" else "❌"
+        if result == "pass":
+            icon = "✅"
+        elif result == "none":
+            icon = "➖"
+        elif result == "softfail":
+            icon = "⚠️"
+        else:
+            icon = "❌"
         lines.append(f"{icon} {check.upper()}: {result}")
 
     # Inline header forensics
@@ -598,13 +605,22 @@ def generate_report(
     # ── 13. RISK ASSESSMENT ──────────────────────────────────
     lines.append("━━━ RISK ASSESSMENT ━━━")
     verdict_icon = {
-        "LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴",
+        "INCONCLUSIVE": "⚪",
+        "LOW": "🟢",
+        "MEDIUM": "🟡",
+        "SUSPICIOUS": "🟠",
+        "HIGH": "🟠",
+        "CRITICAL": "🔴",
     }.get(risk["verdict"], "⚪")
     lines.append(f"Score   : {risk['score']} / 100")
     lines.append(f"Verdict : {verdict_icon} {risk['verdict']}")
+    if "confidence" in risk:
+        lines.append(f"Confidence : {risk['confidence']:.0%}")
+    if "data_completeness" in risk:
+        lines.append(f"Data completeness : {risk['data_completeness']} / 100")
     lines.append("")
     lines.append("Scoring legend:")
-    lines.append("  0–30  Low  |  30–60  Medium  |  60–80  High  |  80–100  Critical")
+    lines.append("  0–24 Low | 25–44 Medium | 45–64 Suspicious | 65–84 High | 85–100 Critical")
     lines.append("")
     if risk.get("breakdown"):
         lines.append("Indicator Breakdown:")

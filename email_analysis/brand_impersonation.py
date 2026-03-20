@@ -288,7 +288,8 @@ class BrandDetector:
                         "brand": brand_name,
                         "sender_domain": sender_domain,
                         "detail": f"Brand '{brand_name}' mentioned in body but sender is {sender_domain}",
-                        "risk_score": 5,
+                        # Body mention alone is contextual evidence, not impersonation evidence.
+                        "risk_score": 0,
                     })
                     break
 

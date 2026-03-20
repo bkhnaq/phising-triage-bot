@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 _PATTERNS: dict[str, dict] = {
     "urgency": {
         "description": "Urgency / time-pressure language",
-        "risk_per_match": 5,
-        "max_risk": 15,
+        # Urgency alone is weak evidence in modern marketing and transactional mail.
+        "risk_per_match": 1,
+        "max_risk": 4,
         "patterns": [
             r"\burgent(?:ly)?\b",
             r"\bimmediate(?:ly)?\b",

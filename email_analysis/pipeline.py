@@ -222,6 +222,7 @@ class PhishingPipeline:
             auth_results, heuristics, header_forensics,
             credential_harvesting, language_results,
             brand_results, attachment_risks,
+            url_intel,
         )
         ai_verdict = classify_email(email_data, urls + qr_urls, rule_findings)
 
@@ -303,6 +304,7 @@ class PhishingPipeline:
         language_analysis: dict | None,
         brand_results: dict | None,
         attachment_risks: list[dict] | None,
+        url_intelligence: dict | None = None,
     ) -> list[str]:
         """Build concise rule-based findings for AI classifier context."""
         findings: list[str] = []
@@ -310,8 +312,10 @@ class PhishingPipeline:
         # Auth status findings
         for check in ("spf", "dkim", "dmarc"):
             result = auth_results.get(check, {}).get("result", "none")
-            if result in ("fail", "softfail", "none"):
+            if result in ("fail", "softfail"):
                 findings.append(f"{check.upper()} {result}")
+            elif result == "none":
+                findings.append(f"{check.upper()} unavailable")
 
         # Header forensics findings
         for h in auth_results.get("forensics", {}).get("findings", []):
@@ -354,6 +358,15 @@ class PhishingPipeline:
         if attachment_risks:
             for f in attachment_risks[:3]:
                 findings.append(f"Risky attachment: {f['filename']} ({f['category']})")
+
+        # ESP/tracking context (helps avoid classifying known marketing trackers as malicious by default)
+        if url_intelligence:
+            for f in url_intelligence.get("esp_findings", [])[:3]:
+                provider = f.get("provider", "ESP")
+                if f.get("is_tracking"):
+                    findings.append(f"Known ESP tracking URL: {provider}")
+                else:
+                    findings.append(f"Known ESP infrastructure: {provider}")
 
         # Deduplicate
         deduped: list[str] = []

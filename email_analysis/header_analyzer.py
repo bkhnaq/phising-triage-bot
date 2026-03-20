@@ -161,7 +161,9 @@ def _run_header_forensics(headers: list[tuple[str, str]]) -> dict:
             "type": "missing_received_headers",
             "summary": "No Received headers found",
             "details": "Message route cannot be reconstructed",
-            "risk_score": 10,
+            # Missing relay metadata reduces confidence/completeness, not phishing certainty.
+            "risk_score": 0,
+            "evidence_state": "none",
         })
     elif len(received_chain) > 7:
         findings.append({
