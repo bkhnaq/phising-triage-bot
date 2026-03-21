@@ -30,10 +30,13 @@ from pydantic import BaseModel, Field
 
 from config.settings import (
     API_KEY,
+    MAX_UPLOAD_SIZE_BYTES,
+    API_PROTECTION_ENABLED,
     ENV,
     RATE_LIMIT_MAX_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
     UPLOAD_DIR,
+    validate_startup_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,12 @@ app = FastAPI(
     description="Enterprise-grade multi-layer phishing detection REST API",
     version="2.0.0",
 )
+
+
+@app.on_event("startup")
+async def startup_validation() -> None:
+    """Fail fast if required API startup settings are missing."""
+    validate_startup_settings(run_api=True)
 
 
 _rate_limit_lock = threading.Lock()
@@ -131,6 +140,9 @@ async def request_context_middleware(request: Request, call_next):
 async def api_key_auth_middleware(request: Request, call_next):
     public_paths = {"/health", "/docs", "/openapi.json", "/redoc"}
     if request.url.path in public_paths:
+        return await call_next(request)
+
+    if not API_PROTECTION_ENABLED:
         return await call_next(request)
 
     if not API_KEY:
@@ -334,6 +346,14 @@ async def analyze_file(request: Request, file: UploadFile = File(...)):
 
     try:
         content = await file.read()
+        if len(content) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    "Uploaded file exceeds maximum allowed size "
+                    f"({MAX_UPLOAD_SIZE_BYTES} bytes)"
+                ),
+            )
         with open(save_path, "wb") as f:
             f.write(content)
 

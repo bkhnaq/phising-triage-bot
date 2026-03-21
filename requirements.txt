@@ -20,3 +20,4 @@ opencv-python>=4.8,<5       # fallback QR decoder (self-contained)
 # REST API
 fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
+python-multipart>=0.0.9,<1

@@ -27,7 +27,12 @@ from telegram.ext import (
     filters,
 )
 
-from config.settings import ALLOWED_CHAT_IDS, TELEGRAM_BOT_TOKEN, UPLOAD_DIR
+from config.settings import (
+    ALLOWED_CHAT_IDS,
+    MAX_UPLOAD_SIZE_BYTES,
+    TELEGRAM_BOT_TOKEN,
+    UPLOAD_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +91,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     ):
         await update.message.reply_text(
             "⚠️ Please send a `.eml` file. Other file types are not supported."
+        )
+        return
+
+    if document.file_size and document.file_size > MAX_UPLOAD_SIZE_BYTES:
+        await update.message.reply_text(
+            "⚠️ File too large. "
+            f"Maximum allowed size is {MAX_UPLOAD_SIZE_BYTES} bytes."
         )
         return
 
@@ -269,8 +281,8 @@ def start_bot() -> None:
     """Build and run the Telegram bot (blocking)."""
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN is not set. "
-            "Add it to your .env file or environment variables."
+            "TELEGRAM_TOKEN is not set. "
+            "Add TELEGRAM_TOKEN (or TELEGRAM_BOT_TOKEN) to your .env file or environment variables."
         )
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()

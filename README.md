@@ -224,6 +224,21 @@ Development mode behavior:
 
 - CI runs Bandit and is configured to fail only on high-severity issues.
 
+## Data Handling
+
+- Uploaded `.eml` files are written under `UPLOAD_DIR` (default: `uploads/`) during processing.
+- API and Telegram temporary `.eml` files are deleted in a best-effort cleanup step after analysis.
+
+## Limits
+
+- Maximum upload size is controlled by `MAX_UPLOAD_SIZE_BYTES` (default: `10485760`, i.e., 10 MB).
+
+## Troubleshooting
+
+- Missing `API_KEY`: protected API endpoints return disabled/unauthorized errors; set `API_KEY` (or `API_PROTECTION_ENABLED=false` for local-only testing).
+- Missing `TELEGRAM_TOKEN`: bot startup fails fast; set `TELEGRAM_TOKEN` (or `TELEGRAM_BOT_TOKEN`) or disable with `TELEGRAM_ENABLED=false`.
+- Docker QR dependency: if QR scanning fails, ensure `libzbar0` is present (included in the provided Dockerfile).
+
 ## How the Analysis Pipeline Works
 
 1. **Parse** – The `.eml` file is parsed using Python's built-in `email` library. Subject, sender, recipient, date, body (text + HTML), and raw headers are extracted.

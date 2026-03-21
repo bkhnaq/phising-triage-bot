@@ -15,6 +15,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install dependencies
         run: |
@@ -29,6 +33,9 @@ jobs:
 
       - name: Type check (mypy)
         run: mypy api bot config email_analysis report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
+
+      - name: Tests (pytest)
+        run: pytest -q tests
 
       - name: Security scan (bandit)
         run: bandit -r api bot config email_analysis report scoring threat_intel -lll

@@ -11,7 +11,7 @@ Run with:
 import logging
 import sys
 
-from config.settings import LOG_LEVEL
+from config.settings import LOG_LEVEL, validate_startup_settings
 
 
 def _setup_logging() -> None:
@@ -28,8 +28,14 @@ def main() -> None:
     _setup_logging()
 
     logger = logging.getLogger(__name__)
+    run_api = "--api" in sys.argv
+    try:
+        validate_startup_settings(run_api=run_api)
+    except RuntimeError as exc:
+        logger.error("Startup validation failed: %s", exc)
+        sys.exit(1)
 
-    if "--api" in sys.argv:
+    if run_api:
         logger.info("Starting Phishing Triage API server…")
 
         import uvicorn
