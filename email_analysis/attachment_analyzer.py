@@ -389,7 +389,9 @@ def assess_attachment_risk(attachments: list[dict]) -> list[dict]:
         # Large file size check
         size = att.get("size_bytes", 0)
         if size > 10_000_000:  # > 10MB
-            finding["warnings"].append(f"⚠️ Large attachment: {size / 1_000_000:.1f} MB")
+            finding["warnings"].append(
+                f"⚠️ Large attachment: {size / 1_000_000:.1f} MB"
+            )
 
         if finding["warnings"]:
             findings.append(finding)

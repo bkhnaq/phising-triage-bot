@@ -220,6 +220,10 @@ Development mode behavior:
 - API errors use a consistent JSON envelope: `success`, `request_id`, and `error`.
 - Basic in-memory rate limiting is enabled and configurable via env vars.
 
+## CI / Security Checks
+
+- CI runs Bandit and is configured to fail only on high-severity issues.
+
 ## How the Analysis Pipeline Works
 
 1. **Parse** – The `.eml` file is parsed using Python's built-in `email` library. Subject, sender, recipient, date, body (text + HTML), and raw headers are extracted.

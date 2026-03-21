@@ -31,7 +31,7 @@ jobs:
         run: mypy api bot config email_analysis report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
 
       - name: Security scan (bandit)
-        run: bandit -r api bot config email_analysis report scoring threat_intel
+        run: bandit -r api bot config email_analysis report scoring threat_intel -lll
 
       - name: Dependency scan (pip-audit)
         run: pip-audit

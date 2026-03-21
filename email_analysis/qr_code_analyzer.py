@@ -192,9 +192,10 @@ def _decode_pyzbar(image_path: str) -> list[tuple[str, str]]:
     results: list[tuple[str, str]] = []
     try:
         with Image.open(image_path) as img:
-            if img.mode not in ("L", "RGB"):
-                img = img.convert("RGB")
-            decoded = _pyzbar_decode(img)
+            scan_img: Image.Image = img
+            if scan_img.mode not in ("L", "RGB"):
+                scan_img = scan_img.convert("RGB")
+            decoded = _pyzbar_decode(scan_img)
             for obj in decoded:
                 data = obj.data.decode("utf-8", errors="replace")
                 results.append((data, obj.type))
@@ -210,9 +211,10 @@ def _decode_opencv(image_path: str) -> list[tuple[str, str]]:
         import cv2  # type: ignore[import-untyped]
 
         with Image.open(image_path) as img:
-            if img.mode not in ("L", "RGB"):
-                img = img.convert("RGB")
-            arr = np.array(img)
+            scan_img: Image.Image = img
+            if scan_img.mode not in ("L", "RGB"):
+                scan_img = scan_img.convert("RGB")
+            arr = np.array(scan_img)
             detector = cv2.QRCodeDetector()
             retval, decoded_info, points, straight_qrcode = (
                 detector.detectAndDecodeMulti(arr)
