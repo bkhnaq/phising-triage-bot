@@ -59,6 +59,7 @@ class PhishingPipeline:
 
         # Stage 1: Parse email
         from email_analysis.email_parser import parse_eml_file
+
         email_data = parse_eml_file(eml_path)
 
         return self._run_pipeline(email_data)
@@ -75,14 +76,14 @@ class PhishingPipeline:
         """
         # Write to temp file and parse
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".eml", dir=self.upload_dir,
-            delete=False, encoding="utf-8"
+            mode="w", suffix=".eml", dir=self.upload_dir, delete=False, encoding="utf-8"
         ) as f:
             f.write(raw_email)
             temp_path = f.name
 
         try:
             from email_analysis.email_parser import parse_eml_file
+
             email_data = parse_eml_file(temp_path)
             return self._run_pipeline(email_data)
         finally:
@@ -101,11 +102,20 @@ class PhishingPipeline:
         from email_analysis.brand_impersonation import BrandDetector
         from email_analysis.html_form_detector import detect_credential_harvesting
         from email_analysis.language_analyzer import analyze_language
-        from email_analysis.attachment_analyzer import extract_attachments, assess_attachment_risk
-        from email_analysis.qr_code_analyzer import scan_attachments_for_qr, extract_qr_urls
+        from email_analysis.attachment_analyzer import (
+            extract_attachments,
+            assess_attachment_risk,
+        )
+        from email_analysis.qr_code_analyzer import (
+            scan_attachments_for_qr,
+            extract_qr_urls,
+        )
         from email_analysis.heuristic_analyzer import run_heuristics
         from email_analysis.ai_classifier import classify_email
-        from email_analysis.phishing_rules import detect_display_name_spoofing, detect_lookalike_domains
+        from email_analysis.phishing_rules import (
+            detect_display_name_spoofing,
+            detect_lookalike_domains,
+        )
         from threat_intel.virustotal_checker import check_url as vt_check_url
         from threat_intel.virustotal_checker import check_file_hash as vt_check_hash
         from threat_intel.alienvault_checker import check_domain as otx_check_domain
@@ -115,185 +125,212 @@ class PhishingPipeline:
         from scoring.risk_scoring import calculate_risk
         from report.report_generator import generate_report
 
-        # Stage 2: Email authentication headers
-        auth_results = analyze_headers(email_data["headers"])
+        attachments: list[dict] = []
+        try:
+            # Stage 2: Email authentication headers
+            auth_results = analyze_headers(email_data["headers"])
 
-        # Stage 3: SMTP relay chain forensics
-        header_forensics = run_header_forensics(email_data)
+            # Stage 3: SMTP relay chain forensics
+            header_forensics = run_header_forensics(email_data)
 
-        # Stage 4: URL extraction
-        urls = extract_urls(email_data["body_text"], email_data["body_html"])
+            # Stage 4: URL extraction
+            urls = extract_urls(email_data["body_text"], email_data["body_html"])
 
-        # Stage 5: URL intelligence (shorteners + redirect chains)
-        url_intel = url_intel_analyze(urls)
+            # Stage 5: URL intelligence (shorteners + redirect chains)
+            url_intel = url_intel_analyze(urls)
 
-        # Stage 6: Extract unique domains for domain intelligence
-        seen_domains: set[str] = set()
-        all_domains: list[str] = []
-        for u in urls:
-            domain = u.get("domain", "")
-            if domain and domain not in seen_domains:
-                seen_domains.add(domain)
-                all_domains.append(domain)
+            # Stage 6: Extract unique domains for domain intelligence
+            seen_domains: set[str] = set()
+            all_domains: list[str] = []
+            for u in urls:
+                domain = u.get("domain", "")
+                if domain and domain not in seen_domains:
+                    seen_domains.add(domain)
+                    all_domains.append(domain)
 
-        domain_intel = analyze_domain_intelligence(all_domains)
+            domain_intel = analyze_domain_intelligence(all_domains)
 
-        # Stage 7: Brand impersonation detection
-        brand_detector = BrandDetector()
-        brand_results = brand_detector.analyze(
-            urls,
-            from_header=email_data.get("from", ""),
-            body_text=email_data.get("body_text", ""),
-        )
+            # Stage 7: Brand impersonation detection
+            brand_detector = BrandDetector()
+            brand_results = brand_detector.analyze(
+                urls,
+                from_header=email_data.get("from", ""),
+                body_text=email_data.get("body_text", ""),
+            )
 
-        # Stage 8: HTML credential harvesting detection
-        credential_harvesting = detect_credential_harvesting(
-            email_data.get("body_html", "")
-        )
+            # Stage 8: HTML credential harvesting detection
+            credential_harvesting = detect_credential_harvesting(
+                email_data.get("body_html", "")
+            )
 
-        # Stage 9: Language analysis
-        body_text = email_data.get("body_text") or ""
-        if not body_text and email_data.get("body_html"):
-            import re
-            import html
-            body_text = re.sub(r"<[^>]+>", " ", email_data["body_html"])
-            body_text = html.unescape(body_text)
-            body_text = re.sub(r"\s+", " ", body_text).strip()
+            # Stage 9: Language analysis
+            body_text = email_data.get("body_text") or ""
+            if not body_text and email_data.get("body_html"):
+                import html
+                import re
 
-        language_results = analyze_language(
-            body_text, email_data.get("subject", "")
-        )
+                body_text = re.sub(r"<[^>]+>", " ", email_data["body_html"])
+                body_text = html.unescape(body_text)
+                body_text = re.sub(r"\s+", " ", body_text).strip()
 
-        # Stage 10: Attachment extraction + risk assessment
-        attachments = extract_attachments(email_data["raw_message"], save_dir=self.upload_dir)
-        attachment_risks = assess_attachment_risk(attachments)
+            language_results = analyze_language(
+                body_text, email_data.get("subject", "")
+            )
 
-        # Stage 11: QR code scanning
-        qr_findings = scan_attachments_for_qr(attachments)
-        qr_urls = extract_qr_urls(qr_findings)
+            # Stage 10: Attachment extraction + risk assessment
+            attachments = extract_attachments(
+                email_data["raw_message"], save_dir=self.upload_dir
+            )
+            attachment_risks = assess_attachment_risk(attachments)
 
-        # Stage 12: Threat intelligence
-        # VT URL checks
-        vt_url_reports: list[dict] = []
-        for u in urls:
-            target = u.get("expanded_url", u["url"])
-            report = vt_check_url(target)
-            report["url"] = u["url"]
-            report["is_shortened"] = u.get("is_shortened", False)
-            vt_url_reports.append(report)
+            # Stage 11: QR code scanning
+            qr_findings = scan_attachments_for_qr(attachments)
+            qr_urls = extract_qr_urls(qr_findings)
 
-        # VT for QR URLs
-        for qu in qr_urls:
-            target = qu["url"]
-            report = vt_check_url(target)
-            report["url"] = target
-            report["is_shortened"] = False
-            vt_url_reports.append(report)
-            domain = qu.get("domain", "")
-            if domain and domain not in seen_domains:
-                seen_domains.add(domain)
-                all_domains.append(domain)
+            # Stage 12: Threat intelligence
+            vt_url_reports: list[dict] = []
+            for u in urls:
+                target = u.get("expanded_url", u["url"])
+                report = vt_check_url(target)
+                report["url"] = u["url"]
+                report["is_shortened"] = u.get("is_shortened", False)
+                vt_url_reports.append(report)
 
-        # VT hash checks
-        vt_hash_reports = [vt_check_hash(a["sha256"]) for a in attachments]
+            for qu in qr_urls:
+                target = qu["url"]
+                report = vt_check_url(target)
+                report["url"] = target
+                report["is_shortened"] = False
+                vt_url_reports.append(report)
+                domain = qu.get("domain", "")
+                if domain and domain not in seen_domains:
+                    seen_domains.add(domain)
+                    all_domains.append(domain)
 
-        # OTX domain + hash checks
-        otx_reports: list[dict] = []
-        for domain in all_domains:
-            otx_reports.append(otx_check_domain(domain))
-        for a in attachments:
-            otx_reports.append(otx_check_hash(a["sha256"]))
+            vt_hash_reports = [vt_check_hash(a["sha256"]) for a in attachments]
 
-        # IP reputation
-        ip_reputation = check_ip_reputation(all_domains)
+            otx_reports: list[dict] = []
+            for domain in all_domains:
+                otx_reports.append(otx_check_domain(domain))
+            for a in attachments:
+                otx_reports.append(otx_check_hash(a["sha256"]))
 
-        # Passive DNS
-        passive_dns = check_passive_dns(ip_reputation)
+            ip_reputation = check_ip_reputation(all_domains)
+            passive_dns = check_passive_dns(ip_reputation)
+            heuristics = run_heuristics(urls + qr_urls)
 
-        # Legacy heuristics (still used for scoring)
-        heuristics = run_heuristics(urls + qr_urls)
+            display_name_spoofing = detect_display_name_spoofing(
+                email_data.get("from", "")
+            )
+            lookalike_domains = detect_lookalike_domains(urls + qr_urls)
 
-        # Display name spoofing + lookalike domains
-        display_name_spoofing = detect_display_name_spoofing(email_data.get("from", ""))
-        lookalike_domains = detect_lookalike_domains(urls + qr_urls)
+            # Stage 13: AI Classifier
+            rule_findings = self._build_rule_findings(
+                auth_results,
+                heuristics,
+                header_forensics,
+                credential_harvesting,
+                language_results,
+                brand_results,
+                attachment_risks,
+                url_intel,
+            )
+            ai_verdict = classify_email(email_data, urls + qr_urls, rule_findings)
 
-        # Stage 13: AI Classifier
-        rule_findings = self._build_rule_findings(
-            auth_results, heuristics, header_forensics,
-            credential_harvesting, language_results,
-            brand_results, attachment_risks,
-            url_intel,
-        )
-        ai_verdict = classify_email(email_data, urls + qr_urls, rule_findings)
+            # Stage 14: Risk scoring
+            risk = calculate_risk(
+                auth_results,
+                vt_url_reports,
+                vt_hash_reports,
+                otx_reports,
+                heuristics,
+                qr_findings,
+                ip_reputation,
+                passive_dns,
+                ai_verdict,
+                header_forensics=header_forensics,
+                display_name_spoofing=display_name_spoofing,
+                lookalike_domains=lookalike_domains,
+                credential_harvesting=credential_harvesting,
+                language_analysis=language_results,
+                brand_impersonation=brand_results,
+                attachment_risks=attachment_risks,
+                url_intelligence=url_intel,
+                domain_intelligence=domain_intel,
+            )
 
-        # Stage 14: Risk scoring
-        risk = calculate_risk(
-            auth_results, vt_url_reports, vt_hash_reports, otx_reports,
-            heuristics, qr_findings, ip_reputation, passive_dns, ai_verdict,
-            header_forensics=header_forensics,
-            display_name_spoofing=display_name_spoofing,
-            lookalike_domains=lookalike_domains,
-            credential_harvesting=credential_harvesting,
-            language_analysis=language_results,
-            brand_impersonation=brand_results,
-            attachment_risks=attachment_risks,
-            url_intelligence=url_intel,
-            domain_intelligence=domain_intel,
-        )
+            # Stage 15: Report generation
+            report_text = generate_report(
+                email_data,
+                auth_results,
+                urls,
+                attachments,
+                risk,
+                vt_url_reports,
+                vt_hash_reports,
+                otx_reports,
+                heuristics=heuristics,
+                qr_findings=qr_findings,
+                ip_reputation=ip_reputation,
+                passive_dns=passive_dns,
+                ai_verdict=ai_verdict,
+                header_forensics=header_forensics,
+                display_name_spoofing=display_name_spoofing,
+                lookalike_domains=lookalike_domains,
+                credential_harvesting=credential_harvesting,
+                language_analysis=language_results,
+                brand_impersonation=brand_results,
+                attachment_risks=attachment_risks,
+                url_intelligence=url_intel,
+                domain_intelligence=domain_intel,
+            )
 
-        # Stage 15: Report generation
-        report_text = generate_report(
-            email_data, auth_results, urls, attachments,
-            risk, vt_url_reports, vt_hash_reports, otx_reports,
-            heuristics=heuristics, qr_findings=qr_findings,
-            ip_reputation=ip_reputation, passive_dns=passive_dns,
-            ai_verdict=ai_verdict, header_forensics=header_forensics,
-            display_name_spoofing=display_name_spoofing,
-            lookalike_domains=lookalike_domains,
-            credential_harvesting=credential_harvesting,
-            language_analysis=language_results,
-            brand_impersonation=brand_results,
-            attachment_risks=attachment_risks,
-            url_intelligence=url_intel,
-            domain_intelligence=domain_intel,
-        )
+            logger.info(
+                "Pipeline complete: score=%d verdict=%s",
+                risk["score"],
+                risk["verdict"],
+            )
 
-        logger.info(
-            "Pipeline complete: score=%d verdict=%s",
-            risk["score"], risk["verdict"],
-        )
-
-        return {
-            "email_data": {
-                "subject": email_data.get("subject"),
-                "from": email_data.get("from"),
-                "to": email_data.get("to"),
-                "date": email_data.get("date"),
-                "message_id": email_data.get("message_id"),
-            },
-            "auth_results": auth_results,
-            "header_forensics": header_forensics,
-            "urls": urls,
-            "url_intelligence": url_intel,
-            "domain_intelligence": domain_intel,
-            "brand_impersonation": brand_results,
-            "credential_harvesting": credential_harvesting,
-            "language_analysis": language_results,
-            "attachments": attachments,
-            "attachment_risks": attachment_risks,
-            "qr_findings": qr_findings,
-            "vt_url_reports": vt_url_reports,
-            "vt_hash_reports": vt_hash_reports,
-            "otx_reports": otx_reports,
-            "ip_reputation": ip_reputation,
-            "passive_dns": passive_dns,
-            "heuristics": heuristics,
-            "display_name_spoofing": display_name_spoofing,
-            "lookalike_domains": lookalike_domains,
-            "ai_verdict": ai_verdict,
-            "risk": risk,
-            "report": report_text,
-        }
+            return {
+                "email_data": {
+                    "subject": email_data.get("subject"),
+                    "from": email_data.get("from"),
+                    "to": email_data.get("to"),
+                    "date": email_data.get("date"),
+                    "message_id": email_data.get("message_id"),
+                },
+                "auth_results": auth_results,
+                "header_forensics": header_forensics,
+                "urls": urls,
+                "url_intelligence": url_intel,
+                "domain_intelligence": domain_intel,
+                "brand_impersonation": brand_results,
+                "credential_harvesting": credential_harvesting,
+                "language_analysis": language_results,
+                "attachments": attachments,
+                "attachment_risks": attachment_risks,
+                "qr_findings": qr_findings,
+                "vt_url_reports": vt_url_reports,
+                "vt_hash_reports": vt_hash_reports,
+                "otx_reports": otx_reports,
+                "ip_reputation": ip_reputation,
+                "passive_dns": passive_dns,
+                "heuristics": heuristics,
+                "display_name_spoofing": display_name_spoofing,
+                "lookalike_domains": lookalike_domains,
+                "ai_verdict": ai_verdict,
+                "risk": risk,
+                "report": report_text,
+            }
+        finally:
+            for attachment in attachments:
+                saved_path = attachment.get("saved_path")
+                if not saved_path:
+                    continue
+                try:
+                    Path(saved_path).unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("Could not clean attachment artifact: %s", saved_path)
 
     @staticmethod
     def _build_rule_findings(
@@ -331,7 +368,9 @@ class PhishingPipeline:
         # Heuristic findings
         if heuristics:
             for f in heuristics.get("homograph_brands", [])[:3]:
-                findings.append(f"Homograph brand: {f['brand']} in {f['original_domain']}")
+                findings.append(
+                    f"Homograph brand: {f['brand']} in {f['original_domain']}"
+                )
             for f in heuristics.get("suspicious_keywords", [])[:3]:
                 findings.append(f"Suspicious keyword: {f['keyword']}")
             for f in heuristics.get("brand_impersonation", [])[:3]:

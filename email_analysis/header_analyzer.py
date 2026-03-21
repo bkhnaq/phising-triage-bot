@@ -22,7 +22,13 @@ _MESSAGE_ID_DOMAIN_RE = re.compile(r"<[^@<>]+@([A-Za-z0-9.-]+)>")
 # High-value brands commonly impersonated in sender display names.
 _BRAND_DOMAINS: dict[str, set[str]] = {
     "paypal": {"paypal.com", "paypal.me"},
-    "microsoft": {"microsoft.com", "outlook.com", "office.com", "office365.com", "live.com"},
+    "microsoft": {
+        "microsoft.com",
+        "outlook.com",
+        "office.com",
+        "office365.com",
+        "live.com",
+    },
     "google": {"google.com", "gmail.com"},
     "apple": {"apple.com", "icloud.com"},
     "amazon": {"amazon.com"},
@@ -75,7 +81,15 @@ def analyze_headers(headers: list[tuple[str, str]]) -> dict:
 def _parse_received_spf(value: str) -> dict:
     """Parse the Received-SPF header (e.g., 'pass (domain of ...) ...')."""
     value_lower = value.strip().lower()
-    for keyword in ("pass", "fail", "softfail", "neutral", "none", "temperror", "permerror"):
+    for keyword in (
+        "pass",
+        "fail",
+        "softfail",
+        "neutral",
+        "none",
+        "temperror",
+        "permerror",
+    ):
         if value_lower.startswith(keyword):
             return {"result": keyword, "details": value.strip()}
     return {"result": "unknown", "details": value.strip()}
@@ -133,45 +147,55 @@ def _run_header_forensics(headers: list[tuple[str, str]]) -> dict:
     findings: list[dict] = []
 
     if from_domain and return_path_domain and from_domain != return_path_domain:
-        findings.append({
-            "type": "return_path_mismatch",
-            "summary": "Return-Path domain differs from From domain",
-            "details": f"From={from_domain}, Return-Path={return_path_domain}",
-            "risk_score": 15,
-        })
+        findings.append(
+            {
+                "type": "return_path_mismatch",
+                "summary": "Return-Path domain differs from From domain",
+                "details": f"From={from_domain}, Return-Path={return_path_domain}",
+                "risk_score": 15,
+            }
+        )
 
     if from_domain and reply_to_domain and from_domain != reply_to_domain:
-        findings.append({
-            "type": "reply_to_mismatch",
-            "summary": "Reply-To domain differs from From domain",
-            "details": f"From={from_domain}, Reply-To={reply_to_domain}",
-            "risk_score": 10,
-        })
+        findings.append(
+            {
+                "type": "reply_to_mismatch",
+                "summary": "Reply-To domain differs from From domain",
+                "details": f"From={from_domain}, Reply-To={reply_to_domain}",
+                "risk_score": 10,
+            }
+        )
 
     if from_domain and message_id_domain and from_domain != message_id_domain:
-        findings.append({
-            "type": "message_id_mismatch",
-            "summary": "Message-ID domain differs from From domain",
-            "details": f"From={from_domain}, Message-ID={message_id_domain}",
-            "risk_score": 5,
-        })
+        findings.append(
+            {
+                "type": "message_id_mismatch",
+                "summary": "Message-ID domain differs from From domain",
+                "details": f"From={from_domain}, Message-ID={message_id_domain}",
+                "risk_score": 5,
+            }
+        )
 
     if not received_chain:
-        findings.append({
-            "type": "missing_received_headers",
-            "summary": "No Received headers found",
-            "details": "Message route cannot be reconstructed",
-            # Missing relay metadata reduces confidence/completeness, not phishing certainty.
-            "risk_score": 0,
-            "evidence_state": "none",
-        })
+        findings.append(
+            {
+                "type": "missing_received_headers",
+                "summary": "No Received headers found",
+                "details": "Message route cannot be reconstructed",
+                # Missing relay metadata reduces confidence/completeness, not phishing certainty.
+                "risk_score": 0,
+                "evidence_state": "none",
+            }
+        )
     elif len(received_chain) > 7:
-        findings.append({
-            "type": "excessive_hops",
-            "summary": "Unusually long Received chain",
-            "details": f"Received hop count={len(received_chain)}",
-            "risk_score": 5,
-        })
+        findings.append(
+            {
+                "type": "excessive_hops",
+                "summary": "Unusually long Received chain",
+                "details": f"Received hop count={len(received_chain)}",
+                "risk_score": 5,
+            }
+        )
 
     brand_finding = _detect_sender_brand_impersonation(from_raw, from_domain)
     if brand_finding:

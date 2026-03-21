@@ -28,7 +28,11 @@ _MAX_REDIRECTS = 10
 def _friendly_error(exc: Exception) -> str:
     """Convert a requests exception into a human-readable message."""
     raw = str(exc)
-    if "NameResolutionError" in raw or "getaddrinfo failed" in raw or "Name or service not known" in raw:
+    if (
+        "NameResolutionError" in raw
+        or "getaddrinfo failed" in raw
+        or "Name or service not known" in raw
+    ):
         return "Domain could not be resolved"
     if "Max retries exceeded" in raw:
         return "Domain could not be resolved"
@@ -40,32 +44,87 @@ def _friendly_error(exc: Exception) -> str:
         return "Too many redirects"
     if "SSLError" in raw or "CERTIFICATE_VERIFY_FAILED" in raw:
         return "SSL certificate error"
-    if "ConnectionError" in raw or "HTTPConnectionPool" in raw or "HTTPSConnectionPool" in raw:
+    if (
+        "ConnectionError" in raw
+        or "HTTPConnectionPool" in raw
+        or "HTTPSConnectionPool" in raw
+    ):
         return "Connection failed"
     return "Redirect analysis failed"
 
+
 # ── Extended URL shortener list ──────────────────────────────
-SHORTENER_DOMAINS: frozenset[str] = frozenset({
-    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly",
-    "is.gd", "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at",
-    "tiny.cc", "lnkd.in", "rb.gy", "bl.ink", "soo.gd",
-    "s.id", "clck.ru", "v.gd", "short.io", "hyp.er",
-    "t.ly", "trib.al", "snip.ly", "qr.ae", "amzn.to",
-    "youtu.be", "j.mp", "rotf.lol", "cli.re", "hubs.la",
-    "shorte.st", "adf.ly",
-})
+SHORTENER_DOMAINS: frozenset[str] = frozenset(
+    {
+        "bit.ly",
+        "tinyurl.com",
+        "t.co",
+        "goo.gl",
+        "ow.ly",
+        "is.gd",
+        "buff.ly",
+        "rebrand.ly",
+        "cutt.ly",
+        "shorturl.at",
+        "tiny.cc",
+        "lnkd.in",
+        "rb.gy",
+        "bl.ink",
+        "soo.gd",
+        "s.id",
+        "clck.ru",
+        "v.gd",
+        "short.io",
+        "hyp.er",
+        "t.ly",
+        "trib.al",
+        "snip.ly",
+        "qr.ae",
+        "amzn.to",
+        "youtu.be",
+        "j.mp",
+        "rotf.lol",
+        "cli.re",
+        "hubs.la",
+        "shorte.st",
+        "adf.ly",
+    }
+)
 
 # Suspicious path keywords in final URLs
-_SUSPICIOUS_PATH_KEYWORDS = frozenset({
-    "login", "signin", "verify", "confirm", "secure", "update",
-    "account", "password", "credential", "auth", "validate",
-    "billing", "payment", "invoice",
-})
+_SUSPICIOUS_PATH_KEYWORDS = frozenset(
+    {
+        "login",
+        "signin",
+        "verify",
+        "confirm",
+        "secure",
+        "update",
+        "account",
+        "password",
+        "credential",
+        "auth",
+        "validate",
+        "billing",
+        "payment",
+        "invoice",
+    }
+)
 
-_SUSPICIOUS_DOMAIN_KEYWORDS = frozenset({
-    "login", "verify", "secure", "account", "auth", "wallet",
-    "billing", "password", "update", "signin",
-})
+_SUSPICIOUS_DOMAIN_KEYWORDS = frozenset(
+    {
+        "login",
+        "verify",
+        "secure",
+        "account",
+        "auth",
+        "wallet",
+        "billing",
+        "password",
+        "update",
+        "signin",
+    }
+)
 
 # Known legitimate email service providers (ESP) and common tracking endpoints.
 _KNOWN_ESP_RULES: dict[str, dict[str, tuple[str, ...]]] = {
@@ -151,7 +210,9 @@ def detect_shorteners(urls: list[dict]) -> list[dict]:
 
         original_url = u["url"]
         expanded_url = expand_url(original_url)
-        expanded_domain = urlparse(expanded_url).netloc if expanded_url != original_url else ""
+        expanded_domain = (
+            urlparse(expanded_url).netloc if expanded_url != original_url else ""
+        )
 
         finding = {
             "url": original_url,
@@ -223,7 +284,11 @@ def analyze_redirect_chains(urls: list[dict]) -> list[dict]:
             source_url=source_url,
             esp_info=esp_info,
         )
-        if chain_result["hops"] > 0 or chain_result.get("error") or chain_result.get("suspicious_landing"):
+        if (
+            chain_result["hops"] > 0
+            or chain_result.get("error")
+            or chain_result.get("suspicious_landing")
+        ):
             findings.append(chain_result)
 
     return findings
@@ -285,10 +350,12 @@ def follow_redirect_chain(
                     result["intermediate_domains"].append(intermediate_domain)
                     # Check if intermediate is a shortener
                     if intermediate_domain in SHORTENER_DOMAINS:
-                        result["suspicious_intermediates"].append({
-                            "domain": intermediate_domain,
-                            "reason": "URL shortener in redirect chain",
-                        })
+                        result["suspicious_intermediates"].append(
+                            {
+                                "domain": intermediate_domain,
+                                "reason": "URL shortener in redirect chain",
+                            }
+                        )
 
         suspicious_landing, landing_reason = _is_suspicious_landing(
             result["final_url"],
@@ -348,15 +415,21 @@ def detect_suspicious_endpoints(urls: list[dict]) -> list[dict]:
             continue
 
         parsed = urlparse(url)
-        path_lower = (parsed.path + "?" + parsed.query).lower() if parsed.query else parsed.path.lower()
+        path_lower = (
+            (parsed.path + "?" + parsed.query).lower()
+            if parsed.query
+            else parsed.path.lower()
+        )
 
         matched_keywords = [kw for kw in _SUSPICIOUS_PATH_KEYWORDS if kw in path_lower]
         if len(matched_keywords) >= 2:
-            findings.append({
-                "url": url,
-                "keywords": matched_keywords,
-                "risk_score": 10,
-            })
+            findings.append(
+                {
+                    "url": url,
+                    "keywords": matched_keywords,
+                    "risk_score": 10,
+                }
+            )
 
     return findings
 
@@ -381,17 +454,19 @@ def detect_esp_patterns(urls: list[dict]) -> list[dict]:
         if not esp_info:
             continue
 
-        findings.append({
-            "url": source_url,
-            "domain": esp_info["domain"],
-            "provider": esp_info["provider"],
-            "is_tracking": esp_info["is_tracking"],
-            "reason": esp_info["reason"],
-            "final_domain": "",
-            "suspicious_landing": False,
-            # Applied in risk scoring when there is no contradictory evidence.
-            "risk_adjustment": -8 if esp_info["is_tracking"] else -4,
-        })
+        findings.append(
+            {
+                "url": source_url,
+                "domain": esp_info["domain"],
+                "provider": esp_info["provider"],
+                "is_tracking": esp_info["is_tracking"],
+                "reason": esp_info["reason"],
+                "final_domain": "",
+                "suspicious_landing": False,
+                # Applied in risk scoring when there is no contradictory evidence.
+                "risk_adjustment": -8 if esp_info["is_tracking"] else -4,
+            }
+        )
 
     return findings
 
@@ -426,11 +501,12 @@ def classify_esp_url(url: str) -> dict | None:
     return None
 
 
-def _merge_redirect_context_into_esp(esp_findings: list[dict], redirect_findings: list[dict]) -> None:
+def _merge_redirect_context_into_esp(
+    esp_findings: list[dict], redirect_findings: list[dict]
+) -> None:
     """Enrich ESP findings with redirect context (final landing domain and landing risk)."""
     redirect_by_source = {
-        r.get("source_url", r.get("url", "")): r
-        for r in redirect_findings
+        r.get("source_url", r.get("url", "")): r for r in redirect_findings
     }
 
     for finding in esp_findings:
@@ -458,7 +534,11 @@ def _is_suspicious_landing(url: str, domain: str) -> tuple[bool, str]:
         return True, "Suspicious landing domain keyword"
 
     parsed = urlparse(url)
-    path_and_query = (parsed.path + "?" + parsed.query).lower() if parsed.query else parsed.path.lower()
+    path_and_query = (
+        (parsed.path + "?" + parsed.query).lower()
+        if parsed.query
+        else parsed.path.lower()
+    )
     path_hits = [kw for kw in _SUSPICIOUS_PATH_KEYWORDS if kw in path_and_query]
     if len(path_hits) >= 2:
         return True, "Credential-style landing endpoint"

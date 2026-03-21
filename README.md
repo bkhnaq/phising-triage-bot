@@ -117,6 +117,12 @@ cp .env.example .env
 # Edit .env and add your API keys
 ```
 
+Windows PowerShell alternative:
+
+```powershell
+Copy-Item .env.example .env
+```
+
 ### 2. Install dependencies
 
 ```bash
@@ -136,7 +142,7 @@ pip install -r requirements.txt
 | **Telegram Bot** | Chat with [@BotFather](https://t.me/BotFather) on Telegram | Yes |
 | **VirusTotal** | https://www.virustotal.com/gui/my-apikey | Recommended |
 | **AlienVault OTX** | https://otx.alienvault.com/accounts/signup | Recommended |
-| **Gemini AI** | https://aistudio.google.com/apikey | Optional |
+| **Groq AI** | https://console.groq.com/keys | Optional |
 | **AbuseIPDB** | https://www.abuseipdb.com/account/api | Optional |
 | **SecurityTrails** | https://securitytrails.com/app/signup | Optional |
 
@@ -157,10 +163,27 @@ python main.py
 
 ## Running with Docker
 
+`pyzbar` requires the native `zbar` library. The provided Dockerfile installs `libzbar0`, so the container runs out-of-the-box.
+
 ```bash
 docker build -t phishing-triage-bot .
 docker run --env-file .env phishing-triage-bot
 ```
+
+Run API mode:
+
+```bash
+docker run --env-file .env -p 8000:8000 phishing-triage-bot python main.py --api
+```
+
+For API requests (except `/health`), send your configured `X-API-Key` header.
+
+## API Notes
+
+- Every API response includes `request_id` for traceability.
+- Every API response also includes an `X-Request-ID` header.
+- API errors use a consistent JSON envelope: `success`, `request_id`, and `error`.
+- Basic in-memory rate limiting is enabled and configurable via env vars.
 
 ## How the Analysis Pipeline Works
 
@@ -214,6 +237,16 @@ docker run --env-file .env phishing-triage-bot
 
 Score is capped at 100. Thresholds are configurable via environment variables.
 
+## Security Disclaimer
+
+This project is for educational and defensive security workflows (SOC triage, awareness, and testing). It is not guaranteed to detect all phishing campaigns and must not be used as the sole control for production security decisions.
+
+Always:
+
+- Validate high-risk findings with human review.
+- Follow your organization’s legal/compliance policies.
+- Use isolated test data where possible.
+
 ## License
 
-This project is provided for educational purposes. Use responsibly and in accordance with your organization's security policies.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).

@@ -14,7 +14,6 @@ Usage:
 
 import logging
 import math
-import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -31,7 +30,13 @@ logger = logging.getLogger(__name__)
 # A brand keyword found in a domain NOT in the official set is suspicious.
 _BRAND_DOMAINS: dict[str, set[str]] = {
     "paypal": {"paypal.com", "paypal.me"},
-    "microsoft": {"microsoft.com", "live.com", "outlook.com", "office.com", "office365.com"},
+    "microsoft": {
+        "microsoft.com",
+        "live.com",
+        "outlook.com",
+        "office.com",
+        "office365.com",
+    },
     "apple": {"apple.com", "icloud.com"},
     "amazon": {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr", "amazon.ca"},
     "google": {"google.com", "gmail.com", "googleapis.com"},
@@ -50,18 +55,42 @@ _BRAND_DOMAINS: dict[str, set[str]] = {
 # ── Suspicious keywords ─────────────────────────────────────
 
 _SUSPICIOUS_KEYWORDS: list[str] = [
-    "verify", "login", "secure", "update", "account",
-    "reset", "billing", "confirm", "suspend", "locked",
-    "urgent", "expire", "authenticate", "wallet", "signin",
+    "verify",
+    "login",
+    "secure",
+    "update",
+    "account",
+    "reset",
+    "billing",
+    "confirm",
+    "suspend",
+    "locked",
+    "urgent",
+    "expire",
+    "authenticate",
+    "wallet",
+    "signin",
 ]
 
 # ── URL shorteners ───────────────────────────────────────────
 
-_SHORTENER_DOMAINS: frozenset[str] = frozenset({
-    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly",
-    "is.gd", "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at",
-    "tiny.cc", "lnkd.in", "rb.gy",
-})
+_SHORTENER_DOMAINS: frozenset[str] = frozenset(
+    {
+        "bit.ly",
+        "tinyurl.com",
+        "t.co",
+        "goo.gl",
+        "ow.ly",
+        "is.gd",
+        "buff.ly",
+        "rebrand.ly",
+        "cutt.ly",
+        "shorturl.at",
+        "tiny.cc",
+        "lnkd.in",
+        "rb.gy",
+    }
+)
 
 # ── Homograph attack ─────────────────────────────────────────
 
@@ -83,14 +112,15 @@ _CONFUSABLES: dict[str, str] = {
 
 # ── Redirect chain ───────────────────────────────────────────
 
-_REDIRECT_TIMEOUT = 5   # seconds per request
-_MAX_REDIRECTS = 10     # safety cap
+_REDIRECT_TIMEOUT = 5  # seconds per request
+_MAX_REDIRECTS = 10  # safety cap
 
 # ── WHOIS timeout (seconds) ─────────────────────────────────
 _WHOIS_TIMEOUT = 10
 
 
 # ── Public API ───────────────────────────────────────────────
+
 
 def run_heuristics(urls: list[dict]) -> dict:
     """
@@ -122,6 +152,7 @@ def run_heuristics(urls: list[dict]) -> dict:
 
 # ── Detection functions ─────────────────────────────────────
 
+
 def detect_brand_impersonation(
     urls: list[dict],
     domains: list[str] | None = None,
@@ -145,14 +176,17 @@ def detect_brand_impersonation(
                 key = (brand, domain_lower)
                 if key not in seen:
                     seen.add(key)
-                    findings.append({
-                        "brand": brand,
-                        "domain": domain,
-                        "risk_score": 25,
-                    })
+                    findings.append(
+                        {
+                            "brand": brand,
+                            "domain": domain,
+                            "risk_score": 25,
+                        }
+                    )
                     logger.warning(
                         "Brand impersonation: '%s' found in non-official domain %s",
-                        brand, domain,
+                        brand,
+                        domain,
                     )
 
     return findings
@@ -182,27 +216,33 @@ def detect_suspicious_keywords(
                 key = (kw, domain_lower)
                 if key not in seen:
                     seen.add(key)
-                    findings.append({
-                        "keyword": kw,
-                        "source": domain,
-                        "risk_score": 15,
-                    })
+                    findings.append(
+                        {
+                            "keyword": kw,
+                            "source": domain,
+                            "risk_score": 15,
+                        }
+                    )
 
     # Check full URL paths (catch keywords not in the domain itself)
     for u in urls:
         url_lower = u["url"].lower()
         parsed = urlparse(url_lower)
-        path_and_query = parsed.path + "?" + parsed.query if parsed.query else parsed.path
+        path_and_query = (
+            parsed.path + "?" + parsed.query if parsed.query else parsed.path
+        )
         for kw in _SUSPICIOUS_KEYWORDS:
             if kw in path_and_query:
                 key = (kw, url_lower)
                 if key not in seen:
                     seen.add(key)
-                    findings.append({
-                        "keyword": kw,
-                        "source": u["url"],
-                        "risk_score": 15,
-                    })
+                    findings.append(
+                        {
+                            "keyword": kw,
+                            "source": u["url"],
+                            "risk_score": 15,
+                        }
+                    )
 
     return findings
 
@@ -282,7 +322,9 @@ def get_domain_age(domain: str) -> dict:
             err_msg = err_msg.split("TERMS OF USE")[0].rstrip()
         # Keep only the first meaningful line
         first_line = err_msg.strip().split("\n")[0].strip()
-        result["error"] = f"lookup failed ({first_line})" if first_line else "lookup failed"
+        result["error"] = (
+            f"lookup failed ({first_line})" if first_line else "lookup failed"
+        )
         logger.debug("WHOIS lookup failed for %s: %s", domain, first_line)
 
     return result
@@ -325,7 +367,8 @@ def check_domain_age(domains: list[str]) -> list[dict]:
             finding["risk_score"] = 20
             logger.warning(
                 "Young domain: %s registered %d day(s) ago (+20 risk)",
-                domain, age_info["age_days"],
+                domain,
+                age_info["age_days"],
             )
 
         findings.append(finding)
@@ -345,17 +388,20 @@ def detect_url_shorteners(urls: list[dict]) -> list[dict]:
     for u in urls:
         domain = u.get("domain", "").lower()
         if domain in _SHORTENER_DOMAINS:
-            findings.append({
-                "url": u["url"],
-                "domain": domain,
-                "risk_score": 10,
-            })
+            findings.append(
+                {
+                    "url": u["url"],
+                    "domain": domain,
+                    "risk_score": 10,
+                }
+            )
             logger.info("URL shortener detected: %s (%s)", u["url"], domain)
 
     return findings
 
 
 # ── Homograph detection ──────────────────────────────────────
+
 
 def detect_homograph(domains: list[str]) -> list[dict]:
     """
@@ -405,12 +451,14 @@ def detect_homograph(domains: list[str]) -> list[dict]:
             if has_confusable:
                 confusable_chars = [ch for ch in decoded if ch in _CONFUSABLES]
                 detail_parts.append(f"confusable chars: {confusable_chars}")
-            findings.append({
-                "domain": raw_domain,
-                "decoded": decoded,
-                "details": "; ".join(detail_parts),
-                "risk_score": 30,
-            })
+            findings.append(
+                {
+                    "domain": raw_domain,
+                    "decoded": decoded,
+                    "details": "; ".join(detail_parts),
+                    "risk_score": 30,
+                }
+            )
             logger.warning("Homograph attack suspected: %s → %s", raw_domain, decoded)
 
     return findings
@@ -429,6 +477,7 @@ def _script_of(ch: str) -> str:
 
 
 # ── Domain entropy ───────────────────────────────────────────
+
 
 def calculate_entropy(domain: str) -> float:
     """
@@ -481,17 +530,20 @@ def calculate_entropy_findings(domains: list[str]) -> list[dict]:
         risk = 15 if ent > threshold else 0
 
         if risk > 0:
-            findings.append({
-                "domain": reg,
-                "entropy": ent,
-                "risk_score": risk,
-            })
+            findings.append(
+                {
+                    "domain": reg,
+                    "entropy": ent,
+                    "risk_score": risk,
+                }
+            )
             logger.info("High entropy domain: %s (%.2f)", reg, ent)
 
     return findings
 
 
 # ── Redirect chain detection ─────────────────────────────────
+
 
 def check_redirect_chain(url: str) -> dict:
     """
@@ -513,7 +565,7 @@ def check_redirect_chain(url: str) -> dict:
             url,
             allow_redirects=True,
             timeout=_REDIRECT_TIMEOUT,
-            stream=True,          # don't download body
+            stream=True,  # don't download body
             headers={"User-Agent": "Mozilla/5.0 (PhishBot)"},
         )
         resp.close()
@@ -527,7 +579,9 @@ def check_redirect_chain(url: str) -> dict:
             result["risk_score"] = 10
             logger.info(
                 "Redirect chain: %s → %d hop(s) → %s",
-                url, result["hops"], result["final_url"],
+                url,
+                result["hops"],
+                result["final_url"],
             )
 
     except requests.RequestException as exc:
@@ -553,6 +607,7 @@ def check_redirect_chains(urls: list[dict]) -> list[dict]:
 
 
 # ── Internal helpers ─────────────────────────────────────────
+
 
 def _unique_domains(urls: list[dict]) -> list[str]:
     """Return deduplicated list of domains from URL dicts."""

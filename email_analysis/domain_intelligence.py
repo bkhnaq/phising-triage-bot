@@ -17,7 +17,6 @@ Usage:
 
 import logging
 import math
-import socket
 from datetime import datetime, timezone
 
 import dns.resolver
@@ -34,7 +33,13 @@ _ENTROPY_THRESHOLD = 3.5
 # Protected brands for lookalike detection
 _PROTECTED_BRANDS: dict[str, set[str]] = {
     "paypal": {"paypal.com", "paypal.me"},
-    "microsoft": {"microsoft.com", "outlook.com", "office.com", "office365.com", "live.com"},
+    "microsoft": {
+        "microsoft.com",
+        "outlook.com",
+        "office.com",
+        "office365.com",
+        "live.com",
+    },
     "apple": {"apple.com", "icloud.com"},
     "amazon": {"amazon.com", "amazon.co.uk"},
     "google": {"google.com", "gmail.com"},
@@ -95,7 +100,7 @@ def analyze_domain_intelligence(domains: list[str]) -> dict:
         # Lookalike
         look = lookalike_check(reg_domain)
         lookalike_results.extend(look)
-        total_risk += sum(l["risk_score"] for l in look)
+        total_risk += sum(lookalike_item["risk_score"] for lookalike_item in look)
 
     return {
         "whois_results": whois_results,
@@ -198,7 +203,9 @@ def whois_lookup(domain: str) -> dict:
         if "TERMS OF USE" in err_msg:
             err_msg = err_msg.split("TERMS OF USE")[0].rstrip()
         first_line = err_msg.strip().split("\n")[0].strip()
-        result["error"] = f"lookup failed ({first_line})" if first_line else "lookup failed"
+        result["error"] = (
+            f"lookup failed ({first_line})" if first_line else "lookup failed"
+        )
         logger.debug("WHOIS lookup failed for %s: %s", domain, first_line)
 
     return result
@@ -249,8 +256,12 @@ def dns_lookup(domain: str) -> dict:
                 ]
             else:
                 result[key] = [str(r).strip('"') for r in answers]
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN,
-                dns.resolver.NoNameservers, dns.resolver.Timeout):
+        except (
+            dns.resolver.NoAnswer,
+            dns.resolver.NXDOMAIN,
+            dns.resolver.NoNameservers,
+            dns.resolver.Timeout,
+        ):
             continue
         except Exception as exc:
             logger.debug("DNS %s lookup failed for %s: %s", rtype, domain, exc)
@@ -319,19 +330,22 @@ def lookalike_check(domain: str) -> list[dict]:
 
             dist = _levenshtein(segment, brand)
             if 0 < dist <= 2:
-                findings.append({
-                    "domain": domain,
-                    "brand": brand,
-                    "distance": dist,
-                    "detail": f"'{segment}' vs '{brand}' (distance={dist})",
-                    "risk_score": 20,
-                })
+                findings.append(
+                    {
+                        "domain": domain,
+                        "brand": brand,
+                        "distance": dist,
+                        "detail": f"'{segment}' vs '{brand}' (distance={dist})",
+                        "risk_score": 20,
+                    }
+                )
                 break
 
     return findings
 
 
 # ── Helpers ──────────────────────────────────────────────────
+
 
 def _deduplicate_domains(domains: list[str]) -> list[str]:
     seen: set[str] = set()

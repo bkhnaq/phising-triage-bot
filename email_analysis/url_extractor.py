@@ -24,11 +24,23 @@ _URL_REGEX = re.compile(
 )
 
 # Well-known URL shortener domains
-_SHORTENER_DOMAINS = frozenset({
-    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly",
-    "is.gd", "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at",
-    "tiny.cc", "lnkd.in", "rb.gy",
-})
+_SHORTENER_DOMAINS = frozenset(
+    {
+        "bit.ly",
+        "tinyurl.com",
+        "t.co",
+        "goo.gl",
+        "ow.ly",
+        "is.gd",
+        "buff.ly",
+        "rebrand.ly",
+        "cutt.ly",
+        "shorturl.at",
+        "tiny.cc",
+        "lnkd.in",
+        "rb.gy",
+    }
+)
 
 # Request timeout for expanding shortened URLs (seconds)
 _EXPAND_TIMEOUT = 5
@@ -65,18 +77,21 @@ def extract_urls(body_text: str = "", body_html: str = "") -> list[dict]:
         is_shortened = domain.lower() in _SHORTENER_DOMAINS
         expanded = _expand_url(url) if is_shortened else url
 
-        results.append({
-            "url": url,
-            "domain": domain,
-            "is_shortened": is_shortened,
-            "expanded_url": expanded,
-        })
+        results.append(
+            {
+                "url": url,
+                "domain": domain,
+                "is_shortened": is_shortened,
+                "expanded_url": expanded,
+            }
+        )
 
     logger.info("Extracted %d unique URL(s) from email body", len(results))
     return results
 
 
 # ── HTML link extractor ──────────────────────────────────────
+
 
 class _LinkParser(HTMLParser):
     """Simple HTML parser that collects href values and text URLs."""
@@ -103,6 +118,7 @@ def _extract_urls_from_html(html: str) -> list[str]:
 
 
 # ── Helpers ──────────────────────────────────────────────────
+
 
 def _extract_domain(url: str) -> str:
     """Return the network-location (domain) part of a URL."""

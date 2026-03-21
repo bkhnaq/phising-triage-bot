@@ -36,11 +36,18 @@ _ERROR_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"HTTPConnectionPool|HTTPSConnectionPool", re.I), "Connection failed"),
     (re.compile(r"ConnectionError|ConnectTimeout", re.I), "Connection timed out"),
     (re.compile(r"Max retries exceeded", re.I), "Domain could not be resolved"),
-    (re.compile(r"NameResolutionError|getaddrinfo failed|Name or service not known", re.I),
-     "Domain could not be resolved"),
+    (
+        re.compile(
+            r"NameResolutionError|getaddrinfo failed|Name or service not known", re.I
+        ),
+        "Domain could not be resolved",
+    ),
     (re.compile(r"ReadTimeout|read timed out", re.I), "Request timed out"),
     (re.compile(r"TooManyRedirects", re.I), "Too many redirects"),
-    (re.compile(r"SSLError|SSL: CERTIFICATE_VERIFY_FAILED", re.I), "SSL certificate error"),
+    (
+        re.compile(r"SSLError|SSL: CERTIFICATE_VERIFY_FAILED", re.I),
+        "SSL certificate error",
+    ),
     (re.compile(r"ProxyError", re.I), "Proxy error"),
 ]
 
@@ -58,6 +65,7 @@ def _clean_error(raw: str | None) -> str:
 
 
 # ── Threat summary builder ───────────────────────────────────
+
 
 def _build_threat_summary(
     risk: dict,
@@ -96,7 +104,9 @@ def _build_threat_summary(
         if heuristics.get("homograph_brands"):
             techniques.append("Homograph attack")
             if not target_brand:
-                target_brand = heuristics["homograph_brands"][0].get("brand", "").title()
+                target_brand = (
+                    heuristics["homograph_brands"][0].get("brand", "").title()
+                )
         if heuristics.get("homograph"):
             techniques.append("IDN homograph")
 
@@ -105,9 +115,9 @@ def _build_threat_summary(
         goal = "Credential harvesting"
 
     # Attachment malware
-    has_risky_attach = bool(attachment_risks and any(
-        a.get("risk_score", 0) > 0 for a in attachment_risks
-    ))
+    has_risky_attach = bool(
+        attachment_risks and any(a.get("risk_score", 0) > 0 for a in attachment_risks)
+    )
 
     # Language cues
     if language_analysis:
@@ -180,6 +190,7 @@ def _build_threat_summary(
 
 # ── Main report generator ────────────────────────────────────
 
+
 def generate_report(
     email_data: dict,
     auth_results: dict,
@@ -218,11 +229,18 @@ def generate_report(
     lines.append("")
 
     # ── 1. THREAT SUMMARY ────────────────────────────────────
-    lines.extend(_build_threat_summary(
-        risk, brand_impersonation, credential_harvesting,
-        language_analysis, ai_verdict, heuristics,
-        attachment_risks, domain_intelligence,
-    ))
+    lines.extend(
+        _build_threat_summary(
+            risk,
+            brand_impersonation,
+            credential_harvesting,
+            language_analysis,
+            ai_verdict,
+            heuristics,
+            attachment_risks,
+            domain_intelligence,
+        )
+    )
 
     # ── 2. EMAIL METADATA ────────────────────────────────────
     lines.append("━━━ EMAIL METADATA ━━━")
@@ -278,9 +296,9 @@ def generate_report(
         lines.append(f"Origin IP  : {origin_ip or 'not detected'}")
 
         country = header_forensics.get("origin_country", "Unknown")
-        cc      = header_forensics.get("origin_country_code", "")
-        city    = header_forensics.get("origin_city", "")
-        isp     = header_forensics.get("origin_isp", "")
+        cc = header_forensics.get("origin_country_code", "")
+        city = header_forensics.get("origin_city", "")
+        isp = header_forensics.get("origin_isp", "")
         if country and country != "Unknown":
             loc_parts = [p for p in [city, country] if p]
             lines.append(f"Country    : {', '.join(loc_parts)} ({cc})")
@@ -358,12 +376,16 @@ def generate_report(
                     lines.append(f"  • {f['url']}: {_clean_error(f['error'])}")
                 else:
                     lines.append(f"  ⚠️ {f['url']}")
-                    lines.append(f"     Hops: {f['hops']} → Final: {f.get('final_domain', '?')}")
+                    lines.append(
+                        f"     Hops: {f['hops']} → Final: {f.get('final_domain', '?')}"
+                    )
                     for i, step in enumerate(f.get("chain", [])):
                         lines.append(f"     {i}. {step}")
                     if f.get("suspicious_intermediates"):
                         for si in f["suspicious_intermediates"]:
-                            lines.append(f"     ⚠️ Suspicious intermediate: {si['domain']} ({si['reason']})")
+                            lines.append(
+                                f"     ⚠️ Suspicious intermediate: {si['domain']} ({si['reason']})"
+                            )
 
         if suspicious_endpoints:
             lines.append("")
@@ -390,7 +412,11 @@ def generate_report(
                     lines.append("  WHOIS: lookup failed")
                 else:
                     if w.get("created"):
-                        warning = " ⚠️ Newly registered" if (w.get("age_days") or 999) < 30 else ""
+                        warning = (
+                            " ⚠️ Newly registered"
+                            if (w.get("age_days") or 999) < 30
+                            else ""
+                        )
                         lines.append(f"  Created   : {w['created']}{warning}")
                         lines.append(f"  Age       : {w['age_days']} day(s)")
                     if w.get("registrar"):
@@ -398,7 +424,9 @@ def generate_report(
                     if w.get("country"):
                         lines.append(f"  Country   : {w['country']}")
                     if w.get("name_servers"):
-                        lines.append(f"  NS        : {', '.join(w['name_servers'][:4])}")
+                        lines.append(
+                            f"  NS        : {', '.join(w['name_servers'][:4])}"
+                        )
                 lines.append("")
 
             if dns_results:
@@ -409,7 +437,8 @@ def generate_report(
                         lines.append(f"    A   : {', '.join(d['a_records'][:3])}")
                     if d.get("mx_records"):
                         mx_str = ", ".join(
-                            f"{m['host']} (pri {m['priority']})" for m in d["mx_records"][:3]
+                            f"{m['host']} (pri {m['priority']})"
+                            for m in d["mx_records"][:3]
                         )
                         lines.append(f"    MX  : {mx_str}")
                     else:
@@ -437,7 +466,9 @@ def generate_report(
 
     # ── 7. BRAND IMPERSONATION ANALYSIS (unified) ────────────
     _brand_lines = _build_unified_brand_section(
-        brand_impersonation, heuristics, domain_intelligence,
+        brand_impersonation,
+        heuristics,
+        domain_intelligence,
     )
     if _brand_lines:
         lines.extend(_brand_lines)
@@ -473,7 +504,9 @@ def generate_report(
         for r in vt_url_reports:
             if r.get("malicious", 0) > 0:
                 all_clean = False
-                lines.append(f"  🔴 {r.get('url', '?')} — {r['malicious']} engine(s) flagged malicious")
+                lines.append(
+                    f"  🔴 {r.get('url', '?')} — {r['malicious']} engine(s) flagged malicious"
+                )
             elif r.get("error") and r["error"] != "submitted_for_analysis":
                 lines.append(f"  ⚠️ {r.get('url', '?')} — scan unavailable")
             else:
@@ -493,7 +526,9 @@ def generate_report(
         lines.append("VirusTotal – File Hashes:")
         for r in vt_hash_reports:
             if r.get("malicious", 0) > 0:
-                lines.append(f"  🔴 {r.get('sha256', '?')[:32]}… — {r['malicious']} engine(s)")
+                lines.append(
+                    f"  🔴 {r.get('sha256', '?')[:32]}… — {r['malicious']} engine(s)"
+                )
             else:
                 lines.append(f"  🟢 {r.get('sha256', '?')[:32]}… — Clean / Unknown")
         lines.append("")
@@ -523,17 +558,19 @@ def generate_report(
             bl_icon = "🔴" if f["blacklisted"] else "🟢"
             lines.append(f"  {bl_icon} {f['ip']} (domain: {f['domain']})")
             if abuse.get("error"):
-                lines.append(f"     AbuseIPDB: unavailable")
+                lines.append("     AbuseIPDB: unavailable")
             else:
                 lines.append(f"     AbuseIPDB: abuse score {abuse['abuse_score']}%")
                 if abuse.get("total_reports"):
-                    lines.append(f"     Reports: {abuse['total_reports']} | Country: {abuse.get('country', '?')}")
+                    lines.append(
+                        f"     Reports: {abuse['total_reports']} | Country: {abuse.get('country', '?')}"
+                    )
             if spamhaus.get("error"):
-                lines.append(f"     Spamhaus: unavailable")
+                lines.append("     Spamhaus: unavailable")
             elif spamhaus["listed"]:
                 lines.append(f"     Spamhaus: ⚠️ LISTED in {spamhaus['zone']}")
             else:
-                lines.append(f"     Spamhaus: not listed")
+                lines.append("     Spamhaus: not listed")
         lines.append("")
 
     # Passive DNS
@@ -549,7 +586,9 @@ def generate_report(
                     lines.append(f"  • IP {f['ip']}: lookup unavailable")
                 else:
                     flag = " ⚠️" if f["suspicious"] else ""
-                    lines.append(f"  • IP {f['ip']}: {f['domain_count']} domain(s) hosted{flag}")
+                    lines.append(
+                        f"  • IP {f['ip']}: {f['domain_count']} domain(s) hosted{flag}"
+                    )
                     for d in f.get("sample_domains", [])[:5]:
                         lines.append(f"    → {d}")
             lines.append("")
@@ -576,7 +615,9 @@ def generate_report(
     lines.append(f"━━━ ATTACHMENTS ({len(attachments)}) ━━━")
     if attachments:
         for a in attachments:
-            lines.append(f"• {a['filename']} ({a['content_type']}, {a['size_bytes']} bytes)")
+            lines.append(
+                f"• {a['filename']} ({a['content_type']}, {a['size_bytes']} bytes)"
+            )
             lines.append(f"  SHA256: {a['sha256']}")
     else:
         lines.append("  No attachments found.")
@@ -620,7 +661,9 @@ def generate_report(
         lines.append(f"Data completeness : {risk['data_completeness']} / 100")
     lines.append("")
     lines.append("Scoring legend:")
-    lines.append("  0–24 Low | 25–44 Medium | 45–64 Suspicious | 65–84 High | 85–100 Critical")
+    lines.append(
+        "  0–24 Low | 25–44 Medium | 45–64 Suspicious | 65–84 High | 85–100 Critical"
+    )
     lines.append("")
     if risk.get("breakdown"):
         lines.append("Indicator Breakdown:")
@@ -635,6 +678,7 @@ def generate_report(
 
 
 # ── Unified brand impersonation section ──────────────────────
+
 
 def _build_unified_brand_section(
     brand_impersonation: dict | None,
@@ -654,7 +698,7 @@ def _build_unified_brand_section(
     lookalike_lines: list[str] = []
     display_lines: list[str] = []
     body_lines: list[str] = []
-    seen_brands: set[tuple[str, str]] = set()   # (brand, domain) dedup
+    seen_brands: set[tuple[str, str]] = set()  # (brand, domain) dedup
 
     # --- BrandDetector results ---
     if brand_impersonation:
@@ -697,7 +741,11 @@ def _build_unified_brand_section(
             )
 
         for f in heuristics.get("homograph", []):
-            decoded_info = f" (decoded: {f['decoded']})" if f.get("decoded") != f.get("domain") else ""
+            decoded_info = (
+                f" (decoded: {f['decoded']})"
+                if f.get("decoded") != f.get("domain")
+                else ""
+            )
             homograph_lines.append(
                 f"  IDN homograph attack: {f['domain']}{decoded_info} — {f.get('details', '')}"
             )
@@ -714,7 +762,9 @@ def _build_unified_brand_section(
             )
 
     # Build section only if there are findings
-    all_subs = keyword_lines + homograph_lines + lookalike_lines + display_lines + body_lines
+    all_subs = (
+        keyword_lines + homograph_lines + lookalike_lines + display_lines + body_lines
+    )
     if not all_subs:
         return []
 

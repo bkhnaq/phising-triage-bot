@@ -13,7 +13,10 @@ Usage:
 
 import logging
 import os
-import tempfile
+import re
+import unicodedata
+import uuid
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import (
@@ -33,6 +36,7 @@ _MAX_MSG_LEN = 4096
 
 
 # ── Command handlers ─────────────────────────────────────────
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start – greet the analyst."""
@@ -63,6 +67,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── Document handler ─────────────────────────────────────────
 
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle uploaded documents – process .eml files."""
     if update.message is None or update.effective_chat is None:
@@ -74,7 +79,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     document = update.message.document
-    if document is None or not document.file_name or not document.file_name.lower().endswith(".eml"):
+    if (
+        document is None
+        or not document.file_name
+        or not document.file_name.lower().endswith(".eml")
+    ):
         await update.message.reply_text(
             "⚠️ Please send a `.eml` file. Other file types are not supported."
         )
@@ -84,15 +93,29 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # Download the file to a temp location
     tg_file = await document.get_file()
-    local_path = os.path.join(UPLOAD_DIR, document.file_name)
-    await tg_file.download_to_drive(local_path)
+    analysis_id = uuid.uuid4().hex[:8]
+    local_path = _safe_upload_path(document.file_name, prefix=f"tg_{analysis_id}")
+    await tg_file.download_to_drive(str(local_path))
 
     try:
-        report_text = _run_analysis(local_path)
+        logger.info(
+            "Starting Telegram analysis id=%s chat_id=%s file=%s",
+            analysis_id,
+            update.effective_chat.id,
+            local_path.name,
+        )
+        report_text = _run_analysis(str(local_path))
     except Exception:
-        logger.exception("Analysis failed for %s", local_path)
-        await update.message.reply_text("❌ Analysis failed. Check bot logs for details.")
+        logger.exception("Analysis failed id=%s for %s", analysis_id, local_path)
+        await update.message.reply_text(
+            "❌ Analysis failed. Check bot logs for details."
+        )
         return
+    finally:
+        try:
+            local_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Could not clean up temporary upload: %s", local_path)
 
     # Send report (split if longer than Telegram's limit)
     for chunk in _split_message(report_text):
@@ -100,6 +123,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # ── Analysis pipeline ────────────────────────────────────────
+
 
 def _run_analysis(eml_path: str) -> str:
     """
@@ -116,18 +140,130 @@ def _run_analysis(eml_path: str) -> str:
 
 # ── Helpers ──────────────────────────────────────────────────
 
+
 def _split_message(text: str, max_len: int = _MAX_MSG_LEN) -> list[str]:
-    """Split a long message into chunks that fit Telegram's limit."""
+    """Split long text at logical boundaries while respecting Telegram limits."""
     if len(text) <= max_len:
         return [text]
+
+    paragraph_break = "\n\n"
+    paragraphs = text.split(paragraph_break)
     chunks: list[str] = []
-    while text:
-        chunks.append(text[:max_len])
-        text = text[max_len:]
+    current = ""
+
+    for paragraph in paragraphs:
+        block = paragraph if not current else f"{paragraph_break}{paragraph}"
+        if len(current) + len(block) <= max_len:
+            current += block
+            continue
+
+        if current:
+            chunks.extend(_split_large_block(current, max_len))
+            current = ""
+
+        if len(paragraph) <= max_len:
+            current = paragraph
+        else:
+            chunks.extend(_split_large_block(paragraph, max_len))
+
+    if current:
+        chunks.extend(_split_large_block(current, max_len))
+
+    return _balance_markdown_fences(chunks)
+
+
+def _split_large_block(text: str, max_len: int) -> list[str]:
+    """Split a large block by line boundaries first, then by spaces."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: list[str] = []
+    lines = text.split("\n")
+    current = ""
+
+    for line in lines:
+        candidate = line if not current else f"{current}\n{line}"
+        if len(candidate) <= max_len:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        if len(line) <= max_len:
+            current = line
+            continue
+
+        words = line.split(" ")
+        word_chunk = ""
+        for word in words:
+            candidate_word = word if not word_chunk else f"{word_chunk} {word}"
+            if len(candidate_word) <= max_len:
+                word_chunk = candidate_word
+            else:
+                if word_chunk:
+                    chunks.append(word_chunk)
+                if len(word) > max_len:
+                    chunks.extend(
+                        word[i : i + max_len] for i in range(0, len(word), max_len)
+                    )
+                    word_chunk = ""
+                else:
+                    word_chunk = word
+
+        if word_chunk:
+            current = word_chunk
+
+    if current:
+        chunks.append(current)
+
     return chunks
 
 
+def _balance_markdown_fences(chunks: list[str]) -> list[str]:
+    """Avoid splitting a message with unbalanced fenced code blocks."""
+    if not chunks:
+        return []
+
+    balanced: list[str] = []
+    fence_open = False
+    for chunk in chunks:
+        candidate = chunk
+        if fence_open:
+            candidate = f"```\n{candidate}"
+
+        fence_count = len(re.findall(r"```", candidate))
+        if fence_count % 2 == 1:
+            candidate = f"{candidate}\n```"
+            fence_open = True
+        else:
+            fence_open = False
+
+        balanced.append(candidate)
+
+    return balanced
+
+
+def _sanitize_filename(filename: str | None) -> str:
+    normalized = unicodedata.normalize("NFKC", filename or "email.eml")
+    name_only = Path(normalized).name
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name_only)
+    return safe[:100] or "email.eml"
+
+
+def _safe_upload_path(filename: str | None, prefix: str) -> Path:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    base_dir = Path(UPLOAD_DIR).resolve()
+    safe_name = _sanitize_filename(filename)
+    destination = (base_dir / f"{prefix}_{safe_name}").resolve()
+    if destination.parent != base_dir:
+        raise ValueError("Unsafe upload path detected")
+    return destination
+
+
 # ── Bot entry point ──────────────────────────────────────────
+
 
 def start_bot() -> None:
     """Build and run the Telegram bot (blocking)."""

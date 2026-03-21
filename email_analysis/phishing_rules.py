@@ -12,14 +12,19 @@ Usage:
 
 import logging
 import re
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 # Protected brands: brand keyword → set of legitimate sender domains
 _PROTECTED_BRANDS: dict[str, set[str]] = {
     "paypal": {"paypal.com", "paypal.me"},
-    "microsoft": {"microsoft.com", "outlook.com", "office.com", "office365.com", "live.com"},
+    "microsoft": {
+        "microsoft.com",
+        "outlook.com",
+        "office.com",
+        "office365.com",
+        "live.com",
+    },
     "apple": {"apple.com", "icloud.com"},
     "amazon": {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr", "amazon.ca"},
     "google": {"google.com", "gmail.com", "googleapis.com"},
@@ -31,6 +36,7 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 
 
 # ── Rule 1: Display Name Spoofing ────────────────────────────
+
 
 def detect_display_name_spoofing(from_header: str) -> list[dict]:
     """
@@ -68,22 +74,28 @@ def detect_display_name_spoofing(from_header: str) -> list[dict]:
         if brand not in display_lower:
             continue
         # Check if the sender domain belongs to the brand
-        if any(sender_domain == d or sender_domain.endswith("." + d) for d in legit_domains):
+        if any(
+            sender_domain == d or sender_domain.endswith("." + d) for d in legit_domains
+        ):
             continue
-        findings.append({
-            "brand": brand,
-            "sender_domain": sender_domain,
-            "risk_score": 20,
-        })
+        findings.append(
+            {
+                "brand": brand,
+                "sender_domain": sender_domain,
+                "risk_score": 20,
+            }
+        )
         logger.warning(
             "Display name spoofing: brand '%s' in display name, sender domain %s",
-            brand, sender_domain,
+            brand,
+            sender_domain,
         )
 
     return findings
 
 
 # ── Rule 2: Lookalike Domain Detection ───────────────────────
+
 
 def _levenshtein(s: str, t: str) -> int:
     """Compute the Levenshtein edit distance between two strings."""
@@ -102,9 +114,9 @@ def _levenshtein(s: str, t: str) -> int:
         for j in range(1, m + 1):
             cost = 0 if s[i - 1] == t[j - 1] else 1
             curr[j] = min(
-                prev[j] + 1,       # deletion
-                curr[j - 1] + 1,   # insertion
-                prev[j - 1] + cost, # substitution
+                prev[j] + 1,  # deletion
+                curr[j - 1] + 1,  # insertion
+                prev[j - 1] + cost,  # substitution
             )
         prev, curr = curr, prev
 
@@ -179,15 +191,19 @@ def detect_lookalike_domains(urls: list[dict]) -> list[dict]:
                 dist = _levenshtein(segment, brand)
                 if 0 < dist <= 2 and brand not in matched_brands:
                     matched_brands.add(brand)
-                    findings.append({
-                        "domain": domain,
-                        "brand": brand,
-                        "distance": dist,
-                        "risk_score": 20,
-                    })
+                    findings.append(
+                        {
+                            "domain": domain,
+                            "brand": brand,
+                            "distance": dist,
+                            "risk_score": 20,
+                        }
+                    )
                     logger.warning(
                         "Lookalike domain: %s resembles brand '%s' (distance=%d)",
-                        domain, brand, dist,
+                        domain,
+                        brand,
+                        dist,
                     )
 
     return findings

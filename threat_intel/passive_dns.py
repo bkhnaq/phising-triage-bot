@@ -108,7 +108,8 @@ def check_passive_dns(ip_findings: list[dict]) -> list[dict]:
         if suspicious:
             logger.warning(
                 "Passive DNS: IP %s hosts %d domain(s) – suspicious",
-                ip, st["domain_count"],
+                ip,
+                st["domain_count"],
             )
 
         findings.append(finding)

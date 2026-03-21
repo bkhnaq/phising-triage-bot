@@ -21,7 +21,6 @@ Usage:
 
 import logging
 import re
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +34,48 @@ BRAND_DATABASE: dict[str, dict] = {
         "display_names": ["paypal", "pay pal"],
     },
     "google": {
-        "domains": {"google.com", "gmail.com", "googleapis.com", "google.co.uk",
-                     "google.de", "google.fr", "google.ca"},
+        "domains": {
+            "google.com",
+            "gmail.com",
+            "googleapis.com",
+            "google.co.uk",
+            "google.de",
+            "google.fr",
+            "google.ca",
+        },
         "keywords": ["google", "gmail", "g00gle"],
         "display_names": ["google", "gmail"],
     },
     "microsoft": {
-        "domains": {"microsoft.com", "outlook.com", "office.com", "office365.com",
-                     "live.com", "hotmail.com", "onedrive.com", "sharepoint.com",
-                     "microsoftonline.com", "azure.com"},
-        "keywords": ["microsoft", "outlook", "office365", "onedrive", "sharepoint",
-                      "micr0soft", "micros0ft"],
-        "display_names": ["microsoft", "outlook", "office 365", "microsoft 365",
-                          "onedrive", "sharepoint"],
+        "domains": {
+            "microsoft.com",
+            "outlook.com",
+            "office.com",
+            "office365.com",
+            "live.com",
+            "hotmail.com",
+            "onedrive.com",
+            "sharepoint.com",
+            "microsoftonline.com",
+            "azure.com",
+        },
+        "keywords": [
+            "microsoft",
+            "outlook",
+            "office365",
+            "onedrive",
+            "sharepoint",
+            "micr0soft",
+            "micros0ft",
+        ],
+        "display_names": [
+            "microsoft",
+            "outlook",
+            "office 365",
+            "microsoft 365",
+            "onedrive",
+            "sharepoint",
+        ],
     },
     "apple": {
         "domains": {"apple.com", "icloud.com", "me.com", "apple.co.uk"},
@@ -55,14 +83,28 @@ BRAND_DATABASE: dict[str, dict] = {
         "display_names": ["apple", "icloud", "apple id", "apple support"],
     },
     "amazon": {
-        "domains": {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr",
-                     "amazon.ca", "amazon.co.jp", "amazonaws.com", "aws.amazon.com"},
+        "domains": {
+            "amazon.com",
+            "amazon.co.uk",
+            "amazon.de",
+            "amazon.fr",
+            "amazon.ca",
+            "amazon.co.jp",
+            "amazonaws.com",
+            "aws.amazon.com",
+        },
         "keywords": ["amazon", "amaz0n"],
         "display_names": ["amazon", "amazon prime", "aws"],
     },
     "facebook": {
-        "domains": {"facebook.com", "fb.com", "meta.com", "messenger.com",
-                     "instagram.com", "whatsapp.com"},
+        "domains": {
+            "facebook.com",
+            "fb.com",
+            "meta.com",
+            "messenger.com",
+            "instagram.com",
+            "whatsapp.com",
+        },
         "keywords": ["facebook", "faceb00k", "instagram", "whatsapp", "meta"],
         "display_names": ["facebook", "meta", "instagram", "whatsapp"],
     },
@@ -131,8 +173,14 @@ BRAND_DATABASE: dict[str, dict] = {
 # ── Lookalike character map for normalization ────────────────
 
 _LOOKALIKE_MAP: dict[str, str] = {
-    "1": "l", "0": "o", "3": "e", "5": "s", "7": "t",
-    "@": "a", "$": "s", "!": "i",
+    "1": "l",
+    "0": "o",
+    "3": "e",
+    "5": "s",
+    "7": "t",
+    "@": "a",
+    "$": "s",
+    "!": "i",
 }
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
@@ -199,13 +247,15 @@ class BrandDetector:
                 for keyword in brand_info["keywords"]:
                     if keyword in domain_lower or keyword in normalized:
                         seen.add((brand_name, domain_lower))
-                        findings.append({
-                            "type": "domain_keyword",
-                            "brand": brand_name,
-                            "domain": domain,
-                            "detail": f"Brand keyword '{keyword}' in domain",
-                            "risk_score": 25,
-                        })
+                        findings.append(
+                            {
+                                "type": "domain_keyword",
+                                "brand": brand_name,
+                                "domain": domain,
+                                "detail": f"Brand keyword '{keyword}' in domain",
+                                "risk_score": 25,
+                            }
+                        )
                         break
 
                 # Levenshtein distance check
@@ -218,14 +268,16 @@ class BrandDetector:
                         dist = self._levenshtein(segment, brand_name)
                         if 0 < dist <= 2:
                             seen.add((brand_name, domain_lower))
-                            findings.append({
-                                "type": "lookalike",
-                                "brand": brand_name,
-                                "domain": domain,
-                                "distance": dist,
-                                "detail": f"Lookalike: '{segment}' vs '{brand_name}' (distance={dist})",
-                                "risk_score": 20,
-                            })
+                            findings.append(
+                                {
+                                    "type": "lookalike",
+                                    "brand": brand_name,
+                                    "domain": domain,
+                                    "distance": dist,
+                                    "detail": f"Lookalike: '{segment}' vs '{brand_name}' (distance={dist})",
+                                    "risk_score": 20,
+                                }
+                            )
                             break
 
         return findings
@@ -237,7 +289,9 @@ class BrandDetector:
             return findings
 
         angle_match = re.match(r"^(.*?)\s*<[^>]+>", from_header)
-        display_name = angle_match.group(1).strip().strip('"').lower() if angle_match else ""
+        display_name = (
+            angle_match.group(1).strip().strip('"').lower() if angle_match else ""
+        )
         if not display_name:
             return findings
 
@@ -253,14 +307,16 @@ class BrandDetector:
                         sender_domain == d or sender_domain.endswith("." + d)
                         for d in brand_info["domains"]
                     ):
-                        findings.append({
-                            "type": "display_name_spoofing",
-                            "brand": brand_name,
-                            "sender_domain": sender_domain,
-                            "display_name": display_name,
-                            "detail": f"Display name contains '{dn_keyword}' but sender is {sender_domain}",
-                            "risk_score": 20,
-                        })
+                        findings.append(
+                            {
+                                "type": "display_name_spoofing",
+                                "brand": brand_name,
+                                "sender_domain": sender_domain,
+                                "display_name": display_name,
+                                "detail": f"Display name contains '{dn_keyword}' but sender is {sender_domain}",
+                                "risk_score": 20,
+                            }
+                        )
                     break
 
         return findings
@@ -277,20 +333,24 @@ class BrandDetector:
         body_lower = body_text.lower()
 
         for brand_name, brand_info in self.brands.items():
-            if any(sender_domain == d or sender_domain.endswith("." + d)
-                   for d in brand_info["domains"]):
+            if any(
+                sender_domain == d or sender_domain.endswith("." + d)
+                for d in brand_info["domains"]
+            ):
                 continue
 
             for keyword in brand_info["keywords"][:2]:
                 if keyword in body_lower:
-                    findings.append({
-                        "type": "body_brand_mention",
-                        "brand": brand_name,
-                        "sender_domain": sender_domain,
-                        "detail": f"Brand '{brand_name}' mentioned in body but sender is {sender_domain}",
-                        # Body mention alone is contextual evidence, not impersonation evidence.
-                        "risk_score": 0,
-                    })
+                    findings.append(
+                        {
+                            "type": "body_brand_mention",
+                            "brand": brand_name,
+                            "sender_domain": sender_domain,
+                            "detail": f"Brand '{brand_name}' mentioned in body but sender is {sender_domain}",
+                            # Body mention alone is contextual evidence, not impersonation evidence.
+                            "risk_score": 0,
+                        }
+                    )
                     break
 
         return findings[:5]

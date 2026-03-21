@@ -14,6 +14,7 @@ Usage:
 """
 
 import logging
+import importlib.util
 import re
 from pathlib import Path
 from urllib.parse import urlparse
@@ -29,27 +30,42 @@ _BACKEND: str = "none"
 
 try:
     from pyzbar.pyzbar import decode as _pyzbar_decode  # type: ignore[import-untyped]
+
     _BACKEND = "pyzbar"
 except (ImportError, FileNotFoundError, OSError):
-    try:
-        import cv2  # type: ignore[import-untyped]
+    if importlib.util.find_spec("cv2") is not None:
         _BACKEND = "opencv"
-    except ImportError:
+    else:
         logger.warning(
             "No QR decoding backend available. "
             "Install pyzbar (+ zbar DLL) or opencv-python."
         )
 
 # MIME types we'll attempt to scan for QR codes
-_IMAGE_TYPES = frozenset({
-    "image/png", "image/jpeg", "image/jpg",
-    "image/gif", "image/bmp", "image/tiff", "image/webp",
-})
+_IMAGE_TYPES = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/gif",
+        "image/bmp",
+        "image/tiff",
+        "image/webp",
+    }
+)
 
 # Also match by file extension when content_type is generic
-_IMAGE_EXTENSIONS = frozenset({
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp",
-})
+_IMAGE_EXTENSIONS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".webp",
+    }
+)
 
 # Simple URL pattern to validate decoded QR payloads
 _URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
@@ -101,11 +117,16 @@ def scan_attachments_for_qr(attachments: list[dict]) -> list[dict]:
             findings.append(finding)
             logger.warning(
                 "QR code found in %s: type=%s data=%s",
-                attachment.get("filename"), barcode_type, data[:120],
+                attachment.get("filename"),
+                barcode_type,
+                data[:120],
             )
 
-    logger.info("QR scan complete: %d code(s) found in %d attachment(s)",
-                len(findings), len(attachments))
+    logger.info(
+        "QR scan complete: %d code(s) found in %d attachment(s)",
+        len(findings),
+        len(attachments),
+    )
     return findings
 
 
@@ -126,18 +147,21 @@ def extract_qr_urls(qr_findings: list[dict]) -> list[dict]:
         if not url or url in seen:
             continue
         seen.add(url)
-        url_dicts.append({
-            "url": url,
-            "domain": f.get("domain", ""),
-            "is_shortened": False,
-            "expanded_url": url,
-            "source": "qr_code",
-        })
+        url_dicts.append(
+            {
+                "url": url,
+                "domain": f.get("domain", ""),
+                "is_shortened": False,
+                "expanded_url": url,
+                "source": "qr_code",
+            }
+        )
 
     return url_dicts
 
 
 # ── Internal helpers ─────────────────────────────────────────
+
 
 def _is_image(attachment: dict) -> bool:
     """Check whether an attachment is an image we can scan."""
@@ -184,12 +208,15 @@ def _decode_opencv(image_path: str) -> list[tuple[str, str]]:
     results: list[tuple[str, str]] = []
     try:
         import cv2  # type: ignore[import-untyped]
+
         with Image.open(image_path) as img:
             if img.mode not in ("L", "RGB"):
                 img = img.convert("RGB")
             arr = np.array(img)
             detector = cv2.QRCodeDetector()
-            retval, decoded_info, points, straight_qrcode = detector.detectAndDecodeMulti(arr)
+            retval, decoded_info, points, straight_qrcode = (
+                detector.detectAndDecodeMulti(arr)
+            )
             if retval and decoded_info:
                 for data in decoded_info:
                     if data:

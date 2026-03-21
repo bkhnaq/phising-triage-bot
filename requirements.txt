@@ -12,11 +12,18 @@ python-whois>=0.9,<1
 dnspython>=2.4,<3
 
 # QR code scanning
-Pillow>=10.0,<12
+Pillow>=12.1.1,<13
 numpy>=1.26,<3
-pyzbar>=0.1.9,<1            # requires native zbar lib
+pyzbar>=0.1.9,<1            # requires native zbar lib (libzbar0 in Docker)
 opencv-python>=4.8,<5       # fallback QR decoder (self-contained)
 
 # REST API
 fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
+
+# Quality & security tooling (used by CI)
+ruff>=0.6,<1
+black>=26.3.1,<27
+mypy>=1.11,<2
+bandit>=1.7,<2
+pip-audit>=2.7,<3

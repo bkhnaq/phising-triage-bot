@@ -25,7 +25,7 @@ _ABUSEIPDB_TIMEOUT = 10
 
 # Spamhaus DNS-based blocklists
 _SPAMHAUS_ZONES = [
-    "zen.spamhaus.org",       # combined SBL + XBL + PBL
+    "zen.spamhaus.org",  # combined SBL + XBL + PBL
 ]
 
 # Abuse confidence threshold (0-100) — flag if score meets or exceeds this
@@ -188,8 +188,7 @@ def check_ip_reputation(domains: list[str]) -> list[dict]:
         spamhaus = _check_spamhaus(ip)
 
         blacklisted = (
-            abuse["abuse_score"] >= _ABUSE_CONFIDENCE_THRESHOLD
-            or spamhaus["listed"]
+            abuse["abuse_score"] >= _ABUSE_CONFIDENCE_THRESHOLD or spamhaus["listed"]
         )
 
         finding: dict = {
@@ -204,7 +203,10 @@ def check_ip_reputation(domains: list[str]) -> list[dict]:
         if blacklisted:
             logger.warning(
                 "Blacklisted IP: %s (domain: %s, abuse_score=%d, spamhaus=%s)",
-                ip, domain, abuse["abuse_score"], spamhaus["listed"],
+                ip,
+                domain,
+                abuse["abuse_score"],
+                spamhaus["listed"],
             )
 
         findings.append(finding)

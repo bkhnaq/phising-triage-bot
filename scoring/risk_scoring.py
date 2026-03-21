@@ -177,9 +177,7 @@ def calculate_risk(
             if pts <= 0:
                 continue
             category_scores["URL behavior"] += pts
-            breakdown.append(
-                f"Shortened URL: {finding.get('domain', '?')} (+{pts})"
-            )
+            breakdown.append(f"Shortened URL: {finding.get('domain', '?')} (+{pts})")
             weak_signals += 1
 
         for finding in url_intelligence.get("redirect_findings", []):
@@ -209,9 +207,7 @@ def calculate_risk(
             if pts <= 0:
                 continue
             category_scores["URL behavior"] += pts
-            breakdown.append(
-                f"Suspicious endpoint keywords in URL (+{pts})"
-            )
+            breakdown.append(f"Suspicious endpoint keywords in URL (+{pts})")
             weak_signals += 1
 
     # ── 3) ESP detection and contradiction handling ──────────
@@ -222,9 +218,12 @@ def calculate_risk(
             provider = finding.get("provider", "ESP")
 
             redirect_ctx = redirect_by_url.get(url, {})
-            final_domain = finding.get("final_domain") or redirect_ctx.get("final_domain", "")
+            final_domain = finding.get("final_domain") or redirect_ctx.get(
+                "final_domain", ""
+            )
             suspicious_landing = bool(
-                finding.get("suspicious_landing") or redirect_ctx.get("suspicious_landing")
+                finding.get("suspicious_landing")
+                or redirect_ctx.get("suspicious_landing")
             )
 
             has_contradiction = (
@@ -320,11 +319,15 @@ def calculate_risk(
         elif ai_label == "suspicious":
             pts = int(round(3 + 4 * ai_conf))
             category_scores["content/language"] += pts
-            breakdown.append(f"AI suspicious verdict (confidence={ai_conf:.0%}) (+{pts})")
+            breakdown.append(
+                f"AI suspicious verdict (confidence={ai_conf:.0%}) (+{pts})"
+            )
             weak_signals += 1
         elif ai_label == "legitimate" and ai_conf >= 0.60:
             category_scores["ESP detection"] -= 4
-            breakdown.append(f"AI legitimate verdict support (confidence={ai_conf:.0%}) (-4)")
+            breakdown.append(
+                f"AI legitimate verdict support (confidence={ai_conf:.0%}) (-4)"
+            )
 
     if credential_harvesting and credential_harvesting.get("detected"):
         pts = min(20, int(credential_harvesting.get("risk_score", 0)))
@@ -386,9 +389,7 @@ def calculate_risk(
             if pts <= 0:
                 continue
             category_scores["URL behavior"] += pts
-            breakdown.append(
-                f"Suspicious shared hosting density (+{pts})"
-            )
+            breakdown.append(f"Suspicious shared hosting density (+{pts})")
             weak_signals += 1
 
     if domain_intelligence:
@@ -397,9 +398,7 @@ def calculate_risk(
             if pts <= 0:
                 continue
             category_scores["URL behavior"] += pts
-            breakdown.append(
-                f"Young domain signal: {w.get('domain', '?')} (+{pts})"
-            )
+            breakdown.append(f"Young domain signal: {w.get('domain', '?')} (+{pts})")
             weak_signals += 1
 
         for e in domain_intelligence.get("entropy_results", []):
@@ -407,9 +406,7 @@ def calculate_risk(
             if pts <= 0:
                 continue
             category_scores["URL behavior"] += pts
-            breakdown.append(
-                f"High-entropy domain: {e.get('domain', '?')} (+{pts})"
-            )
+            breakdown.append(f"High-entropy domain: {e.get('domain', '?')} (+{pts})")
             weak_signals += 1
 
         for la in domain_intelligence.get("lookalike_results", []):
@@ -457,7 +454,13 @@ def calculate_risk(
     # ── Apply per-category caps ──────────────────────────────
     capped_scores: dict[str, int] = {"data completeness": data_completeness}
 
-    for category in ("auth checks", "URL behavior", "brand impersonation", "content/language", "attachment/malware"):
+    for category in (
+        "auth checks",
+        "URL behavior",
+        "brand impersonation",
+        "content/language",
+        "attachment/malware",
+    ):
         cap = _CATEGORY_CAPS[category]
         capped_scores[category] = int(_clamp(category_scores[category], 0, cap))
 
@@ -537,13 +540,12 @@ def _compute_data_completeness(
 
     if header_forensics and header_forensics.get("error"):
         score -= _DATA_COMPLETENESS_PENALTIES["relay_forensics_unavailable"]
-        completeness_breakdown.append(
-            "Relay forensics unavailable (-6)"
-        )
+        completeness_breakdown.append("Relay forensics unavailable (-6)")
 
     intel_errors = 0
     intel_errors += sum(
-        1 for r in url_reports
+        1
+        for r in url_reports
         if r.get("error") and r.get("error") != "submitted_for_analysis"
     )
     intel_errors += sum(1 for r in hash_reports if r.get("error"))
@@ -635,13 +637,19 @@ def _derive_verdict(risk_score: int, confidence: float, data_completeness: int) 
     if verdict == "HIGH" and confidence < 0.45 and data_completeness < 50:
         return "SUSPICIOUS"
 
-    if verdict in ("LOW", "MEDIUM", "SUSPICIOUS") and confidence < 0.25 and data_completeness < 35:
+    if (
+        verdict in ("LOW", "MEDIUM", "SUSPICIOUS")
+        and confidence < 0.25
+        and data_completeness < 35
+    ):
         return "INCONCLUSIVE"
 
     return verdict
 
 
-def _expected_context_roots(auth_results: dict, brand_impersonation: dict | None) -> set[str]:
+def _expected_context_roots(
+    auth_results: dict, brand_impersonation: dict | None
+) -> set[str]:
     """Build expected landing-domain context from sender and detected brand context."""
     roots: set[str] = set()
 

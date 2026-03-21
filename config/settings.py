@@ -18,9 +18,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # Leave empty to allow all chats (not recommended for production)
 _allowed = os.getenv("ALLOWED_CHAT_IDS", "")
 ALLOWED_CHAT_IDS: list[int] = (
-    [int(cid.strip()) for cid in _allowed.split(",") if cid.strip()]
-    if _allowed
-    else []
+    [int(cid.strip()) for cid in _allowed.split(",") if cid.strip()] if _allowed else []
 )
 
 # ── Threat Intelligence APIs ─────────────────────────────────
@@ -40,6 +38,9 @@ RISK_MEDIUM_THRESHOLD = int(os.getenv("RISK_MEDIUM_THRESHOLD", "40"))
 # ── REST API (FastAPI) ───────────────────────────────────────
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
+API_KEY = os.getenv("API_KEY", "")
+RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "60"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 # ── File Storage ─────────────────────────────────────────────
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")

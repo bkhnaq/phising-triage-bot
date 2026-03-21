@@ -12,7 +12,6 @@ Usage:
 """
 
 import logging
-from urllib.parse import quote
 
 import requests
 
@@ -55,6 +54,7 @@ def check_url(url: str) -> dict:
     try:
         # URL identifier used by VT v3 is base64url of the URL
         import base64
+
         url_id = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
 
         resp = requests.get(

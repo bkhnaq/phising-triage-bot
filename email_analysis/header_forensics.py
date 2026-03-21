@@ -41,7 +41,7 @@ _GEO_TIMEOUT = 5  # seconds
 
 # ── Received-header parsing patterns ─────────────────────────────────────────
 _FROM_HOST_RE = re.compile(r"from\s+(\S+)", re.IGNORECASE)
-_BY_HOST_RE   = re.compile(r"\bby\s+(\S+)", re.IGNORECASE)
+_BY_HOST_RE = re.compile(r"\bby\s+(\S+)", re.IGNORECASE)
 # Match an IPv4 address, optionally bracketed: [1.2.3.4] or 1.2.3.4
 _IPV4_RE = re.compile(r"\[?((?:\d{1,3}\.){3}\d{1,3})\]?")
 
@@ -57,25 +57,42 @@ _PRIVATE_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
 # ── Known MTA relay services ──────────────────────────────────────────────────
 # Relay through these is expected even when the From domain differs,
 # so they are excluded from the domain-mismatch check.
-_KNOWN_MTA_ROOTS: frozenset[str] = frozenset({
-    "gmail.com", "google.com", "googlemail.com",
-    "yahoo.com", "yahoodns.net",
-    "outlook.com", "hotmail.com", "microsoft.com", "office365.com",
-    "protonmail.ch", "protonmail.com",
-    "sendgrid.net", "sendgrid.com",
-    "mailgun.org", "mailgun.net",
-    "amazonses.com", "amazonaws.com",
-    "zoho.com", "zohomail.com",
-    "icloud.com", "me.com",
-    "fastmail.com", "fastmail.fm",
-    "mailchimp.com", "mandrillapp.com",
-    "postmarkapp.com",
-    "sparkpostmail.com",
-    "mx.example.com",
-})
+_KNOWN_MTA_ROOTS: frozenset[str] = frozenset(
+    {
+        "gmail.com",
+        "google.com",
+        "googlemail.com",
+        "yahoo.com",
+        "yahoodns.net",
+        "outlook.com",
+        "hotmail.com",
+        "microsoft.com",
+        "office365.com",
+        "protonmail.ch",
+        "protonmail.com",
+        "sendgrid.net",
+        "sendgrid.com",
+        "mailgun.org",
+        "mailgun.net",
+        "amazonses.com",
+        "amazonaws.com",
+        "zoho.com",
+        "zohomail.com",
+        "icloud.com",
+        "me.com",
+        "fastmail.com",
+        "fastmail.fm",
+        "mailchimp.com",
+        "mandrillapp.com",
+        "postmarkapp.com",
+        "sparkpostmail.com",
+        "mx.example.com",
+    }
+)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def run_header_forensics(email_data: dict) -> dict:
     """
@@ -109,24 +126,24 @@ def run_header_forensics(email_data: dict) -> dict:
         geo: dict = {}
         if origin_ip:
             geo = _geolocate_ip(origin_ip)
-            result["origin_country"]      = geo.get("country", "Unknown")
+            result["origin_country"] = geo.get("country", "Unknown")
             result["origin_country_code"] = geo.get("countryCode", "")
-            result["origin_city"]         = geo.get("city", "")
-            result["origin_isp"]          = geo.get("isp", "")
-            result["origin_org"]          = geo.get("org", "")
-            result["origin_asn"]          = geo.get("as", "")
-            result["origin_asname"]       = geo.get("asname", "")
-            result["origin_is_hosting"]   = bool(geo.get("hosting", False))
-            result["origin_is_proxy"]     = bool(geo.get("proxy", False))
+            result["origin_city"] = geo.get("city", "")
+            result["origin_isp"] = geo.get("isp", "")
+            result["origin_org"] = geo.get("org", "")
+            result["origin_asn"] = geo.get("as", "")
+            result["origin_asname"] = geo.get("asname", "")
+            result["origin_is_hosting"] = bool(geo.get("hosting", False))
+            result["origin_is_proxy"] = bool(geo.get("proxy", False))
 
         # ── Step 4: Spoof / relay analysis ───────────────────────────────
         from_domain = _extract_from_domain(from_raw)
         result["from_domain"] = from_domain
 
         warnings, risk_score = _analyze_relay(from_domain, relay_chain, geo)
-        result["warnings"]          = warnings
+        result["warnings"] = warnings
         result["spoofing_detected"] = bool(warnings)
-        result["risk_score"]        = risk_score
+        result["risk_score"] = risk_score
 
         logger.info(
             "Header forensics: origin_ip=%s country=%s hosting=%s proxy=%s "
@@ -149,6 +166,7 @@ def run_header_forensics(email_data: dict) -> dict:
 
 # ── Relay chain parsing ───────────────────────────────────────────────────────
 
+
 def _parse_received_chain(headers: list[tuple[str, str]]) -> list[dict]:
     """
     Parse all Received headers into a structured relay chain.
@@ -169,10 +187,10 @@ def _parse_hop(raw: str) -> dict:
     clean = re.sub(r"\s+", " ", raw)
 
     from_match = _FROM_HOST_RE.search(clean)
-    by_match   = _BY_HOST_RE.search(clean)
+    by_match = _BY_HOST_RE.search(clean)
 
-    server    = from_match.group(1).rstrip(";,") if from_match else None
-    by_server = by_match.group(1).rstrip(";,")   if by_match   else None
+    server = from_match.group(1).rstrip(";,") if from_match else None
+    by_server = by_match.group(1).rstrip(";,") if by_match else None
 
     # Extract the first IPv4 address present (usually inside parens after hostname).
     ip_match = _IPV4_RE.search(clean)
@@ -184,9 +202,9 @@ def _parse_hop(raw: str) -> dict:
 
     return {
         "server": server,
-        "ip":     ip,
-        "by":     by_server,
-        "raw":    raw,
+        "ip": ip,
+        "by": by_server,
+        "raw": raw,
     }
 
 
@@ -213,6 +231,7 @@ def _is_private_ip(ip: str) -> bool:
 
 # ── Geolocation ───────────────────────────────────────────────────────────────
 
+
 def _geolocate_ip(ip: str) -> dict:
     """
     Query ip-api.com for country, city, ISP, and hosting/proxy metadata.
@@ -227,7 +246,9 @@ def _geolocate_ip(ip: str) -> dict:
         resp.raise_for_status()
         data: dict = resp.json()
         if data.get("status") != "success":
-            logger.warning("ip-api returned non-success for %s: %s", ip, data.get("message"))
+            logger.warning(
+                "ip-api returned non-success for %s: %s", ip, data.get("message")
+            )
             return {}
         return data
     except requests.Timeout:
@@ -239,6 +260,7 @@ def _geolocate_ip(ip: str) -> dict:
 
 
 # ── Domain helpers ────────────────────────────────────────────────────────────
+
 
 def _extract_from_domain(from_raw: str) -> str:
     """Extract and normalise the sending domain from a From header value."""
@@ -253,6 +275,7 @@ def _root_domain(domain: str) -> str:
 
 
 # ── Relay analysis ────────────────────────────────────────────────────────────
+
 
 def _analyze_relay(
     from_domain: str,
@@ -294,7 +317,7 @@ def _analyze_relay(
             risk += 10
 
     # ── 4. Country (informational only) ──────────────────────────────────
-    country      = geo.get("country", "")
+    country = geo.get("country", "")
     country_code = geo.get("countryCode", "")
     if country:
         warnings.append(f"Origin IP geolocation: {country} ({country_code})")
@@ -337,23 +360,24 @@ def _origin_relay_mismatch(from_root: str, relay_chain: list[dict]) -> list[str]
 
 # ── Zero-value result ─────────────────────────────────────────────────────────
 
+
 def _empty_result() -> dict:
     """Return a safe zeroed-out result dict for the module."""
     return {
-        "origin_ip":           None,
-        "origin_country":      "Unknown",
+        "origin_ip": None,
+        "origin_country": "Unknown",
         "origin_country_code": "",
-        "origin_city":         "",
-        "origin_isp":          "",
-        "origin_org":          "",
-        "origin_asn":          "",
-        "origin_asname":       "",
-        "origin_is_hosting":   False,
-        "origin_is_proxy":     False,
-        "relay_chain":         [],
-        "from_domain":         "",
-        "spoofing_detected":   False,
-        "warnings":            [],
-        "risk_score":          0,
-        "error":               None,
+        "origin_city": "",
+        "origin_isp": "",
+        "origin_org": "",
+        "origin_asn": "",
+        "origin_asname": "",
+        "origin_is_hosting": False,
+        "origin_is_proxy": False,
+        "relay_chain": [],
+        "from_domain": "",
+        "spoofing_detected": False,
+        "warnings": [],
+        "risk_score": 0,
+        "error": None,
     }

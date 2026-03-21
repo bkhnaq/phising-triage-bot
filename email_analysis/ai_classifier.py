@@ -32,7 +32,9 @@ _TIMEOUT = 30
 _MAX_BODY_CHARS = 2000  # Truncate body to keep token usage low
 _MAX_URLS = 5
 _ALLOWED_VERDICTS = {"phishing", "suspicious", "legitimate"}
-_EMAIL_PATTERN = re.compile(r"(?P<local>[A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_EMAIL_PATTERN = re.compile(
+    r"(?P<local>[A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+)
 
 _SYSTEM_PROMPT = """
 You are a senior SOC email security analyst.
@@ -118,10 +120,7 @@ def classify_email(
         data = resp.json()
         # Groq response: choices[0].message.content
         reply = (
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-            .strip()
+            data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         )
         if not reply:
             raise ValueError("Empty response from LLM")
@@ -150,7 +149,9 @@ def classify_email(
 
         logger.info(
             "AI classifier: %s (confidence=%.2f, score=%d)",
-            result["verdict"], result["confidence"], result["risk_score"],
+            result["verdict"],
+            result["confidence"],
+            result["risk_score"],
         )
 
     except requests.Timeout as exc:
@@ -168,7 +169,7 @@ def classify_email(
 
 def _build_prompt(email_data: dict, urls: list[dict], rule_findings: list[str]) -> str:
     """Build the user prompt with metadata, rule findings, and body excerpt."""
-    body = (email_data.get("body_text") or email_data.get("body_html") or "")
+    body = email_data.get("body_text") or email_data.get("body_html") or ""
     body = _strip_html(body)
     body = mask_email(body)
 
@@ -178,7 +179,9 @@ def _build_prompt(email_data: dict, urls: list[dict], rule_findings: list[str]) 
 
     # Keep only a small URL sample to avoid oversized prompts
     limited_urls = urls[:_MAX_URLS]
-    url_items = [mask_email(str(u.get("url", ""))) for u in limited_urls if u.get("url")]
+    url_items = [
+        mask_email(str(u.get("url", ""))) for u in limited_urls if u.get("url")
+    ]
     if url_items:
         url_list = "\n".join(f"  - {u}" for u in url_items)
         if len(urls) > _MAX_URLS:
@@ -186,8 +189,12 @@ def _build_prompt(email_data: dict, urls: list[dict], rule_findings: list[str]) 
     else:
         url_list = "  (none)"
 
-    findings_items = [mask_email(str(f).strip()) for f in rule_findings if str(f).strip()]
-    findings_list = "\n".join(f"  - {f}" for f in findings_items) if findings_items else "  (none)"
+    findings_items = [
+        mask_email(str(f).strip()) for f in rule_findings if str(f).strip()
+    ]
+    findings_list = (
+        "\n".join(f"  - {f}" for f in findings_items) if findings_items else "  (none)"
+    )
 
     return (
         f"Subject: {mask_email(str(email_data.get('subject', 'N/A')))}\n"

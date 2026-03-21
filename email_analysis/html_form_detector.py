@@ -49,19 +49,26 @@ class _FormParser(HTMLParser):
         elif tag_lower == "input":
             input_type = attr_dict.get("type", "text").lower()
             if input_type == "password":
-                self.password_inputs.append({
-                    "name": attr_dict.get("name", ""),
-                    "in_form": self._in_form,
-                })
+                self.password_inputs.append(
+                    {
+                        "name": attr_dict.get("name", ""),
+                        "in_form": self._in_form,
+                    }
+                )
             elif input_type == "hidden":
-                self.hidden_inputs.append({
-                    "name": attr_dict.get("name", ""),
-                    "value": attr_dict.get("value", ""),
-                })
+                self.hidden_inputs.append(
+                    {
+                        "name": attr_dict.get("name", ""),
+                        "value": attr_dict.get("value", ""),
+                    }
+                )
             elif input_type == "submit":
                 self.submit_buttons += 1
 
-        elif tag_lower == "button" and attr_dict.get("type", "").lower() in ("submit", ""):
+        elif tag_lower == "button" and attr_dict.get("type", "").lower() in (
+            "submit",
+            "",
+        ):
             self.submit_buttons += 1
 
     def handle_endtag(self, tag: str):
@@ -137,9 +144,7 @@ def detect_credential_harvesting(body_html: str) -> dict:
                 parsed = urlparse(action)
                 if parsed.scheme in ("http", "https") and parsed.netloc:
                     result["post_endpoints"].append(action)
-                    findings.append(
-                        f"External POST endpoint: {action}"
-                    )
+                    findings.append(f"External POST endpoint: {action}")
                     result["risk_score"] += 15
 
     # Check for password fields
@@ -175,7 +180,8 @@ def detect_credential_harvesting(body_html: str) -> dict:
     if result["detected"]:
         logger.warning(
             "Credential harvesting indicators: %d finding(s), risk=%d",
-            len(findings), result["risk_score"],
+            len(findings),
+            result["risk_score"],
         )
 
     return result

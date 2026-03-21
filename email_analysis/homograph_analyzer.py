@@ -92,7 +92,9 @@ def detect_homograph_brand(domain: str) -> dict | None:
         if brand in normalized and brand not in domain_lower:
             logger.warning(
                 "Homograph brand impersonation: %s → %s (brand: %s)",
-                domain, normalized, brand,
+                domain,
+                normalized,
+                brand,
             )
             return {
                 "original_domain": domain,
