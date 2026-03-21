@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 
 from config.settings import (
     API_KEY,
+    ENV,
     RATE_LIMIT_MAX_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
     UPLOAD_DIR,
@@ -133,6 +134,12 @@ async def api_key_auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     if not API_KEY:
+        if ENV == "dev":
+            logger.warning(
+                "API_KEY is not configured, but ENV=dev; allowing API request"
+            )
+            return await call_next(request)
+
         logger.warning(
             "API_KEY is not configured; rejecting authenticated endpoint request"
         )
@@ -143,7 +150,7 @@ async def api_key_auth_middleware(request: Request, call_next):
                 "request_id": _request_id_from(request),
                 "error": {
                     "code": "service_unavailable",
-                    "message": "API authentication is not configured",
+                    "message": "API is disabled. Please configure API_KEY in environment variables.",
                 },
             },
         )

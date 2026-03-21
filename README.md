@@ -74,6 +74,7 @@ phishing-triage-bot/
 ├── report/
 │   └── report_generator.py          # Markdown report builder
 ├── requirements.txt
+├── requirements-dev.txt
 ├── Dockerfile
 ├── .env.example
 ├── .gitignore
@@ -133,6 +134,8 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
+# For local development/CI tooling (ruff, black, mypy, bandit, pip-audit)
+pip install -r requirements-dev.txt
 ```
 
 ### 3. Get your API keys
@@ -176,7 +179,39 @@ Run API mode:
 docker run --env-file .env -p 8000:8000 phishing-triage-bot python main.py --api
 ```
 
-For API requests (except `/health`), send your configured `X-API-Key` header.
+## API Authentication (API_KEY Required)
+
+By default, API endpoints (except `/health`) require `API_KEY`. If `API_KEY` is missing in production mode, the API returns:
+
+```json
+{
+        "success": false,
+        "error": {
+                "code": "service_unavailable",
+                "message": "API is disabled. Please configure API_KEY in environment variables."
+        }
+}
+```
+
+Set the key:
+
+```bash
+export API_KEY=your_key
+```
+
+Call the API with the header:
+
+```bash
+curl -X POST http://localhost:8000/analyze_email \
+        -H "content-type: application/json" \
+        -H "x-api-key: your_key" \
+        -d '{"email_raw":"From: a@b.com\nTo: c@d.com\nSubject: test\n\nhello"}'
+```
+
+Development mode behavior:
+
+- `ENV=dev` and missing `API_KEY` → requests are allowed (local testing only).
+- `ENV=prod` (default) and missing `API_KEY` → API is disabled for protected endpoints.
 
 ## API Notes
 
