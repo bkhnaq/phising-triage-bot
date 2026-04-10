@@ -14,13 +14,21 @@ Usage:
 """
 
 import logging
+import importlib
 import importlib.util
 import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-import numpy as np
-from PIL import Image
+try:
+    np = importlib.import_module("numpy")
+except ImportError:
+    np = None
+
+try:
+    Image = importlib.import_module("PIL.Image")
+except ImportError:
+    Image = None
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +198,12 @@ def _decode_qr(image_path: str) -> list[tuple[str, str]]:
 def _decode_pyzbar(image_path: str) -> list[tuple[str, str]]:
     """Decode using pyzbar."""
     results: list[tuple[str, str]] = []
+    if Image is None:
+        logger.debug("Pillow not available; skipping pyzbar decode")
+        return results
     try:
         with Image.open(image_path) as img:
-            scan_img: Image.Image = img
+            scan_img = img
             if scan_img.mode not in ("L", "RGB"):
                 scan_img = scan_img.convert("RGB")
             decoded = _pyzbar_decode(scan_img)
@@ -207,11 +218,14 @@ def _decode_pyzbar(image_path: str) -> list[tuple[str, str]]:
 def _decode_opencv(image_path: str) -> list[tuple[str, str]]:
     """Decode using OpenCV's QRCodeDetector."""
     results: list[tuple[str, str]] = []
+    if Image is None or np is None:
+        logger.debug("Pillow or numpy not available; skipping OpenCV decode")
+        return results
     try:
         import cv2  # type: ignore[import-untyped]
 
         with Image.open(image_path) as img:
-            scan_img: Image.Image = img
+            scan_img = img
             if scan_img.mode not in ("L", "RGB"):
                 scan_img = scan_img.convert("RGB")
             arr = np.array(scan_img)

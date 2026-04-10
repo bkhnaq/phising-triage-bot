@@ -17,10 +17,18 @@ Usage:
 
 import logging
 import math
+import importlib
 from datetime import datetime, timezone
 
-import dns.resolver
-import whois
+try:
+    dns_resolver = importlib.import_module("dns.resolver")
+except ImportError:
+    dns_resolver = None
+
+try:
+    whois_lib = importlib.import_module("whois")
+except ImportError:
+    whois_lib = None
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +140,12 @@ def whois_lookup(domain: str) -> dict:
         "error": None,
     }
 
+    if whois_lib is None:
+        result["error"] = "python-whois not installed"
+        return result
+
     try:
-        w = whois.whois(domain)
+        w = whois_lib.whois(domain)
 
         # Clean WHOIS text
         raw_text = w.get("text") or ""
@@ -233,7 +245,12 @@ def dns_lookup(domain: str) -> dict:
         "error": None,
     }
 
-    resolver = dns.resolver.Resolver()
+    if dns_resolver is None:
+        result["error"] = "dnspython not installed"
+        result["risk_score"] = 10
+        return result
+
+    resolver = dns_resolver.Resolver()
     resolver.timeout = _DNS_TIMEOUT
     resolver.lifetime = _DNS_TIMEOUT
 
@@ -257,10 +274,10 @@ def dns_lookup(domain: str) -> dict:
             else:
                 result[key] = [str(r).strip('"') for r in answers]
         except (
-            dns.resolver.NoAnswer,
-            dns.resolver.NXDOMAIN,
-            dns.resolver.NoNameservers,
-            dns.resolver.Timeout,
+            dns_resolver.NoAnswer,
+            dns_resolver.NXDOMAIN,
+            dns_resolver.NoNameservers,
+            dns_resolver.Timeout,
         ):
             continue
         except Exception as exc:

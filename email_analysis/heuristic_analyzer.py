@@ -14,11 +14,16 @@ Usage:
 
 import logging
 import math
+import importlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import requests
-import whois
+
+try:
+    whois_lib = importlib.import_module("whois")
+except ImportError:
+    whois_lib = None
 
 from email_analysis.homograph_analyzer import detect_homograph_brands
 
@@ -274,8 +279,12 @@ def get_domain_age(domain: str) -> dict:
         "error": None,
     }
 
+    if whois_lib is None:
+        result["error"] = "python-whois not installed"
+        return result
+
     try:
-        w = whois.whois(domain)
+        w = whois_lib.whois(domain)
 
         # ── Clean raw WHOIS text ─────────────────────────────
         raw_text = w.get("text") or ""

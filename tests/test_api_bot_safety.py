@@ -1,8 +1,9 @@
 import sys
 import types
+import importlib
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+TestClient = importlib.import_module("starlette.testclient").TestClient
 
 
 def _client_with_auth(monkeypatch, api_key: str = "test-key"):

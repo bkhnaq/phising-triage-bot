@@ -10,6 +10,7 @@ Run with:
 
 import logging
 import sys
+import importlib
 
 from config.settings import LOG_LEVEL, validate_startup_settings
 
@@ -37,9 +38,9 @@ def main() -> None:
 
     if run_api:
         logger.info("Starting Phishing Triage API server…")
-
-        import uvicorn
         from config.settings import API_HOST, API_PORT
+
+        uvicorn = importlib.import_module("uvicorn")
 
         uvicorn.run("api.routes:app", host=API_HOST, port=API_PORT)
     else:

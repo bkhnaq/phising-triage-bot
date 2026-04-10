@@ -9,12 +9,17 @@ Usage:
     results = check_ip_reputation(["93.184.216.34"])
 """
 
-import dns.resolver
 import logging
 import socket
+import importlib
 from ipaddress import ip_address, AddressValueError
 
 import requests
+
+try:
+    dns_resolver = importlib.import_module("dns.resolver")
+except ImportError:
+    dns_resolver = None
 
 from config.settings import ABUSEIPDB_API_KEY
 
@@ -129,6 +134,10 @@ def _check_spamhaus(ip: str) -> dict:
         "error": None,
     }
 
+    if dns_resolver is None:
+        result["error"] = "dnspython not installed"
+        return result
+
     try:
         parsed = ip_address(ip)
         if parsed.version != 4:
@@ -143,16 +152,16 @@ def _check_spamhaus(ip: str) -> dict:
     for zone in _SPAMHAUS_ZONES:
         query = f"{reversed_ip}.{zone}"
         try:
-            dns.resolver.resolve(query, "A")
+            dns_resolver.resolve(query, "A")
             # DNS returned a result → IP is listed in this zone
             result["listed"] = True
             result["zone"] = zone
             logger.warning("Spamhaus hit: %s listed in %s", ip, zone)
             break
-        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        except (dns_resolver.NXDOMAIN, dns_resolver.NoAnswer):
             # Not listed in this zone
             continue
-        except dns.resolver.Timeout:
+        except dns_resolver.Timeout:
             result["error"] = f"DNS timeout for {zone}"
             logger.debug("Spamhaus lookup timeout for %s in %s", ip, zone)
         except Exception as exc:
