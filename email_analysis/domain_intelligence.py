@@ -19,14 +19,19 @@ import logging
 import math
 import importlib
 from datetime import datetime, timezone
+from typing import Any
+
+from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.domain_utils import base_label, registered_domain
+from threat_intel.cache import TTLCache
 
 try:
-    dns_resolver = importlib.import_module("dns.resolver")
+    dns_resolver: Any | None = importlib.import_module("dns.resolver")
 except ImportError:
     dns_resolver = None
 
 try:
-    whois_lib = importlib.import_module("whois")
+    whois_lib: Any | None = importlib.import_module("whois")
 except ImportError:
     whois_lib = None
 
@@ -37,6 +42,8 @@ _DNS_TIMEOUT = 5
 
 # Entropy threshold for flagging suspicious domains
 _ENTROPY_THRESHOLD = 3.5
+_WHOIS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
+_DNS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 # Protected brands for lookalike detection
 _PROTECTED_BRANDS: dict[str, set[str]] = {
@@ -144,6 +151,14 @@ def whois_lookup(domain: str) -> dict:
         result["error"] = "python-whois not installed"
         return result
 
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
+        return result
+
+    found, cached = _WHOIS_CACHE.get(domain)
+    if found:
+        return cached
+
     try:
         w = whois_lib.whois(domain)
 
@@ -220,6 +235,7 @@ def whois_lookup(domain: str) -> dict:
         )
         logger.debug("WHOIS lookup failed for %s: %s", domain, first_line)
 
+    _WHOIS_CACHE.set(domain, result)
     return result
 
 
@@ -249,6 +265,14 @@ def dns_lookup(domain: str) -> dict:
         result["error"] = "dnspython not installed"
         result["risk_score"] = 10
         return result
+
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
+        return result
+
+    found, cached = _DNS_CACHE.get(domain)
+    if found:
+        return cached
 
     resolver = dns_resolver.Resolver()
     resolver.timeout = _DNS_TIMEOUT
@@ -292,6 +316,7 @@ def dns_lookup(domain: str) -> dict:
         result["risk_score"] += 10
         result["error"] = "No A or MX records found"
 
+    _DNS_CACHE.set(domain, result)
     return result
 
 
@@ -376,24 +401,11 @@ def _deduplicate_domains(domains: list[str]) -> list[str]:
 
 
 def _registrable_domain(netloc: str) -> str:
-    host = netloc.split(":")[0].strip().lower()
-    if not host:
-        return ""
-    parts = host.split(".")
-    if len(parts) >= 2:
-        if len(parts) >= 3 and parts[-2] in ("co", "com", "org", "net", "ac", "gov"):
-            return ".".join(parts[-3:])
-        return ".".join(parts[-2:])
-    return host
+    return registered_domain(netloc)
 
 
 def _extract_base_label(domain: str) -> str:
-    parts = domain.lower().split(".")
-    if len(parts) >= 3 and len(parts[-2]) <= 3:
-        return parts[-3]
-    if len(parts) >= 2:
-        return parts[-2]
-    return parts[0]
+    return base_label(domain)
 
 
 def _candidate_segments(base_label: str) -> list[str]:

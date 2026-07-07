@@ -25,9 +25,13 @@ RUN mkdir -p /app/uploads
 
 # Run as non-root user for security
 RUN addgroup --system botuser && adduser --system --ingroup botuser botuser
+RUN chown -R botuser:botuser /app/uploads
 USER botuser
 
 # Expose API port (used only in --api mode)
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python main.py --healthcheck
 
 CMD ["python", "main.py"]

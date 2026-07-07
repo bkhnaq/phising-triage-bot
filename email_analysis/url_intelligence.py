@@ -19,10 +19,16 @@ from urllib.parse import urlparse
 
 import requests
 
+from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.domain_utils import domain_info, is_domain_or_subdomain
+from threat_intel.cache import TTLCache
+
 logger = logging.getLogger(__name__)
 
 _REDIRECT_TIMEOUT = 5
 _MAX_REDIRECTS = 10
+_EXPAND_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
+_REDIRECT_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -245,6 +251,13 @@ def expand_url(short_url: str) -> str:
     """
     Follow redirects on a shortened URL and return the final destination.
     """
+    if OFFLINE_MODE:
+        return short_url
+
+    found, cached = _EXPAND_CACHE.get(short_url)
+    if found:
+        return cached
+
     try:
         resp = requests.head(
             short_url,
@@ -252,10 +265,13 @@ def expand_url(short_url: str) -> str:
             timeout=_REDIRECT_TIMEOUT,
             headers={"User-Agent": "Mozilla/5.0 (PhishBot URL Expander)"},
         )
-        return resp.url
+        expanded = resp.url
     except requests.RequestException as exc:
         logger.debug("Could not expand URL %s: %s", short_url, exc)
-        return short_url
+        expanded = short_url
+
+    _EXPAND_CACHE.set(short_url, expanded)
+    return expanded
 
 
 def analyze_redirect_chains(urls: list[dict]) -> list[dict]:
@@ -325,6 +341,15 @@ def follow_redirect_chain(
         "error": None,
     }
 
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
+        return result
+
+    cache_key = f"{source}\n{url}"
+    found, cached = _REDIRECT_CACHE.get(cache_key)
+    if found:
+        return cached
+
     try:
         resp = requests.get(
             url,
@@ -389,6 +414,7 @@ def follow_redirect_chain(
         result["error"] = _friendly_error(exc)
         logger.debug("Redirect chain check failed for %s: %s", url, exc)
 
+    _REDIRECT_CACHE.set(cache_key, result)
     return result
 
 
@@ -547,8 +573,8 @@ def _is_suspicious_landing(url: str, domain: str) -> tuple[bool, str]:
 
 
 def _normalize_domain(netloc: str) -> str:
-    return (netloc or "").lower().split(":", 1)[0].strip().rstrip(".")
+    return domain_info(netloc).ascii_host
 
 
 def _domain_matches(domain: str, candidates: tuple[str, ...]) -> bool:
-    return any(domain == c or domain.endswith("." + c) for c in candidates)
+    return any(is_domain_or_subdomain(domain, candidate) for candidate in candidates)

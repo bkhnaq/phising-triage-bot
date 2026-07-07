@@ -18,15 +18,16 @@ import importlib
 import importlib.util
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 try:
-    np = importlib.import_module("numpy")
+    np: Any | None = importlib.import_module("numpy")
 except ImportError:
     np = None
 
 try:
-    Image = importlib.import_module("PIL.Image")
+    Image: Any | None = importlib.import_module("PIL.Image")
 except ImportError:
     Image = None
 

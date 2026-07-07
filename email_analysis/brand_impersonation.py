@@ -22,6 +22,8 @@ Usage:
 import logging
 import re
 
+from email_analysis.domain_utils import any_domain_match, base_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -240,7 +242,7 @@ class BrandDetector:
                     continue
 
                 legit = brand_info["domains"]
-                if domain_lower in legit:
+                if any_domain_match(domain_lower, legit):
                     continue
 
                 # Keyword match in domain
@@ -303,10 +305,7 @@ class BrandDetector:
         for brand_name, brand_info in self.brands.items():
             for dn_keyword in brand_info.get("display_names", []):
                 if dn_keyword in display_name:
-                    if not any(
-                        sender_domain == d or sender_domain.endswith("." + d)
-                        for d in brand_info["domains"]
-                    ):
+                    if not any_domain_match(sender_domain, brand_info["domains"]):
                         findings.append(
                             {
                                 "type": "display_name_spoofing",
@@ -333,10 +332,7 @@ class BrandDetector:
         body_lower = body_text.lower()
 
         for brand_name, brand_info in self.brands.items():
-            if any(
-                sender_domain == d or sender_domain.endswith("." + d)
-                for d in brand_info["domains"]
-            ):
+            if any_domain_match(sender_domain, brand_info["domains"]):
                 continue
 
             for keyword in brand_info["keywords"][:2]:
@@ -364,12 +360,7 @@ class BrandDetector:
 
     @staticmethod
     def _extract_base_label(domain: str) -> str:
-        parts = domain.split(".")
-        if len(parts) >= 3 and len(parts[-2]) <= 3:
-            return parts[-3]
-        if len(parts) >= 2:
-            return parts[-2]
-        return parts[0]
+        return base_label(domain)
 
     @staticmethod
     def _candidate_segments(base_label: str) -> list[str]:

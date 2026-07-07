@@ -39,6 +39,9 @@ def test_analyze_file_cleans_up_temporary_upload(monkeypatch, tmp_path: Path) ->
     fake_pipeline_module = types.ModuleType("email_analysis.pipeline")
 
     class FakePipeline:
+        def __init__(self, *args, **kwargs):
+            pass
+
         def analyze_file(self, eml_path: str) -> dict:
             assert Path(eml_path).exists()
             return {
@@ -61,6 +64,22 @@ def test_analyze_file_cleans_up_temporary_upload(monkeypatch, tmp_path: Path) ->
     )
 
     assert response.status_code == 200
+    assert list(tmp_path.glob("*")) == []
+
+
+def test_analyze_file_too_large_returns_413(monkeypatch, tmp_path: Path) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    monkeypatch.setattr(routes, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "MAX_UPLOAD_SIZE_BYTES", 5)
+
+    response = client.post(
+        "/analyze_file",
+        headers={"X-API-Key": "test-key"},
+        files={"file": ("mail.eml", b"From: a@b.com\n\nHello", "message/rfc822")},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "http_error"
     assert list(tmp_path.glob("*")) == []
 
 

@@ -30,6 +30,10 @@ import re
 
 import requests
 
+from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.domain_utils import registered_domain
+from threat_intel.cache import TTLCache
+
 logger = logging.getLogger(__name__)
 
 # ── Geolocation API (ip-api.com, free tier, no key required) ─────────────────
@@ -38,6 +42,7 @@ _GEO_API = (
     "?fields=status,country,countryCode,regionName,city,isp,org,as,asname,hosting,proxy"
 )
 _GEO_TIMEOUT = 5  # seconds
+_GEO_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 # ── Received-header parsing patterns ─────────────────────────────────────────
 _FROM_HOST_RE = re.compile(r"from\s+(\S+)", re.IGNORECASE)
@@ -240,6 +245,13 @@ def _geolocate_ip(ip: str) -> dict:
     isp, org, hosting, proxy.  Returns {} on any failure so callers can
     safely use .get().
     """
+    if OFFLINE_MODE:
+        return {}
+
+    found, cached = _GEO_CACHE.get(ip)
+    if found:
+        return cached
+
     try:
         url = _GEO_API.format(ip=ip)
         resp = requests.get(url, timeout=_GEO_TIMEOUT)
@@ -250,6 +262,7 @@ def _geolocate_ip(ip: str) -> dict:
                 "ip-api returned non-success for %s: %s", ip, data.get("message")
             )
             return {}
+        _GEO_CACHE.set(ip, data)
         return data
     except requests.Timeout:
         logger.warning("Geolocation timeout for IP %s", ip)
@@ -270,8 +283,7 @@ def _extract_from_domain(from_raw: str) -> str:
 
 def _root_domain(domain: str) -> str:
     """Return the registrable root+TLD (e.g., 'mail.paypal.com' → 'paypal.com')."""
-    parts = domain.rstrip(".").split(".")
-    return ".".join(parts[-2:]) if len(parts) >= 2 else domain
+    return registered_domain(domain)
 
 
 # ── Relay analysis ────────────────────────────────────────────────────────────

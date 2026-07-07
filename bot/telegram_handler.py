@@ -116,7 +116,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             update.effective_chat.id,
             local_path.name,
         )
-        report_text = _run_analysis(str(local_path))
+        report_text = _run_analysis(str(local_path), analysis_id=analysis_id)
     except Exception:
         logger.exception("Analysis failed id=%s for %s", analysis_id, local_path)
         await update.message.reply_text(
@@ -137,7 +137,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ── Analysis pipeline ────────────────────────────────────────
 
 
-def _run_analysis(eml_path: str) -> str:
+def _run_analysis(eml_path: str, analysis_id: str | None = None) -> str:
     """
     Run the full analysis pipeline on an .eml file and return the report text.
 
@@ -145,7 +145,7 @@ def _run_analysis(eml_path: str) -> str:
     """
     from email_analysis.pipeline import PhishingPipeline
 
-    pipeline = PhishingPipeline()
+    pipeline = PhishingPipeline(analysis_id=analysis_id)
     result = pipeline.analyze_file(eml_path)
     return result["report"]
 

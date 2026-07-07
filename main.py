@@ -11,8 +11,9 @@ Run with:
 import logging
 import sys
 import importlib
+from pathlib import Path
 
-from config.settings import LOG_LEVEL, validate_startup_settings
+from config.settings import LOG_LEVEL, UPLOAD_DIR, validate_startup_settings
 
 
 def _setup_logging() -> None:
@@ -29,6 +30,14 @@ def main() -> None:
     _setup_logging()
 
     logger = logging.getLogger(__name__)
+    if "--healthcheck" in sys.argv:
+        try:
+            _healthcheck()
+        except RuntimeError as exc:
+            logger.error("Healthcheck failed: %s", exc)
+            sys.exit(1)
+        sys.exit(0)
+
     run_api = "--api" in sys.argv
     try:
         validate_startup_settings(run_api=run_api)
@@ -53,6 +62,20 @@ def main() -> None:
         except RuntimeError as exc:
             logger.error("Failed to start: %s", exc)
             sys.exit(1)
+
+
+def _healthcheck() -> None:
+    """Lightweight container healthcheck without requiring external services."""
+    upload_dir = Path(UPLOAD_DIR)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    probe = upload_dir / ".healthcheck"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"Upload directory is not writable: {UPLOAD_DIR}") from exc
+
+    importlib.import_module("email_analysis.pipeline")
 
 
 if __name__ == "__main__":

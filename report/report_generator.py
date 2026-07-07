@@ -214,6 +214,8 @@ def generate_report(
     attachment_risks: list[dict] | None = None,
     url_intelligence: dict | None = None,
     domain_intelligence: dict | None = None,
+    landing_pages: list[dict] | None = None,
+    evidence_bundle: dict | None = None,
 ) -> str:
     """
     Generate a professional SOC-grade phishing triage report.
@@ -351,6 +353,8 @@ def generate_report(
             lines.append(f"• {u['url']}{short_tag}")
             if u.get("is_shortened"):
                 lines.append(f"  ↳ Expanded: {u.get('expanded_url', 'N/A')}")
+            for warning in u.get("url_warnings", [])[:3]:
+                lines.append(f"  ⚠️ {warning}")
     else:
         lines.append("  No URLs found.")
 
@@ -493,6 +497,20 @@ def generate_report(
         lines.append("")
 
     # ── 10. THREAT INTELLIGENCE ──────────────────────────────
+    risky_landing_pages = [
+        page for page in (landing_pages or []) if int(page.get("risk_score", 0)) > 0
+    ]
+    if risky_landing_pages:
+        lines.append("━━━ LANDING PAGE INTELLIGENCE ━━━")
+        for page in risky_landing_pages[:5]:
+            lines.append(f"⚠️ {page.get('final_url') or page.get('url')}")
+            if page.get("title"):
+                lines.append(f"   Title: {_esc(page['title'])}")
+            for finding in page.get("findings", [])[:4]:
+                lines.append(f"   {finding}")
+            lines.append(f"   Risk: +{page.get('risk_score', 0)}")
+        lines.append("")
+
     _ti_header_shown = False
 
     # VirusTotal URL results
@@ -501,6 +519,7 @@ def generate_report(
         _ti_header_shown = True
         lines.append("VirusTotal – URLs:")
         all_clean = True
+        unavailable_count = 0
         for r in vt_url_reports:
             if r.get("malicious", 0) > 0:
                 all_clean = False
@@ -508,6 +527,8 @@ def generate_report(
                     f"  🔴 {r.get('url', '?')} — {r['malicious']} engine(s) flagged malicious"
                 )
             elif r.get("error") and r["error"] != "submitted_for_analysis":
+                all_clean = False
+                unavailable_count += 1
                 lines.append(f"  ⚠️ {r.get('url', '?')} — scan unavailable")
             else:
                 lines.append(f"  🟢 {r.get('url', '?')} — Clean")
@@ -515,6 +536,11 @@ def generate_report(
             lines.append(
                 "  ℹ️ Note: Newly registered phishing domains often appear clean "
                 "in threat intelligence databases."
+            )
+        elif unavailable_count:
+            lines.append(
+                "  ℹ️ Note: unavailable threat-intel scans are treated as missing "
+                "evidence, not proof of safety."
             )
         lines.append("")
 
@@ -540,7 +566,9 @@ def generate_report(
             _ti_header_shown = True
         lines.append("AlienVault OTX:")
         for r in otx_reports:
-            identifier = r.get("domain") or (r.get("sha256", "?")[:32] + "…")
+            identifier = (
+                r.get("domain") or r.get("url") or (r.get("sha256", "?")[:32] + "…")
+            )
             count = r.get("pulse_count", 0)
             icon = "⚠️" if count > 0 else "🟢"
             lines.append(f"  {icon} {identifier}: {count} pulse(s)")
@@ -610,6 +638,30 @@ def generate_report(
             for reason in ai_verdict["reasons"]:
                 lines.append(f"    – {reason}")
         lines.append("")
+
+    if evidence_bundle:
+        correlations = evidence_bundle.get("correlations", [])
+        evidence = evidence_bundle.get("evidence", [])
+        if correlations or evidence:
+            lines.append("━━━ EVIDENCE CORRELATION ━━━")
+            for c in correlations[:5]:
+                lines.append(
+                    f"⚠️ {c.get('summary', 'Correlated signal')} "
+                    f"(+{c.get('risk_score', 0)})"
+                )
+            if evidence:
+                lines.append("Top Evidence:")
+                top = sorted(
+                    evidence,
+                    key=lambda item: int(item.get("risk_delta", 0)),
+                    reverse=True,
+                )[:6]
+                for item in top:
+                    lines.append(
+                        f"  • [{item.get('source')}] {item.get('summary')} "
+                        f"({item.get('state')}, +{item.get('risk_delta', 0)})"
+                    )
+            lines.append("")
 
     # ── 12. ATTACHMENTS ──────────────────────────────────────
     lines.append(f"━━━ ATTACHMENTS ({len(attachments)}) ━━━")

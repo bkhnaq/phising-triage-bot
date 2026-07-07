@@ -13,6 +13,7 @@ Usage:
 """
 
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 import logging
 import os
 import re
@@ -27,6 +28,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from config.settings import (
     API_KEY,
@@ -41,17 +43,20 @@ from config.settings import (
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Fail fast if required API startup settings are missing."""
+    validate_startup_settings(run_api=True)
+    yield
+
+
 app = FastAPI(
     title="Phishing Triage Engine API",
     description="Enterprise-grade multi-layer phishing detection REST API",
     version="2.0.0",
+    lifespan=lifespan,
 )
-
-
-@app.on_event("startup")
-async def startup_validation() -> None:
-    """Fail fast if required API startup settings are missing."""
-    validate_startup_settings(run_api=True)
 
 
 _rate_limit_lock = threading.Lock()
@@ -89,6 +94,7 @@ class AnalysisResponse(BaseModel):
 
     success: bool
     request_id: str
+    analysis_id: str = Field(..., description="Pipeline analysis identifier")
     risk: RiskResult
     report: str = Field(..., description="Human-readable analysis report")
     email_metadata: dict = Field(default_factory=dict)
@@ -321,11 +327,14 @@ async def analyze_email(payload: EmailAnalysisRequest, request: Request):
     try:
         from email_analysis.pipeline import PhishingPipeline
 
-        pipeline = PhishingPipeline()
-        result = pipeline.analyze_raw(payload.email_raw)
+        request_id = _request_id_from(request)
+        pipeline = PhishingPipeline(analysis_id=request_id)
+        result = await run_in_threadpool(pipeline.analyze_raw, payload.email_raw)
 
-        return _build_response(result, request_id=_request_id_from(request))
+        return _build_response(result, request_id=request_id)
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Analysis failed")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
@@ -359,11 +368,14 @@ async def analyze_file(request: Request, file: UploadFile = File(...)):
 
         from email_analysis.pipeline import PhishingPipeline
 
-        pipeline = PhishingPipeline()
-        result = pipeline.analyze_file(str(save_path))
+        request_id = _request_id_from(request)
+        pipeline = PhishingPipeline(analysis_id=request_id)
+        result = await run_in_threadpool(pipeline.analyze_file, str(save_path))
 
-        return _build_response(result, request_id=_request_id_from(request))
+        return _build_response(result, request_id=request_id)
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Analysis failed for uploaded file")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
@@ -411,6 +423,7 @@ def _build_response(result: dict, request_id: str) -> AnalysisResponse:
     return AnalysisResponse(
         success=True,
         request_id=request_id,
+        analysis_id=result.get("analysis_id", request_id),
         risk=RiskResult(
             score=risk_data.get("score", 0),
             verdict=risk_data.get("verdict", "LOW"),

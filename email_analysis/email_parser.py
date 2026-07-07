@@ -13,6 +13,7 @@ import email.policy
 from email.message import EmailMessage
 import logging
 from pathlib import Path
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ def parse_eml_file(file_path: str) -> dict:
         "body_html": _get_body(msg, "text/html"),
         "raw_message": msg,
     }
+    _recover_pasted_headers(result)
 
     logger.info("Parsed email: subject=%s from=%s", result["subject"], result["from"])
     return result
@@ -69,3 +71,58 @@ def _get_body(msg: EmailMessage, content_type: str) -> str:
             payload = msg.get_content()
             return payload if isinstance(payload, str) else ""
         return ""
+
+
+def _recover_pasted_headers(result: dict) -> None:
+    """Recover common headers when pasted text has a blank line after Subject."""
+    body = result.get("body_text") or ""
+    if not body:
+        return
+
+    lines = body.splitlines()
+    recovered: dict[str, str] = {}
+    consumed = 0
+    saw_header = False
+
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            consumed = idx + 1 if saw_header else 0
+            break
+
+        match = re.match(r"^(Subject|From|To|Date|Message-ID)\s*:\s*(.*)$", line, re.I)
+        if not match:
+            return
+
+        name = _canonical_header_name(match.group(1))
+        recovered[name] = match.group(2).strip()
+        saw_header = True
+        consumed = idx + 1
+
+    if not recovered:
+        return
+
+    field_map = {
+        "Subject": "subject",
+        "From": "from",
+        "To": "to",
+        "Date": "date",
+        "Message-ID": "message_id",
+    }
+    for header_name, field_name in field_map.items():
+        if not result.get(field_name) and recovered.get(header_name):
+            result[field_name] = recovered[header_name]
+
+    existing_headers = {name.lower() for name, _value in result.get("headers", [])}
+    for header_name, value in recovered.items():
+        if header_name.lower() not in existing_headers:
+            result["headers"].append((header_name, value))
+
+    if consumed > 0:
+        result["body_text"] = "\n".join(lines[consumed:]).lstrip()
+
+
+def _canonical_header_name(name: str) -> str:
+    normalized = name.strip().lower()
+    if normalized == "message-id":
+        return "Message-ID"
+    return normalized.title()

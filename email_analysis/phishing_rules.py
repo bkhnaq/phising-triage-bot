@@ -13,6 +13,8 @@ Usage:
 import logging
 import re
 
+from email_analysis.domain_utils import any_domain_match, base_label
+
 logger = logging.getLogger(__name__)
 
 # Protected brands: brand keyword → set of legitimate sender domains
@@ -74,9 +76,7 @@ def detect_display_name_spoofing(from_header: str) -> list[dict]:
         if brand not in display_lower:
             continue
         # Check if the sender domain belongs to the brand
-        if any(
-            sender_domain == d or sender_domain.endswith("." + d) for d in legit_domains
-        ):
+        if any_domain_match(sender_domain, legit_domains):
             continue
         findings.append(
             {
@@ -131,13 +131,7 @@ def _extract_base_label(domain: str) -> str:
         paypa1-login-security.com  →  paypa1-login-security
         sub.evil.co.uk             →  evil
     """
-    parts = domain.lower().split(".")
-    # Handle two-part TLDs like co.uk, com.br
-    if len(parts) >= 3 and len(parts[-2]) <= 3:
-        return parts[-3]
-    if len(parts) >= 2:
-        return parts[-2]
-    return parts[0]
+    return base_label(domain)
 
 
 def _candidate_segments(base_label: str) -> list[str]:
@@ -180,7 +174,7 @@ def detect_lookalike_domains(urls: list[dict]) -> list[dict]:
         matched_brands: set[str] = set()
         for brand, legit_domains in _PROTECTED_BRANDS.items():
             # Skip if the domain IS a legitimate brand domain
-            if domain in legit_domains:
+            if any_domain_match(domain, legit_domains):
                 continue
 
             for segment in segments:

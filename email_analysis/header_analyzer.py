@@ -13,6 +13,9 @@ Usage:
 
 import logging
 import re
+from typing import Any
+
+from email_analysis.domain_utils import any_domain_match, same_registered_domain
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +52,7 @@ def analyze_headers(headers: list[tuple[str, str]]) -> dict:
         The first three values are auth dicts with 'result' and 'details'.
         'forensics' contains sender/path anomalies and forensic findings.
     """
-    auth_results = {
+    auth_results: dict[str, Any] = {
         "spf": {"result": "none", "details": ""},
         "dkim": {"result": "none", "details": ""},
         "dmarc": {"result": "none", "details": ""},
@@ -67,6 +70,9 @@ def analyze_headers(headers: list[tuple[str, str]]) -> dict:
             _parse_authentication_results(value, auth_results)
 
     auth_results["forensics"] = _run_header_forensics(headers)
+    alignment = _analyze_auth_alignment(auth_results, auth_results["forensics"])
+    auth_results["alignment"] = alignment
+    auth_results["forensics"]["findings"].extend(alignment.get("findings", []))
 
     logger.info(
         "Auth results – SPF: %s | DKIM: %s | DMARC: %s | Header findings: %d",
@@ -91,7 +97,12 @@ def _parse_received_spf(value: str) -> dict:
         "permerror",
     ):
         if value_lower.startswith(keyword):
-            return {"result": keyword, "details": value.strip()}
+            return {
+                "result": keyword,
+                "details": value.strip(),
+                "domain": _extract_auth_domain(value, "smtp.mailfrom")
+                or _extract_received_spf_domain(value),
+            }
     return {"result": "unknown", "details": value.strip()}
 
 
@@ -108,6 +119,8 @@ def _parse_authentication_results(value: str, auth_results: dict) -> None:
         auth_results["spf"] = {
             "result": spf_match.group(1),
             "details": value.strip(),
+            "domain": _extract_auth_domain(value, "smtp.mailfrom")
+            or _extract_auth_domain(value, "mailfrom"),
         }
 
     # DKIM
@@ -116,6 +129,7 @@ def _parse_authentication_results(value: str, auth_results: dict) -> None:
         auth_results["dkim"] = {
             "result": dkim_match.group(1),
             "details": value.strip(),
+            "domain": _extract_auth_domain(value, "header.d"),
         }
 
     # DMARC
@@ -124,7 +138,28 @@ def _parse_authentication_results(value: str, auth_results: dict) -> None:
         auth_results["dmarc"] = {
             "result": dmarc_match.group(1),
             "details": value.strip(),
+            "domain": _extract_auth_domain(value, "header.from"),
         }
+
+
+def _extract_auth_domain(value: str, key: str) -> str:
+    match = re.search(rf"\b{re.escape(key)}\s*=\s*([^;\s]+)", value, re.IGNORECASE)
+    if not match:
+        return ""
+    candidate = match.group(1).strip("<>()\"'").lower().rstrip(".")
+    if "@" in candidate:
+        candidate = candidate.rsplit("@", 1)[-1]
+    return candidate
+
+
+def _extract_received_spf_domain(value: str) -> str:
+    match = re.search(r"domain of\s+([^\s)]+)", value, re.IGNORECASE)
+    if not match:
+        return ""
+    candidate = match.group(1).strip("<>()\"'").lower().rstrip(".")
+    if "@" in candidate:
+        candidate = candidate.rsplit("@", 1)[-1]
+    return candidate
 
 
 def _run_header_forensics(headers: list[tuple[str, str]]) -> dict:
@@ -216,6 +251,87 @@ def _run_header_forensics(headers: list[tuple[str, str]]) -> dict:
     }
 
 
+def _analyze_auth_alignment(auth_results: dict, forensics: dict) -> dict:
+    """Check relaxed SPF/DKIM/DMARC identifier alignment with the From domain."""
+    from_domain = forensics.get("from_domain", "")
+    return_path_domain = forensics.get("return_path_domain", "")
+    findings: list[dict] = []
+
+    spf_domain = auth_results.get("spf", {}).get("domain") or return_path_domain
+    dkim_domain = auth_results.get("dkim", {}).get("domain", "")
+    dmarc_domain = auth_results.get("dmarc", {}).get("domain", "") or from_domain
+
+    spf_result = str(auth_results.get("spf", {}).get("result", "none")).lower()
+    dkim_result = str(auth_results.get("dkim", {}).get("result", "none")).lower()
+    dmarc_result = str(auth_results.get("dmarc", {}).get("result", "none")).lower()
+
+    spf_aligned = (
+        same_registered_domain(spf_domain, from_domain)
+        if spf_domain and from_domain
+        else None
+    )
+    dkim_aligned = (
+        same_registered_domain(dkim_domain, from_domain)
+        if dkim_domain and from_domain
+        else None
+    )
+    dmarc_aligned = (
+        same_registered_domain(dmarc_domain, from_domain)
+        if dmarc_domain and from_domain
+        else None
+    )
+
+    if spf_result == "pass" and spf_aligned is False:
+        findings.append(
+            {
+                "type": "spf_alignment_mismatch",
+                "summary": "SPF passed but does not align with From domain",
+                "details": f"From={from_domain}, SPF domain={spf_domain}",
+                "risk_score": 8,
+            }
+        )
+
+    if dkim_result == "pass" and dkim_aligned is False:
+        findings.append(
+            {
+                "type": "dkim_alignment_mismatch",
+                "summary": "DKIM passed but signing domain does not align with From domain",
+                "details": f"From={from_domain}, DKIM d={dkim_domain}",
+                "risk_score": 8,
+            }
+        )
+
+    if (
+        from_domain
+        and dmarc_result in {"none", "fail", "temperror", "permerror"}
+        and (spf_result == "pass" or dkim_result == "pass")
+        and spf_aligned is not True
+        and dkim_aligned is not True
+    ):
+        findings.append(
+            {
+                "type": "no_aligned_authentication",
+                "summary": "No passing aligned SPF or DKIM identifier",
+                "details": (
+                    f"From={from_domain}, SPF domain={spf_domain or 'none'}, "
+                    f"DKIM d={dkim_domain or 'none'}, DMARC={dmarc_result}"
+                ),
+                "risk_score": 12,
+            }
+        )
+
+    return {
+        "from_domain": from_domain,
+        "spf_domain": spf_domain,
+        "dkim_domain": dkim_domain,
+        "dmarc_domain": dmarc_domain,
+        "spf_aligned": spf_aligned,
+        "dkim_aligned": dkim_aligned,
+        "dmarc_aligned": dmarc_aligned,
+        "findings": findings,
+    }
+
+
 def _get_header_value(headers: list[tuple[str, str]], header_name: str) -> str:
     """Return the first matching header value (case-insensitive)."""
     for name, value in headers:
@@ -265,7 +381,7 @@ def _detect_sender_brand_impersonation(from_raw: str, from_domain: str) -> dict 
         return None
 
     for brand, legit_domains in _BRAND_DOMAINS.items():
-        if brand in display_name and from_domain not in legit_domains:
+        if brand in display_name and not any_domain_match(from_domain, legit_domains):
             return {
                 "type": "sender_brand_impersonation",
                 "summary": "Brand appears in display name but sender domain is unofficial",

@@ -1,23 +1,27 @@
 # Core
 python-dotenv>=1.0,<2
-requests>=2.31,<3
+requests>=2.33,<3
+idna>=3.15,<4
+urllib3>=2.7,<3
 
 # Telegram bot
 python-telegram-bot>=20.7,<22
 
 # WHOIS lookups for domain age checks
 python-whois>=0.9,<1
+tldextract>=5.3,<6
 
 # DNS-based blocklist lookups (Spamhaus)
 dnspython>=2.4,<3
 
 # QR code scanning
-Pillow>=12.1.1,<13
+Pillow>=12.2,<13
 numpy>=1.26,<3
 pyzbar>=0.1.9,<1            # requires native zbar lib (libzbar0 in Docker)
 opencv-python>=4.8,<5       # fallback QR decoder (self-contained)
 
 # REST API
-fastapi>=0.110,<1
+fastapi>=0.139,<1
+starlette>=1.3.1,<2
 uvicorn[standard]>=0.29,<1
-python-multipart>=0.0.9,<1
+python-multipart>=0.0.31,<1

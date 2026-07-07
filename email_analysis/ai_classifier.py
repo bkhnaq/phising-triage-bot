@@ -22,7 +22,7 @@ import html
 
 import requests
 
-from config.settings import GROQ_API_KEY, GROQ_MODEL
+from config.settings import GROQ_API_KEY, GROQ_MODEL, OFFLINE_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,11 @@ def classify_email(
     if not GROQ_API_KEY:
         result["error"] = "GROQ_API_KEY not configured"
         logger.info("AI classifier skipped: no API key")
+        return result
+
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
+        logger.info("AI classifier skipped: offline mode enabled")
         return result
 
     # Build the analysis prompt

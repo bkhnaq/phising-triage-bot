@@ -23,8 +23,11 @@ import logging
 import os
 import re
 import unicodedata
+import zipfile
 from email.message import EmailMessage
 from pathlib import Path
+
+from email_analysis.html_form_detector import detect_credential_harvesting
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +219,22 @@ _RISK_MIME_TYPES: dict[str, int] = {
     "application/hta": 30,
 }
 
+_ARCHIVE_EXTENSIONS = {".zip", ".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm"}
+_EXECUTABLE_IN_ARCHIVE_EXTENSIONS = {
+    ".exe",
+    ".scr",
+    ".bat",
+    ".cmd",
+    ".ps1",
+    ".vbs",
+    ".js",
+    ".jse",
+    ".wsf",
+    ".msi",
+    ".dll",
+    ".lnk",
+}
+
 
 def extract_attachments(
     msg: EmailMessage,
@@ -393,6 +412,8 @@ def assess_attachment_risk(attachments: list[dict]) -> list[dict]:
                 f"⚠️ Large attachment: {size / 1_000_000:.1f} MB"
             )
 
+        _inspect_attachment_contents(att, finding)
+
         if finding["warnings"]:
             findings.append(finding)
             logger.warning(
@@ -403,3 +424,73 @@ def assess_attachment_risk(attachments: list[dict]) -> list[dict]:
             )
 
     return findings
+
+
+def _inspect_attachment_contents(attachment: dict, finding: dict) -> None:
+    saved_path = attachment.get("saved_path", "")
+    if not saved_path or not Path(saved_path).is_file():
+        return
+
+    ext = Path(attachment.get("filename", "")).suffix.lower()
+    if ext in _ARCHIVE_EXTENSIONS or zipfile.is_zipfile(saved_path):
+        _inspect_zip_container(saved_path, ext, finding)
+
+    if (
+        ext in {".html", ".htm", ".hta"}
+        or attachment.get("content_type") == "text/html"
+    ):
+        _inspect_html_attachment(saved_path, finding)
+
+
+def _inspect_zip_container(path: str, ext: str, finding: dict) -> None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            encrypted = any(info.flag_bits & 0x1 for info in archive.infolist())
+    except (OSError, zipfile.BadZipFile):
+        return
+
+    if encrypted:
+        finding["risk_score"] += 12
+        finding["warnings"].append("âš ï¸ Password-protected archive")
+
+    executable_entries = [
+        name
+        for name in names
+        if Path(name).suffix.lower() in _EXECUTABLE_IN_ARCHIVE_EXTENSIONS
+    ]
+    if executable_entries:
+        finding["risk_score"] += 20
+        finding["warnings"].append(
+            "âš ï¸ Archive contains executable/script payload(s): "
+            + ", ".join(executable_entries[:3])
+        )
+
+    has_vba = any(name.endswith("vbaProject.bin") for name in names)
+    if has_vba:
+        finding["risk_score"] += 25
+        finding["category"] = "macro_document"
+        finding["warnings"].append("âš ï¸ Office document contains VBA macro project")
+    elif ext in {".docm", ".xlsm", ".pptm"}:
+        finding["warnings"].append(
+            "âš ï¸ Macro-enabled extension present; VBA project not confirmed"
+        )
+
+
+def _inspect_html_attachment(path: str, finding: dict) -> None:
+    try:
+        html = Path(path).read_text(encoding="utf-8", errors="replace")[:200_000]
+    except OSError:
+        return
+
+    form_result = detect_credential_harvesting(html)
+    if not form_result.get("detected"):
+        return
+
+    finding["risk_score"] += min(25, int(form_result.get("risk_score", 0)))
+    finding["category"] = "html"
+    finding["warnings"].append(
+        "âš ï¸ HTML attachment contains credential-harvesting indicators"
+    )
+    for item in form_result.get("findings", [])[:3]:
+        finding["warnings"].append(f"   {item}")

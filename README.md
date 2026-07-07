@@ -233,6 +233,19 @@ Development mode behavior:
 
 - Maximum upload size is controlled by `MAX_UPLOAD_SIZE_BYTES` (default: `10485760`, i.e., 10 MB).
 
+## Runtime Tuning
+
+- `OFFLINE_MODE=true` skips external network lookups (VT/OTX/WHOIS/DNS/redirects/AI) for local demos and deterministic tests.
+- `THREAT_INTEL_CACHE_TTL_SECONDS` controls the in-memory cache TTL for external lookups (default: `900`).
+- `THREAT_INTEL_MAX_WORKERS` controls parallel lookup fan-out for independent threat-intel checks (default: `8`).
+
+## Detection Logic Notes
+
+- Domains are canonicalized with Public Suffix List support (`tldextract`) before brand, lookalike, ESP, and sender-alignment comparisons.
+- URLs are normalized and checked for obfuscation patterns such as userinfo hosts (`brand.com@evil.test`), punycode, IP hosts, encoded delimiters, and credential-style paths.
+- Threat-intel wrappers distinguish `clean`, `suspicious`, `malicious`, `not_found`, `not_checked`, and `unavailable` states.
+- The scoring engine includes cross-signal correlation rules, for example auth anomalies plus brand impersonation plus credential collection.
+
 ## Troubleshooting
 
 - Missing `API_KEY`: protected API endpoints return disabled/unauthorized errors; set `API_KEY` (or `API_PROTECTION_ENABLED=false` for local-only testing).
@@ -259,9 +272,9 @@ Development mode behavior:
 
 9. **Lookalike Domain Detection** – URL domains are compared against protected brands using Levenshtein edit distance (≤ 2 triggers detection).
 
-10. **Threat Intel** – Each URL domain and attachment hash is checked against VirusTotal and AlienVault OTX. IPs are checked against AbuseIPDB and Spamhaus. SecurityTrails provides passive DNS data.
+10. **Threat Intel** – URLs, URL domains, and attachment hashes are checked against VirusTotal and AlienVault OTX. IPs are checked against AbuseIPDB and Spamhaus. SecurityTrails provides passive DNS data.
 
-11. **AI Classification** – The email is sent to Google Gemini for an independent phishing/suspicious/legitimate verdict.
+11. **AI Classification** – The email is sent to Groq for an independent phishing/suspicious/legitimate verdict.
 
 12. **Risk Scoring** – A weighted score (0-100) is calculated from all indicators and mapped to a verdict: **LOW**, **MEDIUM**, **HIGH**, or **CRITICAL**.
 

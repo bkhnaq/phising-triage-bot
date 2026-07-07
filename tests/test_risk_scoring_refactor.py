@@ -1,4 +1,5 @@
 import unittest
+from typing import Any, ClassVar
 
 from scoring.risk_scoring import calculate_risk
 
@@ -15,12 +16,14 @@ class RiskScoringRefactorTests(unittest.TestCase):
     ) -> dict:
         findings = list(extra_findings or [])
         if missing_received:
-            findings.append({
-                "type": "missing_received_headers",
-                "summary": "No Received headers found",
-                "risk_score": 0,
-                "evidence_state": "none",
-            })
+            findings.append(
+                {
+                    "type": "missing_received_headers",
+                    "summary": "No Received headers found",
+                    "risk_score": 0,
+                    "evidence_state": "none",
+                }
+            )
 
         return {
             "spf": {"result": spf},
@@ -351,21 +354,158 @@ class RiskScoringRefactorTests(unittest.TestCase):
         self.assertIn(result["verdict"], {"MEDIUM", "SUSPICIOUS", "HIGH"})
         self.assertNotEqual(result["verdict"], "LOW")
 
+    def test_url_obfuscation_evidence_contributes_to_score(self) -> None:
+        result = calculate_risk(
+            auth_results=self._auth(),
+            url_reports=[],
+            hash_reports=[],
+            otx_reports=[],
+            evidence_bundle={
+                "evidence": [
+                    {
+                        "category": "url",
+                        "source": "url_normalizer",
+                        "indicator": "https://paypal.com@evil.example/login",
+                        "risk_delta": 18,
+                    }
+                ],
+                "correlations": [],
+            },
+        )
+
+        self.assertGreaterEqual(result["category_scores"]["URL behavior"], 10)
+        self.assertTrue(
+            any("URL obfuscation" in item for item in result["breakdown"])
+        )
+
+    def test_generic_credential_phish_is_not_low_when_intel_is_clean(self) -> None:
+        auth_results = self._auth(
+            spf="none",
+            dkim="none",
+            dmarc="none",
+            from_domain="secure-notification.example.com",
+            missing_received=True,
+        )
+
+        result = calculate_risk(
+            auth_results=auth_results,
+            url_reports=[
+                {
+                    "url": "http://account-verification-secure.example.com/login",
+                    "malicious": 0,
+                    "suspicious": 0,
+                    "state": "clean",
+                }
+            ],
+            hash_reports=[],
+            otx_reports=[
+                {
+                    "domain": "account-verification-secure.example.com",
+                    "pulse_count": 0,
+                    "state": "clean",
+                }
+            ],
+            heuristics={
+                "suspicious_keywords": [
+                    {"keyword": "secure", "risk_score": 15},
+                    {"keyword": "account", "risk_score": 15},
+                    {"keyword": "login", "risk_score": 15},
+                ],
+                "homograph": [],
+            },
+            language_analysis={
+                "categories": {
+                    "urgency": {"risk_score": 3, "match_count": 3},
+                    "threats": {"risk_score": 15, "match_count": 3},
+                    "credential_harvesting": {"risk_score": 5, "match_count": 1},
+                    "authority": {"risk_score": 3, "match_count": 1},
+                },
+                "total_matches": 8,
+                "risk_score": 26,
+            },
+        )
+
+        self.assertGreaterEqual(result["risk_score"], 45)
+        self.assertNotEqual(result["verdict"], "LOW")
+
+    def test_high_confidence_ai_phish_with_matching_language_escalates(self) -> None:
+        result = calculate_risk(
+            auth_results=self._auth(
+                spf="none",
+                dkim="none",
+                dmarc="none",
+                missing_received=True,
+            ),
+            url_reports=[],
+            hash_reports=[],
+            otx_reports=[],
+            heuristics={
+                "suspicious_keywords": [
+                    {"keyword": "secure", "risk_score": 15},
+                    {"keyword": "account", "risk_score": 15},
+                    {"keyword": "login", "risk_score": 15},
+                ],
+                "homograph": [],
+            },
+            language_analysis={
+                "categories": {
+                    "threats": {"risk_score": 15, "match_count": 3},
+                    "credential_harvesting": {"risk_score": 5, "match_count": 1},
+                },
+                "total_matches": 4,
+                "risk_score": 20,
+            },
+            ai_verdict={
+                "verdict": "phishing",
+                "confidence": 0.90,
+                "risk_score": 25,
+            },
+        )
+
+        self.assertGreaterEqual(result["risk_score"], 65)
+        self.assertIn(result["verdict"], {"HIGH", "CRITICAL"})
+
 
 class TestPhishingPipelineIntegration(unittest.TestCase):
     """Integration tests that run the full phishing pipeline on raw RFC822 samples."""
+
+    _orig_keys: ClassVar[dict[str, Any]]
+    pipeline: ClassVar[Any]
 
     @classmethod
     def setUpClass(cls) -> None:
         """Initialize one shared pipeline and force deterministic no-key intel behavior."""
         from email_analysis.pipeline import PhishingPipeline
-        from threat_intel import alienvault_checker, ip_reputation, passive_dns, virustotal_checker
+        from email_analysis import (
+            ai_classifier,
+            domain_intelligence,
+            header_forensics,
+            heuristic_analyzer,
+            landing_page_analyzer,
+            url_extractor,
+            url_intelligence,
+        )
+        from threat_intel import (
+            alienvault_checker,
+            ip_reputation,
+            passive_dns,
+            virustotal_checker,
+        )
 
         cls._orig_keys = {
             "vt": virustotal_checker.VIRUSTOTAL_API_KEY,
             "otx": alienvault_checker.ALIENVAULT_OTX_API_KEY,
             "abuse": ip_reputation.ABUSEIPDB_API_KEY,
             "st": passive_dns.SECURITYTRAILS_API_KEY,
+            "offline": {
+                "ai": ai_classifier.OFFLINE_MODE,
+                "domain": domain_intelligence.OFFLINE_MODE,
+                "header": header_forensics.OFFLINE_MODE,
+                "heuristic": heuristic_analyzer.OFFLINE_MODE,
+                "landing": landing_page_analyzer.OFFLINE_MODE,
+                "url_extractor": url_extractor.OFFLINE_MODE,
+                "url_intel": url_intelligence.OFFLINE_MODE,
+            },
         }
 
         # Keep integration tests deterministic and offline-friendly.
@@ -373,18 +513,46 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         alienvault_checker.ALIENVAULT_OTX_API_KEY = ""
         ip_reputation.ABUSEIPDB_API_KEY = ""
         passive_dns.SECURITYTRAILS_API_KEY = ""
+        ai_classifier.OFFLINE_MODE = True
+        domain_intelligence.OFFLINE_MODE = True
+        header_forensics.OFFLINE_MODE = True
+        heuristic_analyzer.OFFLINE_MODE = True
+        landing_page_analyzer.OFFLINE_MODE = True
+        url_extractor.OFFLINE_MODE = True
+        url_intelligence.OFFLINE_MODE = True
 
         cls.pipeline = PhishingPipeline()
 
     @classmethod
     def tearDownClass(cls) -> None:
         """Restore API key module constants after integration tests complete."""
-        from threat_intel import alienvault_checker, ip_reputation, passive_dns, virustotal_checker
+        from email_analysis import (
+            ai_classifier,
+            domain_intelligence,
+            header_forensics,
+            heuristic_analyzer,
+            landing_page_analyzer,
+            url_extractor,
+            url_intelligence,
+        )
+        from threat_intel import (
+            alienvault_checker,
+            ip_reputation,
+            passive_dns,
+            virustotal_checker,
+        )
 
         virustotal_checker.VIRUSTOTAL_API_KEY = cls._orig_keys["vt"]
         alienvault_checker.ALIENVAULT_OTX_API_KEY = cls._orig_keys["otx"]
         ip_reputation.ABUSEIPDB_API_KEY = cls._orig_keys["abuse"]
         passive_dns.SECURITYTRAILS_API_KEY = cls._orig_keys["st"]
+        ai_classifier.OFFLINE_MODE = cls._orig_keys["offline"]["ai"]
+        domain_intelligence.OFFLINE_MODE = cls._orig_keys["offline"]["domain"]
+        header_forensics.OFFLINE_MODE = cls._orig_keys["offline"]["header"]
+        heuristic_analyzer.OFFLINE_MODE = cls._orig_keys["offline"]["heuristic"]
+        landing_page_analyzer.OFFLINE_MODE = cls._orig_keys["offline"]["landing"]
+        url_extractor.OFFLINE_MODE = cls._orig_keys["offline"]["url_extractor"]
+        url_intelligence.OFFLINE_MODE = cls._orig_keys["offline"]["url_intel"]
 
     def test_bluehornet_chase_false_positive(self) -> None:
         """
@@ -417,7 +585,9 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         self.assertIn("category_scores", risk)
         self.assertIn("ESP detection", risk["category_scores"])
         self.assertLess(risk["category_scores"]["ESP detection"], 0)
-        self.assertGreater(len(result.get("url_intelligence", {}).get("esp_findings", [])), 0)
+        self.assertGreater(
+            len(result.get("url_intelligence", {}).get("esp_findings", [])), 0
+        )
 
     def test_spearphishing_true_positive(self) -> None:
         """
@@ -433,18 +603,23 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         confidence_pct = float(risk.get("confidence", 0.0)) * 100
         score = int(risk.get("score", 0))
 
-        redirect_findings = result.get("url_intelligence", {}).get("redirect_findings", [])
-        self.assertTrue(any(
-            "secure-notice-paypal-login-verify.com" in (
-                str(f.get("final_domain", "")) or str(f.get("url", ""))
+        redirect_findings = result.get("url_intelligence", {}).get(
+            "redirect_findings", []
+        )
+        self.assertTrue(
+            any(
+                "secure-notice-paypal-login-verify.com"
+                in (str(f.get("final_domain", "")) or str(f.get("url", "")))
+                for f in redirect_findings
             )
-            for f in redirect_findings
-        ))
+        )
 
         # If WHOIS age is available in this environment, enforce the expected young-domain signal.
         whois_results = result.get("domain_intelligence", {}).get("whois_results", [])
         target_domain = "secure-notice-paypal-login-verify.com"
-        target_whois = next((w for w in whois_results if w.get("domain") == target_domain), None)
+        target_whois = next(
+            (w for w in whois_results if w.get("domain") == target_domain), None
+        )
         if target_whois and target_whois.get("age_days") is not None:
             self.assertLess(int(target_whois["age_days"]), 30)
 
@@ -476,72 +651,78 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
 
     @staticmethod
     def _build_bluehornet_chase_email() -> str:
-        return "\n".join([
-            "From: Weekly Rewards <offers@mailer.bluehornet.com>",
-            "To: user@example.com",
-            "Subject: Chase rewards update",
-            "Date: Fri, 20 Mar 2026 10:12:00 +0000",
-            "Message-ID: <bluehornet-marketing-1@mailer.bluehornet.com>",
-            "MIME-Version: 1.0",
-            "Authentication-Results: mx.example.net; spf=none smtp.mailfrom=mailer.bluehornet.com; dkim=none; dmarc=none",
-            "Content-Type: text/plain; charset=\"utf-8\"",
-            "",
-            "Hello,",
-            "Chase cardmembers: this is your last chance for bonus rewards.",
-            "Don't delay, this limited time promotion ends soon.",
-            "http://dr.bluehornet.com/ct/1695126:1754535170:m:3:110926158:D299E7CA9CD982C5AFDE3E6BD4AFA968",
-            "",
-        ])
+        return "\n".join(
+            [
+                "From: Weekly Rewards <offers@mailer.bluehornet.com>",
+                "To: user@example.com",
+                "Subject: Chase rewards update",
+                "Date: Fri, 20 Mar 2026 10:12:00 +0000",
+                "Message-ID: <bluehornet-marketing-1@mailer.bluehornet.com>",
+                "MIME-Version: 1.0",
+                "Authentication-Results: mx.example.net; spf=none smtp.mailfrom=mailer.bluehornet.com; dkim=none; dmarc=none",
+                'Content-Type: text/plain; charset="utf-8"',
+                "",
+                "Hello,",
+                "Chase cardmembers: this is your last chance for bonus rewards.",
+                "Don't delay, this limited time promotion ends soon.",
+                "http://dr.bluehornet.com/ct/1695126:1754535170:m:3:110926158:D299E7CA9CD982C5AFDE3E6BD4AFA968",
+                "",
+            ]
+        )
 
     @staticmethod
     def _build_spearphishing_email() -> str:
-        return "\n".join([
-            "From: PayPal Security Team <alerts@paypal-security-mailer.com>",
-            "To: user@example.com",
-            "Reply-To: support@paypal-helpdesk-center.com",
-            "Return-Path: <bounce@transaction-alert-mailer.com>",
-            "Subject: PayPal account restricted - immediate action required",
-            "Date: Fri, 20 Mar 2026 11:20:00 +0000",
-            "Message-ID: <pp-urgent-9931@mailer-gateway-untrusted.net>",
-            "Received: from smtp-gateway.targetmail.net (smtp-gateway.targetmail.net [198.51.100.42]) by mx.enterprise.org with ESMTPS id abc123; Fri, 20 Mar 2026 11:20:01 +0000",
-            "Received: from mx.secure-notice-paypal-login-verify.com (mx.secure-notice-paypal-login-verify.com [203.0.113.50]) by smtp-gateway.targetmail.net with ESMTP id def456; Fri, 20 Mar 2026 11:19:59 +0000",
-            "Authentication-Results: mx.enterprise.org; spf=fail smtp.mailfrom=paypal-security-mailer.com; dkim=fail header.d=paypal-security-mailer.com; dmarc=fail header.from=paypal-security-mailer.com",
-            "MIME-Version: 1.0",
-            "Content-Type: text/html; charset=\"utf-8\"",
-            "",
-            "<html><body>",
-            "<p>PayPal account will be suspended within 24 hours.</p>",
-            "<p>This is your last warning. Do not delay and verify immediately.</p>",
-            "<p><a href=\"http://secure-notice-paypal-login-verify.com/login/verify/account\">Verify account</a></p>",
-            "<form method=\"POST\" action=\"http://secure-notice-paypal-login-verify.com/session/validate\">",
-            "<input type=\"text\" name=\"email\" />",
-            "<input type=\"password\" name=\"password\" />",
-            "<input type=\"hidden\" name=\"token\" value=\"1\" />",
-            "<button type=\"submit\">Sign in</button>",
-            "</form>",
-            "</body></html>",
-            "",
-        ])
+        return "\n".join(
+            [
+                "From: PayPal Security Team <alerts@paypal-security-mailer.com>",
+                "To: user@example.com",
+                "Reply-To: support@paypal-helpdesk-center.com",
+                "Return-Path: <bounce@transaction-alert-mailer.com>",
+                "Subject: PayPal account restricted - immediate action required",
+                "Date: Fri, 20 Mar 2026 11:20:00 +0000",
+                "Message-ID: <pp-urgent-9931@mailer-gateway-untrusted.net>",
+                "Received: from smtp-gateway.targetmail.net (smtp-gateway.targetmail.net [198.51.100.42]) by mx.enterprise.org with ESMTPS id abc123; Fri, 20 Mar 2026 11:20:01 +0000",
+                "Received: from mx.secure-notice-paypal-login-verify.com (mx.secure-notice-paypal-login-verify.com [203.0.113.50]) by smtp-gateway.targetmail.net with ESMTP id def456; Fri, 20 Mar 2026 11:19:59 +0000",
+                "Authentication-Results: mx.enterprise.org; spf=fail smtp.mailfrom=paypal-security-mailer.com; dkim=fail header.d=paypal-security-mailer.com; dmarc=fail header.from=paypal-security-mailer.com",
+                "MIME-Version: 1.0",
+                'Content-Type: text/html; charset="utf-8"',
+                "",
+                "<html><body>",
+                "<p>PayPal account will be suspended within 24 hours.</p>",
+                "<p>This is your last warning. Do not delay and verify immediately.</p>",
+                '<p><a href="http://secure-notice-paypal-login-verify.com/login/verify/account">Verify account</a></p>',
+                '<form method="POST" action="http://secure-notice-paypal-login-verify.com/session/validate">',
+                '<input type="text" name="email" />',
+                '<input type="password" name="password" />',
+                '<input type="hidden" name="token" value="1" />',
+                '<button type="submit">Sign in</button>',
+                "</form>",
+                "</body></html>",
+                "",
+            ]
+        )
 
     @staticmethod
     def _build_ambiguous_unknown_esp_email() -> str:
-        return "\n".join([
-            "From: Chase Notification Desk <notify@chase-alerts-mailer.net>",
-            "To: user@example.com",
-            "Subject: Chase digital notice",
-            "Date: Fri, 20 Mar 2026 13:05:00 +0000",
-            "Message-ID: <ambiguous-unknown-esp-2026@chase-alerts-mailer.net>",
-            "Received: from relay.mail-route.example (relay.mail-route.example [198.51.100.12]) by mx.enterprise.org with ESMTPS id ghi789; Fri, 20 Mar 2026 13:05:02 +0000",
-            "Received: from sender.chase-alerts-mailer.net (sender.chase-alerts-mailer.net [198.51.100.55]) by relay.mail-route.example with ESMTP id jkl012; Fri, 20 Mar 2026 13:04:58 +0000",
-            "Authentication-Results: mx.enterprise.org; spf=none smtp.mailfrom=chase-alerts-mailer.net; dkim=pass header.d=chase-alerts-mailer.net; dmarc=pass header.from=chase-alerts-mailer.net",
-            "MIME-Version: 1.0",
-            "Content-Type: text/plain; charset=\"utf-8\"",
-            "",
-            "Chase security message: immediate action may be required.",
-            "Limited time notice, last chance to confirm your account details.",
-            "http://chase-alerts-mailer.net/click/confirm/login/verify",
-            "",
-        ])
+        return "\n".join(
+            [
+                "From: Chase Notification Desk <notify@chase-alerts-mailer.net>",
+                "To: user@example.com",
+                "Subject: Chase digital notice",
+                "Date: Fri, 20 Mar 2026 13:05:00 +0000",
+                "Message-ID: <ambiguous-unknown-esp-2026@chase-alerts-mailer.net>",
+                "Received: from relay.mail-route.example (relay.mail-route.example [198.51.100.12]) by mx.enterprise.org with ESMTPS id ghi789; Fri, 20 Mar 2026 13:05:02 +0000",
+                "Received: from sender.chase-alerts-mailer.net (sender.chase-alerts-mailer.net [198.51.100.55]) by relay.mail-route.example with ESMTP id jkl012; Fri, 20 Mar 2026 13:04:58 +0000",
+                "Authentication-Results: mx.enterprise.org; spf=none smtp.mailfrom=chase-alerts-mailer.net; dkim=pass header.d=chase-alerts-mailer.net; dmarc=pass header.from=chase-alerts-mailer.net",
+                "MIME-Version: 1.0",
+                'Content-Type: text/plain; charset="utf-8"',
+                "",
+                "Chase security message: immediate action may be required.",
+                "Limited time notice, last chance to confirm your account details.",
+                "http://chase-alerts-mailer.net/click/confirm/login/verify",
+                "",
+            ]
+        )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file (if it exists)
 load_dotenv()
 
+
 # ── Telegram Bot ─────────────────────────────────────────────
 def _get_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -53,6 +54,9 @@ API_PROTECTION_ENABLED = _get_bool("API_PROTECTION_ENABLED", True)
 RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "60"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 MAX_UPLOAD_SIZE_BYTES = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", str(10 * 1024 * 1024)))
+OFFLINE_MODE = _get_bool("OFFLINE_MODE", False)
+THREAT_INTEL_CACHE_TTL_SECONDS = int(os.getenv("THREAT_INTEL_CACHE_TTL_SECONDS", "900"))
+THREAT_INTEL_MAX_WORKERS = int(os.getenv("THREAT_INTEL_MAX_WORKERS", "8"))
 
 # ── File Storage ─────────────────────────────────────────────
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")

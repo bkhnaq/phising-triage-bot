@@ -14,7 +14,12 @@ import logging
 
 import requests
 
-from config.settings import SECURITYTRAILS_API_KEY
+from config.settings import (
+    OFFLINE_MODE,
+    SECURITYTRAILS_API_KEY,
+    THREAT_INTEL_CACHE_TTL_SECONDS,
+)
+from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +27,7 @@ _BASE_URL = "https://api.securitytrails.com/v1"
 _TIMEOUT = 15
 # Flag IPs hosting more than this many domains as suspicious
 _DOMAIN_COUNT_THRESHOLD = 50
+_SECURITYTRAILS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 
 def _query_securitytrails(ip: str) -> dict:
@@ -35,12 +41,21 @@ def _query_securitytrails(ip: str) -> dict:
         "ip": ip,
         "domain_count": 0,
         "sample_domains": [],
+        "state": "not_checked",
         "error": None,
     }
 
     if not SECURITYTRAILS_API_KEY:
         result["error"] = "SECURITYTRAILS_API_KEY not configured"
         return result
+
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
+        return result
+
+    found, cached = _SECURITYTRAILS_CACHE.get(ip)
+    if found:
+        return cached
 
     try:
         resp = requests.get(
@@ -61,11 +76,18 @@ def _query_securitytrails(ip: str) -> dict:
         result["sample_domains"] = [
             r.get("hostname", "") for r in records[:10] if r.get("hostname")
         ]
+        result["state"] = (
+            "suspicious"
+            if result["domain_count"] >= _DOMAIN_COUNT_THRESHOLD
+            else "clean"
+        )
 
-    except requests.RequestException as exc:
+    except (requests.RequestException, AttributeError, TypeError, ValueError) as exc:
         result["error"] = str(exc)
+        result["state"] = "unavailable"
         logger.error("SecurityTrails lookup failed for IP %s: %s", ip, exc)
 
+    _SECURITYTRAILS_CACHE.set(ip, result)
     return result
 
 
@@ -102,6 +124,7 @@ def check_passive_dns(ip_findings: list[dict]) -> list[dict]:
             "sample_domains": st["sample_domains"],
             "suspicious": suspicious,
             "risk_score": risk_score,
+            "state": st["state"],
             "error": st["error"],
         }
 

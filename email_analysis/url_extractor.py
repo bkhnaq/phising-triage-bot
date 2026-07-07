@@ -15,6 +15,10 @@ from urllib.parse import urlparse
 
 import requests
 
+from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.url_utils import analyze_url
+from threat_intel.cache import TTLCache
+
 logger = logging.getLogger(__name__)
 
 # Regex to capture http/https URLs from plain text
@@ -44,6 +48,7 @@ _SHORTENER_DOMAINS = frozenset(
 
 # Request timeout for expanding shortened URLs (seconds)
 _EXPAND_TIMEOUT = 5
+_EXPAND_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 
 def extract_urls(body_text: str = "", body_html: str = "") -> list[dict]:
@@ -73,7 +78,8 @@ def extract_urls(body_text: str = "", body_html: str = "") -> list[dict]:
 
     results: list[dict] = []
     for url in sorted(raw_urls):
-        domain = _extract_domain(url)
+        url_analysis = analyze_url(url)
+        domain = url_analysis.domain
         is_shortened = domain.lower() in _SHORTENER_DOMAINS
         expanded = _expand_url(url) if is_shortened else url
 
@@ -81,8 +87,16 @@ def extract_urls(body_text: str = "", body_html: str = "") -> list[dict]:
             {
                 "url": url,
                 "domain": domain,
+                "registered_domain": url_analysis.registered_domain,
+                "normalized_url": url_analysis.normalized_url,
+                "decoded_domain": url_analysis.decoded_domain,
                 "is_shortened": is_shortened,
                 "expanded_url": expanded,
+                "url_risk_score": url_analysis.risk_score,
+                "url_warnings": url_analysis.suspicious_reasons,
+                "has_userinfo": url_analysis.has_userinfo,
+                "is_punycode": url_analysis.is_punycode,
+                "is_ip_host": url_analysis.is_ip_host,
             }
         )
 
@@ -123,7 +137,7 @@ def _extract_urls_from_html(html: str) -> list[str]:
 def _extract_domain(url: str) -> str:
     """Return the network-location (domain) part of a URL."""
     parsed = urlparse(url)
-    return parsed.netloc or ""
+    return parsed.hostname or ""
 
 
 def _expand_url(short_url: str) -> str:
@@ -131,13 +145,23 @@ def _expand_url(short_url: str) -> str:
     Follow redirects on a shortened URL and return the final destination.
     Returns the original URL on any error.
     """
+    if OFFLINE_MODE:
+        return short_url
+
+    found, cached = _EXPAND_CACHE.get(short_url)
+    if found:
+        return cached
+
     try:
         resp = requests.head(
             short_url,
             allow_redirects=True,
             timeout=_EXPAND_TIMEOUT,
         )
-        return resp.url
+        expanded = resp.url
     except requests.RequestException as exc:
         logger.warning("Could not expand URL %s: %s", short_url, exc)
-        return short_url
+        expanded = short_url
+
+    _EXPAND_CACHE.set(short_url, expanded)
+    return expanded

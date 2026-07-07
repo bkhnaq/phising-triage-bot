@@ -14,6 +14,7 @@ is treated as incomplete evidence, not direct phishing evidence.
 import logging
 
 from email_analysis.brand_impersonation import BRAND_DATABASE
+from email_analysis.domain_utils import registered_domain
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ _RULE_CATEGORIES = (
     "brand impersonation",
     "content/language",
     "attachment/malware",
+    "correlation",
 )
 
 _CATEGORY_CAPS = {
@@ -33,6 +35,7 @@ _CATEGORY_CAPS = {
     "brand impersonation": 35,
     "content/language": 20,
     "attachment/malware": 40,
+    "correlation": 30,
 }
 
 _AUTH_STATUS_WEIGHTS = {
@@ -95,6 +98,8 @@ def calculate_risk(
     attachment_risks: list[dict] | None = None,
     url_intelligence: dict | None = None,
     domain_intelligence: dict | None = None,
+    landing_pages: list[dict] | None = None,
+    evidence_bundle: dict | None = None,
 ) -> dict:
     """Calculate risk score, confidence, and data completeness."""
     category_scores: dict[str, int] = {k: 0 for k in _RULE_CATEGORIES}
@@ -113,6 +118,8 @@ def calculate_risk(
         completeness_breakdown,
     )
     category_scores["data completeness"] = data_completeness
+    suspicious_url_keyword_count = 0
+    high_confidence_ai_phishing = False
 
     # ── 1) Auth checks (none != fail) ────────────────────────
     for check in ("spf", "dkim", "dmarc"):
@@ -279,13 +286,21 @@ def calculate_risk(
             breakdown.append(f"Homograph domain pattern (+{pts})")
             strong_signals += 1
 
+        seen_suspicious_keywords: set[str] = set()
         for finding in heuristics.get("suspicious_keywords", []):
+            keyword = str(finding.get("keyword", "")).strip().lower()
+            if not keyword or keyword in seen_suspicious_keywords:
+                continue
+            seen_suspicious_keywords.add(keyword)
+
             base_pts = int(finding.get("risk_score", 0))
-            # Keywords alone are noisy; dampen this signal.
-            pts = max(1, min(6, int(base_pts * 0.35))) if base_pts > 0 else 0
+            # URL/domain keywords are noisy individually, but clustered account/login/verify
+            # wording is meaningful URL behavior.
+            pts = max(1, min(6, int(base_pts * 0.40))) if base_pts > 0 else 0
             if pts <= 0:
                 continue
-            category_scores["content/language"] += pts
+            suspicious_url_keyword_count += 1
+            category_scores["URL behavior"] += pts
             breakdown.append(
                 f"Keyword indicator '{finding.get('keyword', '?')}' (+{pts})"
             )
@@ -312,10 +327,14 @@ def calculate_risk(
         ai_conf = _clamp(float(ai_verdict.get("confidence", 0.0)), 0.0, 1.0)
 
         if ai_label == "phishing":
-            pts = int(round(8 + 6 * ai_conf))
+            pts = int(round(10 + 10 * ai_conf))
             category_scores["content/language"] += pts
             breakdown.append(f"AI phishing verdict (confidence={ai_conf:.0%}) (+{pts})")
-            weak_signals += 1
+            if ai_conf >= 0.75:
+                high_confidence_ai_phishing = True
+                strong_signals += 1
+            else:
+                weak_signals += 1
         elif ai_label == "suspicious":
             pts = int(round(3 + 4 * ai_conf))
             category_scores["content/language"] += pts
@@ -368,6 +387,10 @@ def calculate_risk(
             category_scores["attachment/malware"] += pts
             breakdown.append(f"OTX pulse hit for attachment hash (+{pts})")
             strong_signals += 1
+        elif report.get("url"):
+            category_scores["URL behavior"] += pts
+            breakdown.append(f"OTX pulse hit for URL (+{pts})")
+            weak_signals += 1
         else:
             category_scores["URL behavior"] += pts
             breakdown.append(f"OTX pulse hit for domain (+{pts})")
@@ -430,9 +453,77 @@ def calculate_risk(
             )
             weak_signals += 1
 
+    if landing_pages:
+        for finding in landing_pages:
+            pts = min(20, int(finding.get("risk_score", 0)))
+            if pts <= 0:
+                continue
+            category_scores["URL behavior"] += pts
+            breakdown.append(f"Suspicious landing page evidence (+{pts})")
+            if finding.get("password_fields"):
+                strong_signals += 1
+            else:
+                weak_signals += 1
+
+    if high_confidence_ai_phishing and language_analysis:
+        categories = language_analysis.get("categories", {})
+        has_credential_language = "credential_harvesting" in categories
+        has_threat_language = "threats" in categories
+        if has_credential_language and (has_threat_language or suspicious_url_keyword_count >= 2):
+            pts = 18
+            category_scores["correlation"] += pts
+            breakdown.append(
+                "Correlated evidence: AI phishing verdict aligns with credential/threat language (+18)"
+            )
+            strong_signals += 1
+
+    if suspicious_url_keyword_count >= 3 and language_analysis:
+        categories = language_analysis.get("categories", {})
+        if "credential_harvesting" in categories or "threats" in categories:
+            pts = 10
+            category_scores["correlation"] += pts
+            breakdown.append(
+                "Correlated evidence: suspicious URL wording matches phishing language (+10)"
+            )
+            strong_signals += 1
+
+    if evidence_bundle:
+        for evidence in evidence_bundle.get("evidence", []):
+            if (
+                evidence.get("category") != "url"
+                or evidence.get("source") != "url_normalizer"
+            ):
+                continue
+            pts = min(12, int(evidence.get("risk_delta", 0)))
+            if pts <= 0:
+                continue
+            category_scores["URL behavior"] += pts
+            breakdown.append(
+                f"URL obfuscation: {evidence.get('indicator', '?')} (+{pts})"
+            )
+            if pts >= 10:
+                strong_signals += 1
+            else:
+                weak_signals += 1
+
     # Legacy optional signals (preserve compatibility)
     if display_name_spoofing:
+        existing_display_spoofing = {
+            (
+                str(finding.get("brand", "")).lower(),
+                str(finding.get("sender_domain", "")).lower(),
+            )
+            for finding in (brand_impersonation or {}).get(
+                "display_name_spoofing", []
+            )
+        }
         for finding in display_name_spoofing:
+            key = (
+                str(finding.get("brand", "")).lower(),
+                str(finding.get("sender_domain", "")).lower(),
+            )
+            if key in existing_display_spoofing:
+                continue
             pts = int(finding.get("risk_score", 0))
             if pts <= 0:
                 continue
@@ -451,6 +542,17 @@ def calculate_risk(
             )
             weak_signals += 1
 
+    if evidence_bundle:
+        for finding in evidence_bundle.get("correlations", []):
+            pts = int(finding.get("risk_score", 0))
+            if pts <= 0:
+                continue
+            category_scores["correlation"] += pts
+            breakdown.append(
+                f"Correlated evidence: {finding.get('summary', 'signal cluster')} (+{pts})"
+            )
+            strong_signals += 1
+
     # ── Apply per-category caps ──────────────────────────────
     capped_scores: dict[str, int] = {"data completeness": data_completeness}
 
@@ -460,6 +562,7 @@ def calculate_risk(
         "brand impersonation",
         "content/language",
         "attachment/malware",
+        "correlation",
     ):
         cap = _CATEGORY_CAPS[category]
         capped_scores[category] = int(_clamp(category_scores[category], 0, cap))
@@ -474,6 +577,7 @@ def calculate_risk(
         + capped_scores["brand impersonation"]
         + capped_scores["content/language"]
         + capped_scores["attachment/malware"]
+        + capped_scores["correlation"]
         + capped_scores["ESP detection"]
     )
     risk_score = int(_clamp(risk_score, 0, 100))
@@ -575,6 +679,7 @@ def _compute_confidence(
         + category_scores.get("URL behavior", 0)
         + category_scores.get("brand impersonation", 0)
         + category_scores.get("attachment/malware", 0)
+        + category_scores.get("correlation", 0)
         + int(category_scores.get("content/language", 0) * 0.6)
     )
     evidence_strength = _clamp(evidence_points / 90.0, 0.0, 1.0)
@@ -693,15 +798,7 @@ def _is_strong_context_mismatch(final_domain: str, expected_roots: set[str]) -> 
 
 
 def _root_domain(domain: str) -> str:
-    host = (domain or "").lower().split(":", 1)[0].rstrip(".")
-    if not host:
-        return ""
-    parts = host.split(".")
-    if len(parts) >= 3 and parts[-2] in ("co", "com", "org", "net", "ac", "gov"):
-        return ".".join(parts[-3:])
-    if len(parts) >= 2:
-        return ".".join(parts[-2:])
-    return host
+    return registered_domain(domain)
 
 
 def _status(value: str) -> str:

@@ -13,15 +13,21 @@ import logging
 import socket
 import importlib
 from ipaddress import ip_address, AddressValueError
+from typing import Any
 
 import requests
 
 try:
-    dns_resolver = importlib.import_module("dns.resolver")
+    dns_resolver: Any | None = importlib.import_module("dns.resolver")
 except ImportError:
     dns_resolver = None
 
-from config.settings import ABUSEIPDB_API_KEY
+from config.settings import (
+    ABUSEIPDB_API_KEY,
+    OFFLINE_MODE,
+    THREAT_INTEL_CACHE_TTL_SECONDS,
+)
+from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,9 @@ _SPAMHAUS_ZONES = [
 
 # Abuse confidence threshold (0-100) — flag if score meets or exceeds this
 _ABUSE_CONFIDENCE_THRESHOLD = 50
+_DNS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
+_ABUSE_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
+_SPAMHAUS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 
 def resolve_domain_ip(domain: str) -> str | None:
@@ -49,9 +58,18 @@ def resolve_domain_ip(domain: str) -> str | None:
     if not host:
         return None
 
+    if OFFLINE_MODE:
+        logger.info("DNS resolution skipped in offline mode for %s", host)
+        return None
+
+    found, cached = _DNS_CACHE.get(host)
+    if found:
+        return cached
+
     # If it's already an IP, return it directly
     try:
         ip_address(host)
+        _DNS_CACHE.set(host, host)
         return host
     except (AddressValueError, ValueError):
         pass
@@ -59,7 +77,9 @@ def resolve_domain_ip(domain: str) -> str | None:
     try:
         answers = socket.getaddrinfo(host, None, socket.AF_INET)
         if answers:
-            return str(answers[0][4][0])
+            ip = str(answers[0][4][0])
+            _DNS_CACHE.set(host, ip)
+            return ip
     except (socket.gaierror, OSError):
         logger.debug("DNS resolution failed for %s", host)
     return None
@@ -80,12 +100,21 @@ def _check_abuseipdb(ip: str) -> dict:
         "country": None,
         "isp": None,
         "total_reports": 0,
+        "state": "not_checked",
         "error": None,
     }
 
     if not ABUSEIPDB_API_KEY:
         result["error"] = "ABUSEIPDB_API_KEY not configured"
         return result
+
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
+        return result
+
+    found, cached = _ABUSE_CACHE.get(ip)
+    if found:
+        return cached
 
     try:
         resp = requests.get(
@@ -109,11 +138,18 @@ def _check_abuseipdb(ip: str) -> dict:
         result["country"] = data.get("countryCode")
         result["isp"] = data.get("isp")
         result["total_reports"] = data.get("totalReports", 0)
+        result["state"] = (
+            "suspicious"
+            if result["abuse_score"] >= _ABUSE_CONFIDENCE_THRESHOLD
+            else "clean"
+        )
 
-    except requests.RequestException as exc:
+    except (requests.RequestException, AttributeError, TypeError, ValueError) as exc:
         result["error"] = str(exc)
+        result["state"] = "unavailable"
         logger.error("AbuseIPDB check failed for %s: %s", ip, exc)
 
+    _ABUSE_CACHE.set(ip, result)
     return result
 
 
@@ -131,11 +167,16 @@ def _check_spamhaus(ip: str) -> dict:
         "ip": ip,
         "listed": False,
         "zone": None,
+        "state": "not_checked",
         "error": None,
     }
 
     if dns_resolver is None:
         result["error"] = "dnspython not installed"
+        return result
+
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
         return result
 
     try:
@@ -149,6 +190,10 @@ def _check_spamhaus(ip: str) -> dict:
 
     reversed_ip = ".".join(reversed(ip.split(".")))
 
+    found, cached = _SPAMHAUS_CACHE.get(reversed_ip)
+    if found:
+        return cached
+
     for zone in _SPAMHAUS_ZONES:
         query = f"{reversed_ip}.{zone}"
         try:
@@ -156,6 +201,7 @@ def _check_spamhaus(ip: str) -> dict:
             # DNS returned a result → IP is listed in this zone
             result["listed"] = True
             result["zone"] = zone
+            result["state"] = "suspicious"
             logger.warning("Spamhaus hit: %s listed in %s", ip, zone)
             break
         except (dns_resolver.NXDOMAIN, dns_resolver.NoAnswer):
@@ -166,8 +212,13 @@ def _check_spamhaus(ip: str) -> dict:
             logger.debug("Spamhaus lookup timeout for %s in %s", ip, zone)
         except Exception as exc:
             result["error"] = str(exc)
+            result["state"] = "unavailable"
             logger.debug("Spamhaus lookup error for %s: %s", ip, exc)
 
+    if result["state"] == "not_checked" and result["error"] is None:
+        result["state"] = "clean"
+
+    _SPAMHAUS_CACHE.set(reversed_ip, result)
     return result
 
 

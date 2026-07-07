@@ -31,18 +31,23 @@ Usage:
 import logging
 import tempfile
 import os
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable, TypeVar
 
-from config.settings import UPLOAD_DIR
+from config.settings import THREAT_INTEL_MAX_WORKERS, UPLOAD_DIR
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 class PhishingPipeline:
     """Modular phishing detection pipeline orchestrator."""
 
-    def __init__(self, upload_dir: str | None = None):
+    def __init__(self, upload_dir: str | None = None, analysis_id: str | None = None):
         self.upload_dir = upload_dir or UPLOAD_DIR
+        self.analysis_id = analysis_id or uuid.uuid4().hex[:12]
         os.makedirs(self.upload_dir, exist_ok=True)
 
     def analyze_file(self, eml_path: str) -> dict:
@@ -55,7 +60,7 @@ class PhishingPipeline:
         Returns:
             Complete analysis result dict with all findings and report.
         """
-        logger.info("Pipeline started for %s", eml_path)
+        logger.info("Pipeline started id=%s file=%s", self.analysis_id, eml_path)
 
         # Stage 1: Parse email
         from email_analysis.email_parser import parse_eml_file
@@ -101,6 +106,7 @@ class PhishingPipeline:
         from email_analysis.domain_intelligence import analyze_domain_intelligence
         from email_analysis.brand_impersonation import BrandDetector
         from email_analysis.html_form_detector import detect_credential_harvesting
+        from email_analysis.landing_page_analyzer import analyze_landing_pages
         from email_analysis.language_analyzer import analyze_language
         from email_analysis.attachment_analyzer import (
             extract_attachments,
@@ -119,9 +125,11 @@ class PhishingPipeline:
         from threat_intel.virustotal_checker import check_url as vt_check_url
         from threat_intel.virustotal_checker import check_file_hash as vt_check_hash
         from threat_intel.alienvault_checker import check_domain as otx_check_domain
+        from threat_intel.alienvault_checker import check_url as otx_check_url
         from threat_intel.alienvault_checker import check_file_hash as otx_check_hash
         from threat_intel.ip_reputation import check_ip_reputation
         from threat_intel.passive_dns import check_passive_dns
+        from email_analysis.correlation import build_evidence_bundle
         from scoring.risk_scoring import calculate_risk
         from report.report_generator import generate_report
 
@@ -136,34 +144,12 @@ class PhishingPipeline:
             # Stage 4: URL extraction
             urls = extract_urls(email_data["body_text"], email_data["body_html"])
 
-            # Stage 5: URL intelligence (shorteners + redirect chains)
-            url_intel = url_intel_analyze(urls)
-
-            # Stage 6: Extract unique domains for domain intelligence
-            seen_domains: set[str] = set()
-            all_domains: list[str] = []
-            for u in urls:
-                domain = u.get("domain", "")
-                if domain and domain not in seen_domains:
-                    seen_domains.add(domain)
-                    all_domains.append(domain)
-
-            domain_intel = analyze_domain_intelligence(all_domains)
-
-            # Stage 7: Brand impersonation detection
-            brand_detector = BrandDetector()
-            brand_results = brand_detector.analyze(
-                urls,
-                from_header=email_data.get("from", ""),
-                body_text=email_data.get("body_text", ""),
-            )
-
-            # Stage 8: HTML credential harvesting detection
+            # Stage 5: HTML credential harvesting detection
             credential_harvesting = detect_credential_harvesting(
                 email_data.get("body_html", "")
             )
 
-            # Stage 9: Language analysis
+            # Stage 6: Language analysis
             body_text = email_data.get("body_text") or ""
             if not body_text and email_data.get("body_html"):
                 import html
@@ -177,52 +163,62 @@ class PhishingPipeline:
                 body_text, email_data.get("subject", "")
             )
 
-            # Stage 10: Attachment extraction + risk assessment
+            # Stage 7: Attachment extraction + risk assessment
             attachments = extract_attachments(
                 email_data["raw_message"], save_dir=self.upload_dir
             )
             attachment_risks = assess_attachment_risk(attachments)
 
-            # Stage 11: QR code scanning
+            # Stage 8: QR code scanning
             qr_findings = scan_attachments_for_qr(attachments)
             qr_urls = extract_qr_urls(qr_findings)
 
+            all_urls = self._merge_url_lists(urls, qr_urls)
+            all_domains = self._extract_unique_domains(all_urls)
+
+            # Stage 9: URL intelligence (shorteners + redirect chains)
+            url_intel = url_intel_analyze(all_urls)
+
+            # Stage 10: Domain intelligence
+            domain_intel = analyze_domain_intelligence(all_domains)
+
+            # Stage 11: Brand impersonation detection
+            brand_detector = BrandDetector()
+            brand_results = brand_detector.analyze(
+                all_urls,
+                from_header=email_data.get("from", ""),
+                body_text=email_data.get("body_text", ""),
+            )
+
             # Stage 12: Threat intelligence
-            vt_url_reports: list[dict] = []
-            for u in urls:
-                target = u.get("expanded_url", u["url"])
-                report = vt_check_url(target)
-                report["url"] = u["url"]
-                report["is_shortened"] = u.get("is_shortened", False)
-                vt_url_reports.append(report)
+            url_indicators = self._build_url_indicators(all_urls, url_intel)
+            attachment_hashes = self._extract_unique_hashes(attachments)
 
-            for qu in qr_urls:
-                target = qu["url"]
-                report = vt_check_url(target)
-                report["url"] = target
-                report["is_shortened"] = False
-                vt_url_reports.append(report)
-                domain = qu.get("domain", "")
-                if domain and domain not in seen_domains:
-                    seen_domains.add(domain)
-                    all_domains.append(domain)
+            vt_url_reports = self._run_parallel(
+                url_indicators,
+                lambda indicator: self._check_vt_url_indicator(indicator, vt_check_url),
+            )
+            vt_hash_reports = self._run_parallel(attachment_hashes, vt_check_hash)
 
-            vt_hash_reports = [vt_check_hash(a["sha256"]) for a in attachments]
-
-            otx_reports: list[dict] = []
-            for domain in all_domains:
-                otx_reports.append(otx_check_domain(domain))
-            for a in attachments:
-                otx_reports.append(otx_check_hash(a["sha256"]))
+            otx_url_reports = self._run_parallel(
+                url_indicators,
+                lambda indicator: self._check_otx_url_indicator(
+                    indicator, otx_check_url
+                ),
+            )
+            otx_domain_reports = self._run_parallel(all_domains, otx_check_domain)
+            otx_hash_reports = self._run_parallel(attachment_hashes, otx_check_hash)
+            otx_reports = otx_domain_reports + otx_url_reports + otx_hash_reports
 
             ip_reputation = check_ip_reputation(all_domains)
             passive_dns = check_passive_dns(ip_reputation)
-            heuristics = run_heuristics(urls + qr_urls)
+            landing_pages = analyze_landing_pages(all_urls)
+            heuristics = run_heuristics(all_urls)
 
             display_name_spoofing = detect_display_name_spoofing(
                 email_data.get("from", "")
             )
-            lookalike_domains = detect_lookalike_domains(urls + qr_urls)
+            lookalike_domains = detect_lookalike_domains(all_urls)
 
             # Stage 13: AI Classifier
             rule_findings = self._build_rule_findings(
@@ -235,7 +231,21 @@ class PhishingPipeline:
                 attachment_risks,
                 url_intel,
             )
-            ai_verdict = classify_email(email_data, urls + qr_urls, rule_findings)
+            ai_verdict = classify_email(email_data, all_urls, rule_findings)
+
+            evidence_bundle = build_evidence_bundle(
+                auth_results=auth_results,
+                urls=all_urls,
+                vt_url_reports=vt_url_reports,
+                vt_hash_reports=vt_hash_reports,
+                otx_reports=otx_reports,
+                credential_harvesting=credential_harvesting,
+                brand_impersonation=brand_results,
+                language_analysis=language_results,
+                attachment_risks=attachment_risks,
+                landing_pages=landing_pages,
+                domain_intelligence=domain_intel,
+            )
 
             # Stage 14: Risk scoring
             risk = calculate_risk(
@@ -257,6 +267,8 @@ class PhishingPipeline:
                 attachment_risks=attachment_risks,
                 url_intelligence=url_intel,
                 domain_intelligence=domain_intel,
+                landing_pages=landing_pages,
+                evidence_bundle=evidence_bundle,
             )
 
             # Stage 15: Report generation
@@ -283,15 +295,19 @@ class PhishingPipeline:
                 attachment_risks=attachment_risks,
                 url_intelligence=url_intel,
                 domain_intelligence=domain_intel,
+                landing_pages=landing_pages,
+                evidence_bundle=evidence_bundle,
             )
 
             logger.info(
-                "Pipeline complete: score=%d verdict=%s",
+                "Pipeline complete id=%s score=%d verdict=%s",
+                self.analysis_id,
                 risk["score"],
                 risk["verdict"],
             )
 
             return {
+                "analysis_id": self.analysis_id,
                 "email_data": {
                     "subject": email_data.get("subject"),
                     "from": email_data.get("from"),
@@ -315,10 +331,12 @@ class PhishingPipeline:
                 "otx_reports": otx_reports,
                 "ip_reputation": ip_reputation,
                 "passive_dns": passive_dns,
+                "landing_pages": landing_pages,
                 "heuristics": heuristics,
                 "display_name_spoofing": display_name_spoofing,
                 "lookalike_domains": lookalike_domains,
                 "ai_verdict": ai_verdict,
+                "evidence_bundle": evidence_bundle,
                 "risk": risk,
                 "report": report_text,
             }
@@ -331,6 +349,147 @@ class PhishingPipeline:
                     Path(saved_path).unlink(missing_ok=True)
                 except OSError:
                     logger.debug("Could not clean attachment artifact: %s", saved_path)
+
+    def _run_parallel(self, items: list[T], worker: Callable[[T], dict]) -> list[dict]:
+        """Run independent lookup tasks with stable result ordering."""
+        if not items:
+            return []
+
+        max_workers = max(1, min(THREAT_INTEL_MAX_WORKERS, len(items)))
+        results: list[dict | None] = [None] * len(items)
+
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix=f"ti-{self.analysis_id[:6]}",
+        ) as executor:
+            future_to_index = {
+                executor.submit(worker, item): idx for idx, item in enumerate(items)
+            }
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                try:
+                    results[idx] = future.result()
+                except Exception:
+                    logger.exception(
+                        "Parallel lookup failed id=%s item=%r",
+                        self.analysis_id,
+                        items[idx],
+                    )
+
+        return [result for result in results if result is not None]
+
+    @staticmethod
+    def _merge_url_lists(*groups: list[dict]) -> list[dict]:
+        """Merge URL finding lists while preserving first-seen order."""
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for group in groups:
+            for item in group:
+                url = item.get("url", "")
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                merged.append(item)
+        return merged
+
+    @staticmethod
+    def _extract_unique_domains(urls: list[dict]) -> list[str]:
+        seen: set[str] = set()
+        domains: list[str] = []
+        for item in urls:
+            domain = str(item.get("domain", "")).lower().split(":", 1)[0].strip()
+            if not domain or domain in seen:
+                continue
+            seen.add(domain)
+            domains.append(domain)
+        return domains
+
+    @staticmethod
+    def _extract_unique_hashes(attachments: list[dict]) -> list[str]:
+        seen: set[str] = set()
+        hashes: list[str] = []
+        for attachment in attachments:
+            sha256 = str(attachment.get("sha256", "")).strip().lower()
+            if not sha256 or sha256 in seen:
+                continue
+            seen.add(sha256)
+            hashes.append(sha256)
+        return hashes
+
+    @staticmethod
+    def _build_url_indicators(
+        urls: list[dict], url_intelligence: dict | None = None
+    ) -> list[dict]:
+        indicators: list[dict] = []
+        seen_lookup_urls: set[str] = set()
+        lookup_overrides = PhishingPipeline._url_lookup_overrides(url_intelligence)
+        for item in urls:
+            source_url = item.get("url", "")
+            lookup_url = (
+                lookup_overrides.get(source_url)
+                or item.get("expanded_url")
+                or source_url
+            )
+            if not lookup_url or lookup_url in seen_lookup_urls:
+                continue
+            seen_lookup_urls.add(lookup_url)
+            indicators.append(
+                {
+                    "source_url": source_url,
+                    "lookup_url": lookup_url,
+                    "is_shortened": bool(item.get("is_shortened", False)),
+                    "source": item.get("source", "body"),
+                }
+            )
+        return indicators
+
+    @staticmethod
+    def _url_lookup_overrides(url_intelligence: dict | None) -> dict[str, str]:
+        """Prefer final landing URLs for reputation lookups when known."""
+        if not url_intelligence:
+            return {}
+
+        overrides: dict[str, str] = {}
+
+        for finding in url_intelligence.get("shortener_findings", []):
+            source_url = finding.get("url", "")
+            expanded_url = finding.get("expanded_url", "")
+            if source_url and expanded_url and expanded_url != source_url:
+                overrides[source_url] = expanded_url
+
+        for finding in url_intelligence.get("redirect_findings", []):
+            if finding.get("error"):
+                continue
+            source_url = finding.get("source_url") or finding.get("url", "")
+            final_url = finding.get("final_url", "")
+            if source_url and final_url and final_url != source_url:
+                overrides[source_url] = final_url
+
+        return overrides
+
+    @staticmethod
+    def _check_vt_url_indicator(
+        indicator: dict, checker: Callable[[str], dict]
+    ) -> dict:
+        report = checker(indicator["lookup_url"])
+        report["url"] = indicator["source_url"]
+        if indicator["lookup_url"] != indicator["source_url"]:
+            report["lookup_url"] = indicator["lookup_url"]
+        report["is_shortened"] = indicator["is_shortened"]
+        report["source"] = indicator["source"]
+        return report
+
+    @staticmethod
+    def _check_otx_url_indicator(
+        indicator: dict,
+        checker: Callable[[str], dict],
+    ) -> dict:
+        report = checker(indicator["lookup_url"])
+        report["url"] = indicator["source_url"]
+        if indicator["lookup_url"] != indicator["source_url"]:
+            report["lookup_url"] = indicator["lookup_url"]
+        report["source"] = indicator["source"]
+        return report
 
     @staticmethod
     def _build_rule_findings(

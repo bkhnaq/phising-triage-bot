@@ -16,16 +16,21 @@ import logging
 import math
 import importlib
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
 
+from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.domain_utils import any_domain_match, registered_domain
+
 try:
-    whois_lib = importlib.import_module("whois")
+    whois_lib: Any | None = importlib.import_module("whois")
 except ImportError:
     whois_lib = None
 
 from email_analysis.homograph_analyzer import detect_homograph_brands
+from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +127,8 @@ _MAX_REDIRECTS = 10  # safety cap
 
 # ── WHOIS timeout (seconds) ─────────────────────────────────
 _WHOIS_TIMEOUT = 10
+_WHOIS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
+_REDIRECT_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 
 # ── Public API ───────────────────────────────────────────────
@@ -177,7 +184,9 @@ def detect_brand_impersonation(
     for domain in domains:
         domain_lower = domain.lower()
         for brand, legit_domains in _BRAND_DOMAINS.items():
-            if brand in domain_lower and domain_lower not in legit_domains:
+            if brand in domain_lower and not any_domain_match(
+                domain_lower, legit_domains
+            ):
                 key = (brand, domain_lower)
                 if key not in seen:
                     seen.add(key)
@@ -283,6 +292,14 @@ def get_domain_age(domain: str) -> dict:
         result["error"] = "python-whois not installed"
         return result
 
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
+        return result
+
+    found, cached = _WHOIS_CACHE.get(domain)
+    if found:
+        return cached
+
     try:
         w = whois_lib.whois(domain)
 
@@ -336,6 +353,7 @@ def get_domain_age(domain: str) -> dict:
         )
         logger.debug("WHOIS lookup failed for %s: %s", domain, first_line)
 
+    _WHOIS_CACHE.set(domain, result)
     return result
 
 
@@ -569,6 +587,15 @@ def check_redirect_chain(url: str) -> dict:
         "risk_score": 0,
         "error": None,
     }
+
+    if OFFLINE_MODE:
+        result["error"] = "offline mode enabled"
+        return result
+
+    found, cached = _REDIRECT_CACHE.get(url)
+    if found:
+        return cached
+
     try:
         resp = requests.get(
             url,
@@ -597,6 +624,7 @@ def check_redirect_chain(url: str) -> dict:
         result["error"] = str(exc)
         logger.debug("Redirect chain check failed for %s: %s", url, exc)
 
+    _REDIRECT_CACHE.set(url, result)
     return result
 
 
@@ -635,15 +663,4 @@ def _registrable_domain(netloc: str) -> str:
     Strip port numbers and return just the domain for WHOIS lookup.
     E.g. 'evil.example.com:8080' → 'example.com'
     """
-    # Remove port
-    host = netloc.split(":")[0].strip().lower()
-    if not host:
-        return ""
-    # Simple heuristic: take last two labels (or three for co.uk etc.)
-    parts = host.split(".")
-    if len(parts) >= 2:
-        # Handle two-part TLDs like co.uk, com.au
-        if len(parts) >= 3 and parts[-2] in ("co", "com", "org", "net", "ac", "gov"):
-            return ".".join(parts[-3:])
-        return ".".join(parts[-2:])
-    return host
+    return registered_domain(netloc)
