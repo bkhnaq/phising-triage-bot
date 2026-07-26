@@ -20,6 +20,14 @@ def _get_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _get_positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    value = int(raw) if raw is not None else default
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
 TELEGRAM_BOT_TOKEN = TELEGRAM_TOKEN  # Backward-compatible alias
 TELEGRAM_ENABLED = _get_bool("TELEGRAM_ENABLED", True)
@@ -40,6 +48,10 @@ SECURITYTRAILS_API_KEY = os.getenv("SECURITYTRAILS_API_KEY", "")
 # ── AI Classifier ────────────────────────────────────────────
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+LOCAL_AI_ENABLED = _get_bool("LOCAL_AI_ENABLED", True)
+LOCAL_AI_MODEL_DIR = os.getenv("LOCAL_AI_MODEL_DIR", "artifacts/models/phishing-mmbert")
+LOCAL_AI_MAX_LENGTH = _get_positive_int("LOCAL_AI_MAX_LENGTH", 1024)
+AI_GROQ_FALLBACK = _get_bool("AI_GROQ_FALLBACK", True)
 
 # ── Risk Scoring Thresholds ──────────────────────────────────
 RISK_HIGH_THRESHOLD = int(os.getenv("RISK_HIGH_THRESHOLD", "70"))
