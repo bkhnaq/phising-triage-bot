@@ -24,4 +24,5 @@ opencv-python>=4.8,<5       # fallback QR decoder (self-contained)
 fastapi>=0.139,<1
 starlette>=1.3.1,<2
 uvicorn[standard]>=0.29,<1
+click>=8.3.3,<9
 python-multipart>=0.0.31,<1
