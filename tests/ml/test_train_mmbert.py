@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 import pytest
 
@@ -97,6 +98,26 @@ def test_training_arguments_match_installed_transformers_api(
     assert arguments.gradient_checkpointing is True
     assert arguments.max_steps == 2
     assert arguments.warmup_steps == 0
+
+
+def test_single_epoch_full_run_evaluates_without_resident_checkpoint_save(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("transformers")
+    config = replace(
+        training_config(tmp_path / "candidate", smoke=False, seed=42),
+        num_train_epochs=1.0,
+    )
+
+    arguments = build_training_arguments(
+        config,
+        cuda_available=True,
+        bf16_available=True,
+    )
+
+    assert arguments.eval_strategy.value == "epoch"
+    assert arguments.save_strategy.value == "no"
+    assert arguments.load_best_model_at_end is False
 
 
 def test_base_model_loading_is_revision_pinned_without_remote_code(

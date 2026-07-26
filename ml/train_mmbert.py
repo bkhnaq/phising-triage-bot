@@ -316,7 +316,9 @@ def build_training_arguments(
     """Build version-checked Transformers arguments outside model loading."""
     from transformers import TrainingArguments
 
-    strategy = "no" if config.smoke else "epoch"
+    eval_strategy = "no" if config.smoke else "epoch"
+    checkpoint_each_epoch = not config.smoke and config.num_train_epochs > 1.0
+    save_strategy = "epoch" if checkpoint_each_epoch else "no"
     return TrainingArguments(
         output_dir=str(config.checkpoint_dir),
         per_device_train_batch_size=config.per_device_train_batch_size,
@@ -327,12 +329,12 @@ def build_training_arguments(
         warmup_steps=config.warmup_steps,
         num_train_epochs=config.num_train_epochs,
         max_steps=config.max_steps,
-        eval_strategy=strategy,
-        save_strategy=strategy,
+        eval_strategy=eval_strategy,
+        save_strategy=save_strategy,
         eval_steps=None,
         save_steps=500,
         logging_steps=1 if config.smoke else 50,
-        load_best_model_at_end=not config.smoke,
+        load_best_model_at_end=checkpoint_each_epoch,
         metric_for_best_model="eval_macro_f1",
         greater_is_better=True,
         save_total_limit=2,
@@ -469,7 +471,9 @@ def train_mmbert(
         ),
         compute_metrics=_metric_callback,
         callbacks=(
-            [] if config.smoke else [EarlyStoppingCallback(early_stopping_patience=2)]
+            []
+            if config.smoke or config.num_train_epochs <= 1.0
+            else [EarlyStoppingCallback(early_stopping_patience=2)]
         ),
         processing_class=tokenizer,
     )
