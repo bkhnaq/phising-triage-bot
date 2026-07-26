@@ -21,7 +21,7 @@ LOCAL_AI_ENABLED = getattr(settings, "LOCAL_AI_ENABLED", True)
 LOCAL_AI_MODEL_DIR = getattr(
     settings, "LOCAL_AI_MODEL_DIR", "artifacts/models/phishing-mmbert"
 )
-LOCAL_AI_MAX_LENGTH = getattr(settings, "LOCAL_AI_MAX_LENGTH", 1024)
+LOCAL_AI_MAX_LENGTH = getattr(settings, "LOCAL_AI_MAX_LENGTH", 512)
 
 _LOAD_LOCK = threading.Lock()
 _INFERENCE_LOCK = threading.Lock()

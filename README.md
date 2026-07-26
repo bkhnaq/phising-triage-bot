@@ -164,7 +164,7 @@ pip install -r requirements-ml-runtime.txt
 | **Telegram Bot** | Chat with [@BotFather](https://t.me/BotFather) on Telegram | Yes |
 | **VirusTotal** | https://www.virustotal.com/gui/my-apikey | Recommended |
 | **AlienVault OTX** | https://otx.alienvault.com/accounts/signup | Recommended |
-| **Groq AI** | https://console.groq.com/keys | Optional fallback and Vietnamese data augmentation |
+| **Groq AI** | https://console.groq.com/keys | Optional fallback for uncertain local predictions |
 | **AbuseIPDB** | https://www.abuseipdb.com/account/api | Optional |
 | **SecurityTrails** | https://securitytrails.com/app/signup | Optional |
 
@@ -184,7 +184,7 @@ Configure the artifact and routing in `.env`:
 ```dotenv
 LOCAL_AI_ENABLED=true
 LOCAL_AI_MODEL_DIR=artifacts/models/phishing-mmbert
-LOCAL_AI_MAX_LENGTH=1024
+LOCAL_AI_MAX_LENGTH=512
 AI_GROQ_FALLBACK=true
 ```
 
@@ -201,24 +201,41 @@ pip install -r requirements-ml.txt
 ```
 
 Prepare the revision-pinned public datasets, build a bounded/cached Vietnamese
-slice, train the baseline, then fine-tune mmBERT:
+slice with the local Apache-2.0 MarianMT translator, train the baseline, then
+fine-tune mmBERT. One-epoch passes keep export memory bounded on a verified
+4 GB NVIDIA GPU:
 
 ```bash
 python -m ml.prepare_data --source public --raw-dir data/raw --output-dir data/processed/phishing --seed 42
-python -m ml.augment_vietnamese --input data/processed/phishing/train.jsonl --output data/processed/phishing/train.vi.jsonl --cache-dir artifacts/augmentation-cache --split train --batch-size 1 --max-records 50 --max-requests 50 --max-source-chars 2000 --seed 42
-python -m ml.augment_vietnamese --input data/processed/phishing/test.jsonl --output data/processed/phishing/test.vi.jsonl --cache-dir artifacts/augmentation-cache --split test --batch-size 1 --max-records 50 --max-requests 50 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/train.jsonl --output data/processed/phishing/train.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split train --batch-size 8 --max-records 500 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/validation.jsonl --output data/processed/phishing/validation.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split validation --batch-size 8 --max-records 200 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/test.jsonl --output data/processed/phishing/test.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split test --batch-size 8 --max-records 200 --max-source-chars 2000 --seed 42
 python -m ml.train_baseline --data-dir data/processed/phishing --output-dir artifacts/baseline-full --seed 42
-python -m ml.train_mmbert --data-dir data/processed/phishing --train-augmentation data/processed/phishing/train.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --output-dir artifacts/mmbert-candidate --seed 42
+python -m ml.train_mmbert --data-dir data/processed/phishing --train-augmentation data/processed/phishing/train.vi.jsonl --output-dir artifacts/mmbert-epoch1 --epochs 1 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-epoch1 --model-id jhu-clsp/mmBERT-small
+python -m ml.train_mmbert --data-dir data/processed/phishing --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --initial-model-dir artifacts/mmbert-epoch1 --output-dir artifacts/mmbert-weights --epochs 1 --learning-rate 3e-6 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-weights --model-id jhu-clsp/mmBERT-small
+python -m ml.train_mmbert --data-dir data/processed/phishing --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --initial-model-dir artifacts/mmbert-weights --output-dir artifacts/mmbert-candidate --evaluate-only --min-recall 0.95 --min-vietnamese-recall 0.90 --max-vietnamese-fpr 0.20 --seed 42
 python -m ml.promote manifest --candidate artifacts/mmbert-candidate --model-id jhu-clsp/mmBERT-small
 python -m ml.promote promote --candidate artifacts/mmbert-candidate --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
 ```
 
-Augmentation requires `GROQ_API_KEY`; it is request-bounded, rate-limit aware,
-content-addressed and safe to resume. Train and test synthetic records are
-generated from separate source splits. Promotion is atomic and is rejected
-unless English phishing recall is at least 0.90, false-positive rate is at most
-0.05, English macro-F1 matches or exceeds the baseline, and synthetic
-Vietnamese phishing recall is at least 0.85.
+The translator is downloaded once at its pinned revision, then generation is
+local, content-addressed and safe to resume. URLs, domains, currency amounts and
+attachment names are preserved rather than translated. Train and test
+synthetic records are generated from separate source splits. The Groq
+augmenter remains available as an optional alternative, but may consume API
+daily-token quota.
+
+Promotion is atomic and is rejected unless English phishing recall is at least
+0.90, English false-positive rate is at most 0.05, English macro-F1 matches or
+exceeds the baseline, synthetic Vietnamese phishing recall is at least 0.85,
+and synthetic Vietnamese false-positive rate is at most 0.20. The verified
+promoted run scored English macro-F1 `0.9812` (recall `0.9761`, FPR `0.0141`)
+and synthetic Vietnamese macro-F1 `0.8789` (recall `0.94`, FPR `0.1818`) on
+1,506 English and 199 held-out Vietnamese records. Synthetic Vietnamese
+metrics are a rollout gate, not a substitute for monitoring labeled production
+email.
 
 ### 4. Run the bot
 
@@ -305,7 +322,7 @@ Development mode behavior:
 ## Runtime Tuning
 
 - `OFFLINE_MODE=true` skips external network lookups (VT/OTX/WHOIS/DNS/redirects/Groq) for local demos and deterministic tests. The promoted local classifier still runs offline.
-- `LOCAL_AI_MAX_LENGTH` controls runtime token truncation (default: `1024`; training uses `512`).
+- `LOCAL_AI_MAX_LENGTH` controls runtime token truncation (default: `512`, matching training and threshold calibration).
 - `THREAT_INTEL_CACHE_TTL_SECONDS` controls the in-memory cache TTL for external lookups (default: `900`).
 - `THREAT_INTEL_MAX_WORKERS` controls parallel lookup fan-out for independent threat-intel checks (default: `8`).
 

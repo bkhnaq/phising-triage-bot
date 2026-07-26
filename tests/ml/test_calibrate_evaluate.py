@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from ml.calibrate import main as calibrate_main
+from ml.calibrate import select_bilingual_thresholds
 from ml.calibrate import select_thresholds
 from ml.contracts import DecisionThresholds
 from ml.evaluate import compute_metrics, evaluate_slices
@@ -44,6 +45,33 @@ def test_calibration_rejects_invalid_or_single_class_inputs() -> None:
         select_thresholds([0, 1], [0.1, 0.9], max_fpr=1.1)
     with pytest.raises(ValueError, match="min_recall"):
         select_thresholds([0, 1], [0.1, 0.9], min_recall=-0.1)
+
+
+def test_bilingual_calibration_enforces_each_language_slice() -> None:
+    labels = ([0] * 10) + ([1] * 10) + ([0] * 10) + ([1] * 10)
+    probabilities = (
+        ([0.01] * 9)
+        + [0.40]
+        + [0.15]
+        + ([0.90] * 9)
+        + ([0.01] * 8)
+        + [0.20, 0.30]
+        + [0.25]
+        + ([0.90] * 9)
+    )
+    languages = (["en"] * 20) + (["vi"] * 20)
+
+    thresholds = select_bilingual_thresholds(
+        labels,
+        probabilities,
+        languages,
+        min_english_recall=0.90,
+        max_english_fpr=0.10,
+        min_vietnamese_recall=0.90,
+        max_vietnamese_fpr=0.20,
+    )
+
+    assert thresholds.high > 0.30
 
 
 def test_perfect_predictions_have_expected_binary_metrics() -> None:

@@ -218,7 +218,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cache-dir", type=Path, required=True)
-    parser.add_argument("--split", choices=("train", "test"), default="train")
+    parser.add_argument(
+        "--split",
+        choices=("train", "validation", "test"),
+        default="train",
+    )
     parser.add_argument("--model", default=_MODEL_ID)
     parser.add_argument("--revision", default=_MODEL_REVISION)
     parser.add_argument("--batch-size", type=int, default=8)

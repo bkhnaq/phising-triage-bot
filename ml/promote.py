@@ -200,6 +200,7 @@ def evaluate_promotion_gates(
     min_english_recall: float = 0.90,
     max_english_fpr: float = 0.05,
     min_vietnamese_recall: float = 0.85,
+    max_vietnamese_fpr: float = 0.20,
 ) -> list[str]:
     """Return every failed promotion requirement without mutating artifacts."""
     try:
@@ -208,6 +209,9 @@ def evaluate_promotion_gates(
         english_macro_f1 = _metric(metrics, "test", "english", "macro_f1")
         vietnamese_recall = _metric(
             metrics, "test", "synthetic_vietnamese", "phishing_recall"
+        )
+        vietnamese_fpr = _metric(
+            metrics, "test", "synthetic_vietnamese", "false_positive_rate"
         )
         baseline_macro_f1 = _metric(baseline_metrics, "test", "english", "macro_f1")
     except ValueError as exc:
@@ -233,6 +237,11 @@ def evaluate_promotion_gates(
         failures.append(
             "Vietnamese phishing recall "
             f"{vietnamese_recall:.4f} is below {min_vietnamese_recall:.4f}"
+        )
+    if vietnamese_fpr > max_vietnamese_fpr:
+        failures.append(
+            "Vietnamese false-positive rate "
+            f"{vietnamese_fpr:.4f} exceeds {max_vietnamese_fpr:.4f}"
         )
     return failures
 

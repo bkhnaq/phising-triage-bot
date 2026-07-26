@@ -20,6 +20,7 @@ def _metrics(
     english_fpr: float = 0.02,
     english_macro_f1: float = 0.94,
     vietnamese_recall: float = 0.90,
+    vietnamese_fpr: float = 0.10,
 ) -> dict[str, object]:
     return {
         "test": {
@@ -32,6 +33,7 @@ def _metrics(
             "synthetic_vietnamese": {
                 "sample_count": 40,
                 "phishing_recall": vietnamese_recall,
+                "false_positive_rate": vietnamese_fpr,
             },
         }
     }
@@ -165,6 +167,7 @@ def test_transformers_config_may_derive_num_labels_from_exact_id_mapping(
         (_metrics(english_fpr=0.051), "English false-positive rate"),
         (_metrics(english_macro_f1=0.89), "English macro F1"),
         (_metrics(vietnamese_recall=0.84), "Vietnamese phishing recall"),
+        (_metrics(vietnamese_fpr=0.21), "Vietnamese false-positive rate"),
     ],
 )
 def test_each_failed_quality_gate_has_actionable_reason(

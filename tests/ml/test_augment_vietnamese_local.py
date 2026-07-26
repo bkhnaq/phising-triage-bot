@@ -1,5 +1,6 @@
 from ml.augment_vietnamese import _domains, _protected_tokens, _urls
 from ml.augment_vietnamese_local import (
+    _parser,
     build_local_variant,
     translate_preserving_security_tokens,
 )
@@ -86,3 +87,20 @@ def test_model_generated_domain_like_text_is_neutralized() -> None:
     assert _domains(f"{generated.subject}\n{generated.body}") == _domains(
         f"{original.subject}\n{original.body}"
     )
+
+
+def test_local_augmenter_accepts_validation_split(tmp_path) -> None:
+    args = _parser().parse_args(
+        [
+            "--input",
+            str(tmp_path / "input.jsonl"),
+            "--output",
+            str(tmp_path / "output.jsonl"),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--split",
+            "validation",
+        ]
+    )
+
+    assert args.split == "validation"

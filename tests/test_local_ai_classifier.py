@@ -69,6 +69,10 @@ def _clean_local_cache() -> None:
     local.reset_local_model_cache()
 
 
+def test_runtime_default_context_matches_calibrated_training_context() -> None:
+    assert local.LOCAL_AI_MAX_LENGTH == 512
+
+
 def test_disabled_local_ai_returns_stable_result(monkeypatch) -> None:
     monkeypatch.setattr(local, "LOCAL_AI_ENABLED", False)
 

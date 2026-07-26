@@ -63,6 +63,39 @@ def _midpoints(values: Sequence[float]) -> list[float]:
     ]
 
 
+def _select_low_threshold(
+    labels: Sequence[int],
+    scores: Sequence[float],
+    high: float,
+    max_fnr: float,
+) -> float:
+    low_candidates = {
+        0.0,
+        *(
+            candidate
+            for candidate in _midpoints([*scores, high])
+            if 0.0 < candidate < high
+        ),
+    }
+    positive_count = sum(labels)
+    negative_count = len(labels) - positive_count
+    eligible_low: list[tuple[float, float]] = []
+    for candidate in sorted(low_candidates):
+        confident_legitimate = [
+            label
+            for label, score in zip(labels, scores, strict=True)
+            if score < candidate
+        ]
+        true_legitimate = sum(label == 0 for label in confident_legitimate)
+        false_legitimate = sum(label == 1 for label in confident_legitimate)
+        legitimate_recall = true_legitimate / negative_count
+        phishing_miss_rate = false_legitimate / positive_count
+        if phishing_miss_rate <= max_fnr:
+            eligible_low.append((legitimate_recall, candidate))
+    _, low = max(eligible_low, key=lambda item: item)
+    return low
+
+
 def select_thresholds(
     y_true: Sequence[int],
     probabilities: Sequence[float],
@@ -92,31 +125,77 @@ def select_thresholds(
     _, _, _, high = max(eligible_high)
     if high <= 0.0:
         raise ValueError("calibration could not create a non-empty threshold range")
+    low = _select_low_threshold(labels, scores, high, max_fnr)
+    return DecisionThresholds(low=low, high=high)
 
-    low_candidates = {
-        0.0,
-        *(
-            candidate
-            for candidate in _midpoints([*scores, high])
-            if 0.0 < candidate < high
-        ),
+
+def select_bilingual_thresholds(
+    y_true: Sequence[int],
+    probabilities: Sequence[float],
+    languages: Sequence[str],
+    *,
+    min_english_recall: float = 0.95,
+    max_english_fpr: float = 0.05,
+    min_vietnamese_recall: float = 0.90,
+    max_vietnamese_fpr: float = 0.20,
+    max_fnr: float = 0.05,
+) -> DecisionThresholds:
+    """Optimize equal-weight EN/VI macro F1 after per-language safety gates."""
+    if len(languages) != len(y_true):
+        raise ValueError("languages and labels must have the same length")
+    constraints = {
+        "min_english_recall": min_english_recall,
+        "max_english_fpr": max_english_fpr,
+        "min_vietnamese_recall": min_vietnamese_recall,
+        "max_vietnamese_fpr": max_vietnamese_fpr,
+        "max_fnr": max_fnr,
     }
-    positive_count = sum(labels)
-    negative_count = len(labels) - positive_count
-    eligible_low: list[tuple[float, float]] = []
-    for candidate in sorted(low_candidates):
-        confident_legitimate = [
-            label
-            for label, score in zip(labels, scores, strict=True)
-            if score < candidate
+    for name, value in constraints.items():
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1]")
+    labels, scores = _validated_inputs(y_true, probabilities)
+    normalized_languages = [str(value).lower() for value in languages]
+    if set(normalized_languages) != {"en", "vi"}:
+        raise ValueError("bilingual calibration requires en and vi slices")
+
+    slices: dict[str, tuple[list[int], list[float]]] = {}
+    for language in ("en", "vi"):
+        indexes = [
+            index
+            for index, value in enumerate(normalized_languages)
+            if value == language
         ]
-        true_legitimate = sum(label == 0 for label in confident_legitimate)
-        false_legitimate = sum(label == 1 for label in confident_legitimate)
-        legitimate_recall = true_legitimate / negative_count
-        phishing_miss_rate = false_legitimate / positive_count
-        if phishing_miss_rate <= max_fnr:
-            eligible_low.append((legitimate_recall, candidate))
-    _, low = max(eligible_low, key=lambda item: item)
+        slices[language] = _validated_inputs(
+            [labels[index] for index in indexes],
+            [scores[index] for index in indexes],
+        )
+
+    eligible: list[tuple[float, float, float, float]] = []
+    for candidate in sorted(set(scores) | {1.0}):
+        english = _binary_stats(*slices["en"], candidate)
+        vietnamese = _binary_stats(*slices["vi"], candidate)
+        en_recall, en_fpr, en_macro_f1 = english
+        vi_recall, vi_fpr, vi_macro_f1 = vietnamese
+        if (
+            en_recall >= min_english_recall
+            and en_fpr <= max_english_fpr
+            and vi_recall >= min_vietnamese_recall
+            and vi_fpr <= max_vietnamese_fpr
+        ):
+            eligible.append(
+                (
+                    (en_macro_f1 + vi_macro_f1) / 2.0,
+                    min(en_recall, vi_recall),
+                    -max(en_fpr, vi_fpr),
+                    candidate,
+                )
+            )
+    if not eligible:
+        raise ValueError("no threshold satisfies bilingual calibration gates")
+    _, _, _, high = max(eligible)
+    if high <= 0.0:
+        raise ValueError("calibration could not create a non-empty threshold range")
+    low = _select_low_threshold(labels, scores, high, max_fnr)
     return DecisionThresholds(low=low, high=high)
 
 

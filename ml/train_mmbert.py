@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from ml.calibrate import select_thresholds
+from ml.calibrate import select_bilingual_thresholds, select_thresholds
 from ml.contracts import DecisionThresholds, EmailRecord
 from ml.evaluate import compute_metrics, evaluate_slices
 from ml.promote import validate_artifact
@@ -184,6 +184,7 @@ def _probabilities_from_logits(logits: Any) -> list[float]:
 def _load_corpus(
     data_dir: Path,
     train_augmentations: Sequence[Path],
+    validation_augmentations: Sequence[Path],
     test_augmentations: Sequence[Path],
 ) -> tuple[
     tuple[list[str], list[int], list[EmailRecord]],
@@ -198,6 +199,11 @@ def _load_corpus(
         train[0].extend(extra[0])
         train[1].extend(extra[1])
         train[2].extend(extra[2])
+    for path in validation_augmentations:
+        extra = load_split(path, "validation")
+        validation[0].extend(extra[0])
+        validation[1].extend(extra[1])
+        validation[2].extend(extra[2])
     for path in test_augmentations:
         extra = load_split(path, "test")
         test[0].extend(extra[0])
@@ -391,14 +397,25 @@ def train_mmbert(
     data_dir: Path,
     *,
     train_augmentations: Sequence[Path] = (),
+    validation_augmentations: Sequence[Path] = (),
     test_augmentations: Sequence[Path] = (),
     resume_from_checkpoint: Path | None = None,
     max_fpr: float = 0.05,
+    min_recall: float = 0.90,
+    max_vietnamese_fpr: float = 0.20,
+    min_vietnamese_recall: float = 0.90,
+    evaluate_only: bool = False,
 ) -> dict[str, object]:
     """Fine-tune, calibrate, evaluate, and export a clean candidate artifact."""
+    if evaluate_only and config.initial_model_dir is None:
+        raise ValueError("evaluate_only requires initial_model_dir")
     if config.initial_model_dir is not None and resume_from_checkpoint is not None:
         raise ValueError(
             "initial_model_dir and resume_from_checkpoint are mutually exclusive"
+        )
+    if evaluate_only and resume_from_checkpoint is not None:
+        raise ValueError(
+            "evaluate_only and resume_from_checkpoint are mutually exclusive"
         )
     if config.initial_model_dir is not None:
         validate_artifact(config.initial_model_dir)
@@ -421,7 +438,10 @@ def train_mmbert(
         ) from exc
 
     train, validation, test = _load_corpus(
-        data_dir, train_augmentations, test_augmentations
+        data_dir,
+        train_augmentations,
+        validation_augmentations,
+        test_augmentations,
     )
     if config.smoke:
         train = _balanced_smoke(*train)
@@ -460,7 +480,8 @@ def train_mmbert(
         trust_remote_code=False,
         local_files_only=local_files_only,
     )
-    model = AutoModelForSequenceClassification.from_pretrained(
+    # model_load_options always pins remote revisions; local starts are checksummed.
+    model = AutoModelForSequenceClassification.from_pretrained(  # nosec B615
         model_source,
         config=model_config,
         dtype=model_dtype,
@@ -472,7 +493,11 @@ def train_mmbert(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
 
-    train_dataset = _EncodedDataset(train[0], train[1], tokenizer, config.max_length)
+    train_dataset = (
+        None
+        if evaluate_only
+        else _EncodedDataset(train[0], train[1], tokenizer, config.max_length)
+    )
     validation_dataset = _EncodedDataset(
         validation[0], validation[1], tokenizer, config.max_length
     )
@@ -501,20 +526,41 @@ def train_mmbert(
         processing_class=tokenizer,
     )
 
-    started = time.perf_counter()
-    train_result = trainer.train(
-        resume_from_checkpoint=(
-            str(resume_from_checkpoint) if resume_from_checkpoint else None
+    if evaluate_only:
+        training_seconds = 0.0
+        train_metrics: dict[str, object] = {"evaluate_only": True}
+    else:
+        started = time.perf_counter()
+        train_result = trainer.train(
+            resume_from_checkpoint=(
+                str(resume_from_checkpoint) if resume_from_checkpoint else None
+            )
         )
-    )
-    training_seconds = time.perf_counter() - started
+        training_seconds = time.perf_counter() - started
+        train_metrics = dict(train_result.metrics)
     validation_output = trainer.predict(validation_dataset)
     test_output = trainer.predict(test_dataset)
     validation_probabilities = _probabilities_from_logits(validation_output.predictions)
     test_probabilities = _probabilities_from_logits(test_output.predictions)
-    thresholds = select_thresholds(
-        validation[1], validation_probabilities, max_fpr=max_fpr
-    )
+    validation_languages = [record.language for record in validation[2]]
+    bilingual_calibration = set(validation_languages) == {"en", "vi"}
+    if bilingual_calibration:
+        thresholds = select_bilingual_thresholds(
+            validation[1],
+            validation_probabilities,
+            validation_languages,
+            min_english_recall=min_recall,
+            max_english_fpr=max_fpr,
+            min_vietnamese_recall=min_vietnamese_recall,
+            max_vietnamese_fpr=max_vietnamese_fpr,
+        )
+    else:
+        thresholds = select_thresholds(
+            validation[1],
+            validation_probabilities,
+            max_fpr=max_fpr,
+            min_recall=min_recall,
+        )
     validation_rows = probability_rows(
         [record.to_dict() for record in validation[2]],
         validation_probabilities,
@@ -556,6 +602,10 @@ def train_mmbert(
             **thresholds.to_dict(),
             "calibration": {
                 "max_fpr": max_fpr,
+                "min_recall": min_recall,
+                "mode": "bilingual" if bilingual_calibration else "combined",
+                "max_vietnamese_fpr": max_vietnamese_fpr,
+                "min_vietnamese_recall": min_vietnamese_recall,
                 "validation_sample_count": len(validation[1]),
             },
         },
@@ -582,7 +632,7 @@ def train_mmbert(
                     else None
                 ),
             },
-            "train_metrics": train_result.metrics,
+            "train_metrics": train_metrics,
             "peak_cuda_memory_bytes": peak_memory,
             "torch_version": torch.__version__,
             "transformers_version": transformers.__version__,
@@ -599,6 +649,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--checkpoint-dir", type=Path)
     parser.add_argument("--train-augmentation", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--validation-augmentation",
+        type=Path,
+        action="append",
+        default=[],
+    )
     parser.add_argument("--test-augmentation", type=Path, action="append", default=[])
     parser.add_argument("--resume-from-checkpoint", type=Path)
     parser.add_argument("--initial-model-dir", type=Path)
@@ -608,8 +664,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=float)
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--max-fpr", type=float, default=0.05)
+    parser.add_argument("--min-recall", type=float, default=0.90)
+    parser.add_argument("--max-vietnamese-fpr", type=float, default=0.20)
+    parser.add_argument("--min-vietnamese-recall", type=float, default=0.90)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--evaluate-only", action="store_true")
     parser.add_argument("--train-token-embeddings", action="store_true")
     return parser
 
@@ -636,9 +696,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         config,
         args.data_dir,
         train_augmentations=args.train_augmentation,
+        validation_augmentations=args.validation_augmentation,
         test_augmentations=args.test_augmentation,
         resume_from_checkpoint=args.resume_from_checkpoint,
         max_fpr=args.max_fpr,
+        min_recall=args.min_recall,
+        max_vietnamese_fpr=args.max_vietnamese_fpr,
+        min_vietnamese_recall=args.min_vietnamese_recall,
+        evaluate_only=args.evaluate_only,
     )
     validation = metrics.get("validation")
     macro_f1 = validation.get("macro_f1") if isinstance(validation, Mapping) else None

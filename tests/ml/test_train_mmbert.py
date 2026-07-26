@@ -15,6 +15,7 @@ from ml.train_mmbert import (
     model_weight_dtype_name,
     probability_rows,
     schedule_warmup,
+    train_mmbert,
     training_config,
 )
 
@@ -170,6 +171,23 @@ def test_training_configuration_rejects_invalid_learning_rate(
             smoke=False,
             seed=42,
             learning_rate=learning_rate,
+        )
+
+
+def test_evaluate_only_requires_a_validated_initial_artifact(
+    tmp_path: Path,
+) -> None:
+    config = training_config(
+        tmp_path / "candidate",
+        smoke=False,
+        seed=42,
+    )
+
+    with pytest.raises(ValueError, match="initial_model_dir"):
+        train_mmbert(
+            config,
+            tmp_path / "data",
+            evaluate_only=True,
         )
 
 

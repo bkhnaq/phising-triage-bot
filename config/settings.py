@@ -50,7 +50,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 LOCAL_AI_ENABLED = _get_bool("LOCAL_AI_ENABLED", True)
 LOCAL_AI_MODEL_DIR = os.getenv("LOCAL_AI_MODEL_DIR", "artifacts/models/phishing-mmbert")
-LOCAL_AI_MAX_LENGTH = _get_positive_int("LOCAL_AI_MAX_LENGTH", 1024)
+LOCAL_AI_MAX_LENGTH = _get_positive_int("LOCAL_AI_MAX_LENGTH", 512)
 AI_GROQ_FALLBACK = _get_bool("AI_GROQ_FALLBACK", True)
 
 # ── Risk Scoring Thresholds ──────────────────────────────────
