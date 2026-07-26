@@ -137,6 +137,27 @@ def test_reversed_model_label_mapping_is_rejected(tmp_path: Path) -> None:
         validate_artifact(artifact)
 
 
+def test_transformers_config_may_derive_num_labels_from_exact_id_mapping(
+    tmp_path: Path,
+) -> None:
+    artifact = _make_artifact(tmp_path / "artifact")
+    (artifact / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "modernbert",
+                "id2label": {"0": "legitimate", "1": "phishing"},
+                "label2id": {"legitimate": 0, "phishing": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_artifact_manifest(artifact, model_id="jhu-clsp/mmBERT-small")
+
+    validated = validate_artifact(artifact)
+
+    assert validated.model_id == "jhu-clsp/mmBERT-small"
+
+
 @pytest.mark.parametrize(
     ("metrics", "expected"),
     [

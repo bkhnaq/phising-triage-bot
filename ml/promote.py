@@ -114,16 +114,25 @@ def _safe_artifact_path(root: Path, relative: str) -> Path:
 def _validate_model_contract(directory: Path, files: set[str]) -> None:
     DecisionThresholds.from_mapping(_json_object(directory / "thresholds.json"))
     config = _json_object(directory / "config.json")
-    if config.get("num_labels") != 2:
+    if config.get("num_labels") not in {None, 2}:
         raise ValueError("model config num_labels must be 2")
     id2label = config.get("id2label")
     if (
         not isinstance(id2label, Mapping)
+        or len(id2label) != 2
         or str(id2label.get("0", "")).lower() != "legitimate"
         or str(id2label.get("1", "")).lower() != "phishing"
     ):
         raise ValueError(
             "model config must map label 0 to legitimate and label 1 to phishing"
+        )
+    label2id = config.get("label2id")
+    if label2id is not None and (
+        not isinstance(label2id, Mapping)
+        or dict(label2id) != {"legitimate": 0, "phishing": 1}
+    ):
+        raise ValueError(
+            "model config label2id must map legitimate to 0 and phishing to 1"
         )
     _json_object(directory / "metrics.json")
     dataset_manifest = _json_object(directory / "dataset-manifest.json")
