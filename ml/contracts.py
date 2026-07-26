@@ -124,3 +124,66 @@ class EmailRecord:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactFile:
+    """Integrity metadata for one file inside a promoted artifact."""
+
+    sha256: str
+    size: int
+
+    def __post_init__(self) -> None:
+        if not _SHA256_PATTERN.fullmatch(self.sha256):
+            raise ValueError("artifact file sha256 must be a lowercase hex digest")
+        if isinstance(self.size, bool) or self.size < 0:
+            raise ValueError("artifact file size must be a non-negative integer")
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, object]) -> "ArtifactFile":
+        sha256 = data.get("sha256")
+        size = data.get("size")
+        if not isinstance(sha256, str):
+            raise ValueError("artifact file sha256 must be a string")
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise ValueError("artifact file size must be an integer")
+        return cls(sha256=sha256, size=size)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactManifest:
+    """Validated manifest for one immutable model artifact directory."""
+
+    schema_version: int
+    model_id: str
+    files: dict[str, ArtifactFile]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported artifact manifest schema_version")
+        if not self.model_id.strip():
+            raise ValueError("artifact manifest model_id must be non-empty")
+        if not self.files:
+            raise ValueError("artifact manifest files must be non-empty")
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, object]) -> "ArtifactManifest":
+        schema_version = data.get("schema_version")
+        model_id = data.get("model_id")
+        raw_files = data.get("files")
+        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+            raise ValueError("artifact manifest schema_version must be an integer")
+        if not isinstance(model_id, str):
+            raise ValueError("artifact manifest model_id must be a string")
+        if not isinstance(raw_files, Mapping):
+            raise ValueError("artifact manifest files must be an object")
+        files: dict[str, ArtifactFile] = {}
+        for path, metadata in raw_files.items():
+            if not isinstance(path, str) or not isinstance(metadata, Mapping):
+                raise ValueError("artifact manifest file entry is invalid")
+            files[path] = ArtifactFile.from_mapping(metadata)
+        return cls(
+            schema_version=schema_version,
+            model_id=model_id,
+            files=files,
+        )
