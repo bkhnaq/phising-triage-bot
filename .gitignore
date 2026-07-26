@@ -15,6 +15,11 @@ env/
 # Uploads (runtime data)
 uploads/
 
+# Local ML data, checkpoints, and promoted artifacts
+data/raw/
+data/processed/
+artifacts/
+
 # Logs
 logs/
 *.log
