@@ -10,6 +10,7 @@ from ml import augment_vietnamese
 from ml.augment_vietnamese import (
     AugmentationStats,
     _GroqBatchClient,
+    _bounded_records,
     _completion_token_budget,
     augment_records,
     augmentation_cache_key,
@@ -280,6 +281,27 @@ def test_completion_budget_scales_with_input_without_requesting_maximum() -> Non
     budget = _completion_token_budget([original])
 
     assert 512 < budget < 4_000
+
+
+def test_bounded_selection_can_exclude_oversized_sources() -> None:
+    records = [
+        _record("source:train:legit-long", label="legitimate", body="A" * 500),
+        _record("source:train:phish-long", body="B" * 500),
+        _record("source:train:legit-short", label="legitimate", body="Hello"),
+        _record("source:train:phish-short", body="Verify"),
+    ]
+
+    selected = _bounded_records(
+        records,
+        max_records=4,
+        seed=42,
+        max_source_chars=100,
+    )
+
+    assert {record.id for record in selected} == {
+        "source:train:legit-short",
+        "source:train:phish-short",
+    }
 
 
 def test_groq_client_paces_separate_batches(

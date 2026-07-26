@@ -421,16 +421,30 @@ def _read_records(path: Path, split: str) -> list[EmailRecord]:
 
 
 def _bounded_records(
-    records: Sequence[EmailRecord], max_records: int, seed: int
+    records: Sequence[EmailRecord],
+    max_records: int,
+    seed: int,
+    *,
+    max_source_chars: int | None = None,
 ) -> list[EmailRecord]:
     if max_records <= 0:
         return []
+    if max_source_chars is not None and max_source_chars <= 0:
+        raise ValueError("max_source_chars must be positive")
     import random
 
     # This is deterministic dataset sampling, not security randomness.
     rng = random.Random(seed)  # nosec B311
     by_label = {
-        label: [record for record in records if record.label == label]
+        label: [
+            record
+            for record in records
+            if record.label == label
+            and (
+                max_source_chars is None
+                or len(record.subject) + len(record.body) <= max_source_chars
+            )
+        ]
         for label in ("legitimate", "phishing")
     }
     for values in by_label.values():
@@ -471,6 +485,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--request-interval", type=float, default=12.0)
     parser.add_argument("--max-records", type=int, default=100)
     parser.add_argument("--max-requests", type=int, default=25)
+    parser.add_argument("--max-source-chars", type=int, default=6_000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true")
     return parser
@@ -484,7 +499,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     max_records = min(args.max_records, 2) if args.smoke else args.max_records
     max_requests = min(args.max_requests, 1) if args.smoke else args.max_requests
     records = _bounded_records(
-        _read_records(args.input, args.split), max_records, args.seed
+        _read_records(args.input, args.split),
+        max_records,
+        args.seed,
+        max_source_chars=args.max_source_chars,
     )
     generated, failures, stats = augment_records(
         records,
@@ -511,6 +529,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "seed": args.seed,
         "max_records": max_records,
         "max_requests": max_requests,
+        "max_source_chars": args.max_source_chars,
         "batch_size": args.batch_size,
         "stats": asdict(stats),
     }
