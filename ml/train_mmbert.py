@@ -17,6 +17,7 @@ from typing import Any
 from ml.calibrate import select_thresholds
 from ml.contracts import DecisionThresholds, EmailRecord
 from ml.evaluate import compute_metrics, evaluate_slices
+from ml.promote import validate_artifact
 from ml.text import balanced_truncate
 from ml.train_baseline import load_split
 
@@ -42,6 +43,7 @@ class TrainingConfig:
     seed: int
     smoke: bool
     freeze_token_embeddings: bool
+    initial_model_dir: Path | None
 
 
 def training_config(
@@ -54,9 +56,13 @@ def training_config(
     model_revision: str = _MODEL_REVISION,
     max_length: int = 512,
     freeze_token_embeddings: bool = True,
+    initial_model_dir: Path | None = None,
+    learning_rate: float = 2e-5,
 ) -> TrainingConfig:
     if max_length <= 0:
         raise ValueError("max_length must be positive")
+    if learning_rate <= 0 or not math.isfinite(learning_rate):
+        raise ValueError("learning_rate must be a positive finite number")
     return TrainingConfig(
         output_dir=output_dir,
         checkpoint_dir=checkpoint_dir
@@ -67,7 +73,7 @@ def training_config(
         per_device_train_batch_size=1,
         per_device_eval_batch_size=2,
         gradient_accumulation_steps=16,
-        learning_rate=2e-5,
+        learning_rate=learning_rate,
         weight_decay=0.01,
         warmup_steps=0,
         num_train_epochs=1.0 if smoke else 4.0,
@@ -75,6 +81,7 @@ def training_config(
         seed=seed,
         smoke=smoke,
         freeze_token_embeddings=freeze_token_embeddings,
+        initial_model_dir=initial_model_dir,
     )
 
 
@@ -101,11 +108,14 @@ def schedule_warmup(
 
 def model_load_options(config: TrainingConfig) -> dict[str, object]:
     """Return the auditable, non-executable remote base-model load policy."""
-    return {
+    options: dict[str, object] = {
         "revision": config.model_revision,
         "trust_remote_code": False,
-        "use_safetensors": False,
+        "use_safetensors": config.initial_model_dir is not None,
     }
+    if config.initial_model_dir is not None:
+        options["local_files_only"] = True
+    return options
 
 
 def model_weight_dtype_name(
@@ -386,6 +396,13 @@ def train_mmbert(
     max_fpr: float = 0.05,
 ) -> dict[str, object]:
     """Fine-tune, calibrate, evaluate, and export a clean candidate artifact."""
+    if config.initial_model_dir is not None and resume_from_checkpoint is not None:
+        raise ValueError(
+            "initial_model_dir and resume_from_checkpoint are mutually exclusive"
+        )
+    if config.initial_model_dir is not None:
+        validate_artifact(config.initial_model_dir)
+
     try:
         import torch
         import transformers
@@ -422,26 +439,32 @@ def train_mmbert(
     transformers.set_seed(config.seed)
     if cuda_available:
         torch.cuda.reset_peak_memory_stats()
+    model_source = (
+        str(config.initial_model_dir)
+        if config.initial_model_dir is not None
+        else config.model_id
+    )
+    local_files_only = config.initial_model_dir is not None
     tokenizer = AutoTokenizer.from_pretrained(
-        config.model_id,
+        model_source,
         revision=config.model_revision,
         trust_remote_code=False,
+        local_files_only=local_files_only,
     )
     model_config = AutoConfig.from_pretrained(
-        config.model_id,
+        model_source,
         revision=config.model_revision,
         num_labels=2,
         id2label={0: "legitimate", 1: "phishing"},
         label2id={"legitimate": 0, "phishing": 1},
         trust_remote_code=False,
+        local_files_only=local_files_only,
     )
     model = AutoModelForSequenceClassification.from_pretrained(
-        config.model_id,
+        model_source,
         config=model_config,
-        revision=config.model_revision,
-        trust_remote_code=False,
-        use_safetensors=False,
         dtype=model_dtype,
+        **model_load_options(config),
     )
     if config.freeze_token_embeddings:
         freeze_token_embeddings(model)
@@ -553,6 +576,11 @@ def train_mmbert(
                 **asdict(config),
                 "output_dir": str(config.output_dir),
                 "checkpoint_dir": str(config.checkpoint_dir),
+                "initial_model_dir": (
+                    str(config.initial_model_dir)
+                    if config.initial_model_dir is not None
+                    else None
+                ),
             },
             "train_metrics": train_result.metrics,
             "peak_cuda_memory_bytes": peak_memory,
@@ -573,10 +601,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-augmentation", type=Path, action="append", default=[])
     parser.add_argument("--test-augmentation", type=Path, action="append", default=[])
     parser.add_argument("--resume-from-checkpoint", type=Path)
+    parser.add_argument("--initial-model-dir", type=Path)
     parser.add_argument("--model-id", default=_MODEL_ID)
     parser.add_argument("--model-revision", default=_MODEL_REVISION)
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--epochs", type=float)
+    parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--max-fpr", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true")
@@ -595,6 +625,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_revision=args.model_revision,
         max_length=args.max_length,
         freeze_token_embeddings=not args.train_token_embeddings,
+        initial_model_dir=args.initial_model_dir,
+        learning_rate=args.learning_rate,
     )
     if args.epochs is not None:
         if args.epochs <= 0 or not math.isfinite(args.epochs):

@@ -24,6 +24,17 @@ def test_calibration_respects_false_positive_ceiling() -> None:
     assert 0.20 < thresholds.low < thresholds.high
 
 
+def test_calibration_maximizes_macro_f1_after_recall_and_fpr_gates() -> None:
+    thresholds = select_thresholds(
+        y_true=([0] * 10) + ([1] * 10),
+        probabilities=([0.05] * 8 + [0.35, 0.36] + [0.30] + [0.80] * 9),
+        max_fpr=0.20,
+        min_recall=0.90,
+    )
+
+    assert thresholds.high > 0.36
+
+
 def test_calibration_rejects_invalid_or_single_class_inputs() -> None:
     with pytest.raises(ValueError, match="same length"):
         select_thresholds([0], [0.1, 0.2])
@@ -31,6 +42,8 @@ def test_calibration_rejects_invalid_or_single_class_inputs() -> None:
         select_thresholds([1, 1], [0.8, 0.9])
     with pytest.raises(ValueError, match="max_fpr"):
         select_thresholds([0, 1], [0.1, 0.9], max_fpr=1.1)
+    with pytest.raises(ValueError, match="min_recall"):
+        select_thresholds([0, 1], [0.1, 0.9], min_recall=-0.1)
 
 
 def test_perfect_predictions_have_expected_binary_metrics() -> None:
@@ -129,3 +142,4 @@ def test_calibration_cli_writes_threshold_artifact(tmp_path: Path) -> None:
     saved = json.loads(output.read_text(encoding="utf-8"))
     assert 0.2 < saved["low"] < saved["high"] <= 0.8
     assert saved["calibration"]["max_fpr"] == 0.0
+    assert saved["calibration"]["min_recall"] == 0.90

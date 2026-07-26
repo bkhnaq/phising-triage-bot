@@ -67,11 +67,14 @@ def select_thresholds(
     y_true: Sequence[int],
     probabilities: Sequence[float],
     max_fpr: float = 0.05,
+    min_recall: float = 0.90,
     max_fnr: float | None = None,
 ) -> DecisionThresholds:
-    """Maximize phishing recall under FPR, then calibrate the safe-low boundary."""
+    """Maximize macro F1 after satisfying recall/FPR safety gates."""
     if not 0.0 <= max_fpr <= 1.0:
         raise ValueError("max_fpr must be in [0, 1]")
+    if not 0.0 <= min_recall <= 1.0:
+        raise ValueError("min_recall must be in [0, 1]")
     if max_fnr is None:
         max_fnr = max_fpr
     if not 0.0 <= max_fnr <= 1.0:
@@ -82,11 +85,11 @@ def select_thresholds(
     eligible_high: list[tuple[float, float, float, float]] = []
     for candidate in high_candidates:
         recall, fpr, macro_f1 = _binary_stats(labels, scores, candidate)
-        if fpr <= max_fpr:
-            eligible_high.append((recall, macro_f1, candidate, fpr))
+        if fpr <= max_fpr and recall >= min_recall:
+            eligible_high.append((macro_f1, recall, -fpr, candidate))
     if not eligible_high:
-        raise ValueError("no high threshold satisfies max_fpr")
-    _, _, high, _ = max(eligible_high, key=lambda item: item[:3])
+        raise ValueError("no high threshold satisfies min_recall and max_fpr")
+    _, _, _, high = max(eligible_high)
     if high <= 0.0:
         raise ValueError("calibration could not create a non-empty threshold range")
 
@@ -124,6 +127,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--predictions", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-fpr", type=float, default=0.05)
+    parser.add_argument("--min-recall", type=float, default=0.90)
     parser.add_argument("--max-fnr", type=float)
     return parser
 
@@ -160,12 +164,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         labels,
         probabilities,
         max_fpr=args.max_fpr,
+        min_recall=args.min_recall,
         max_fnr=args.max_fnr,
     )
     payload: dict[str, object] = {
         **thresholds.to_dict(),
         "calibration": {
             "max_fpr": args.max_fpr,
+            "min_recall": args.min_recall,
             "max_fnr": args.max_fnr if args.max_fnr is not None else args.max_fpr,
             "sample_count": len(labels),
             "validation_predictions_sha256": digest.hexdigest(),

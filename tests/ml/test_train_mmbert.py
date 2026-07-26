@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+import math
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -132,6 +133,44 @@ def test_base_model_loading_is_revision_pinned_without_remote_code(
         "trust_remote_code": False,
         "use_safetensors": False,
     }
+
+
+def test_warm_start_loading_requires_validated_local_safetensors(
+    tmp_path: Path,
+) -> None:
+    initial_model_dir = tmp_path / "previous-candidate"
+    config = training_config(
+        tmp_path / "candidate",
+        smoke=False,
+        seed=42,
+        initial_model_dir=initial_model_dir,
+        learning_rate=1e-5,
+    )
+
+    options = model_load_options(config)
+
+    assert config.initial_model_dir == initial_model_dir
+    assert config.learning_rate == 1e-5
+    assert options == {
+        "revision": "abc32620dd4f6ab06f5fbe905dc25f310618e09f",
+        "trust_remote_code": False,
+        "use_safetensors": True,
+        "local_files_only": True,
+    }
+
+
+@pytest.mark.parametrize("learning_rate", [0.0, -1e-5, math.inf, math.nan])
+def test_training_configuration_rejects_invalid_learning_rate(
+    tmp_path: Path,
+    learning_rate: float,
+) -> None:
+    with pytest.raises(ValueError, match="learning_rate"):
+        training_config(
+            tmp_path / "candidate",
+            smoke=False,
+            seed=42,
+            learning_rate=learning_rate,
+        )
 
 
 @pytest.mark.parametrize(
