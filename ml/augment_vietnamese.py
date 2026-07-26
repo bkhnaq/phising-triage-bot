@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -318,13 +319,47 @@ def _request_payload(records: Sequence[EmailRecord]) -> str:
     )
 
 
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    fallback = float(2**attempt)
+    response = getattr(exc, "response", None)
+    if response is None or getattr(response, "status_code", None) != 429:
+        return fallback
+    headers = getattr(response, "headers", {})
+    value = headers.get("retry-after") or headers.get("x-ratelimit-reset-tokens")
+    if not isinstance(value, str):
+        return fallback
+    try:
+        requested = float(value.removesuffix("s"))
+    except ValueError:
+        return fallback
+    return min(60.0, max(fallback, requested))
+
+
+def _completion_token_budget(records: Sequence[EmailRecord]) -> int:
+    source_chars = sum(len(record.subject) + len(record.body) for record in records)
+    return min(4_000, max(512, math.ceil(source_chars / 2) + 256))
+
+
 class _GroqBatchClient:
-    def __init__(self, api_key: str, model: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout: float = 30.0,
+        minimum_interval_seconds: float = 0.0,
+    ) -> None:
+        if minimum_interval_seconds < 0:
+            raise ValueError("minimum_interval_seconds cannot be negative")
         self._api_key = api_key
         self._model = model
         self._timeout = timeout
+        self._minimum_interval_seconds = minimum_interval_seconds
+        self._calls = 0
 
     def __call__(self, records: list[EmailRecord]) -> object:
+        if self._calls:
+            time.sleep(self._minimum_interval_seconds)
+        self._calls += 1
         last_error: Exception | None = None
         for attempt in range(3):
             try:
@@ -345,7 +380,7 @@ class _GroqBatchClient:
                         ],
                         "temperature": 0.0,
                         "response_format": {"type": "json_object"},
-                        "max_tokens": 4000,
+                        "max_tokens": _completion_token_budget(records),
                     },
                     timeout=self._timeout,
                 )
@@ -363,7 +398,7 @@ class _GroqBatchClient:
             ) as exc:
                 last_error = exc
                 if attempt < 2:
-                    time.sleep(2**attempt)
+                    time.sleep(_retry_delay(exc, attempt))
         raise RuntimeError("Groq augmentation failed after 3 attempts") from last_error
 
 
@@ -392,7 +427,8 @@ def _bounded_records(
         return []
     import random
 
-    rng = random.Random(seed)
+    # This is deterministic dataset sampling, not security randomness.
+    rng = random.Random(seed)  # nosec B311
     by_label = {
         label: [record for record in records if record.label == label]
         for label in ("legitimate", "phishing")
@@ -432,6 +468,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=_DEFAULT_MODEL)
     parser.add_argument("--prompt-version", default=_DEFAULT_PROMPT_VERSION)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--request-interval", type=float, default=12.0)
     parser.add_argument("--max-records", type=int, default=100)
     parser.add_argument("--max-requests", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
@@ -454,7 +491,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         cache_dir=args.cache_dir,
         model=args.model,
         prompt_version=args.prompt_version,
-        request_batch=_GroqBatchClient(api_key, args.model),
+        request_batch=_GroqBatchClient(
+            api_key,
+            args.model,
+            minimum_interval_seconds=args.request_interval,
+        ),
         batch_size=args.batch_size,
         max_requests=max_requests,
     )

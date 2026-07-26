@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
+import requests
 
+from ml import augment_vietnamese
 from ml.augment_vietnamese import (
     AugmentationStats,
+    _GroqBatchClient,
+    _completion_token_budget,
     augment_records,
     augmentation_cache_key,
     parse_augmentation_response,
@@ -240,3 +245,88 @@ def test_network_failure_is_quarantined_without_exposing_exception_text(
     assert failures == [{"id": original.id, "reason": "request_failed:RuntimeError"}]
     assert "secret-bearing" not in str(failures)
     assert stats.failures == 1
+
+
+def test_groq_client_honors_rate_limit_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = _record()
+    payload = _valid_payload(original)
+    responses = [
+        _FakeResponse(429, {"retry-after": "7"}, {}),
+        _FakeResponse(
+            200,
+            {},
+            {"choices": [{"message": {"content": json.dumps(payload)}}]},
+        ),
+    ]
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        augment_vietnamese.requests,
+        "post",
+        lambda *args, **kwargs: responses.pop(0),
+    )
+    monkeypatch.setattr(augment_vietnamese.time, "sleep", sleeps.append)
+
+    result = _GroqBatchClient("test-key", "test-model")([original])
+
+    assert result == payload
+    assert sleeps == [7.0]
+
+
+def test_completion_budget_scales_with_input_without_requesting_maximum() -> None:
+    original = _record(body="A" * 2_000)
+
+    budget = _completion_token_budget([original])
+
+    assert 512 < budget < 4_000
+
+
+def test_groq_client_paces_separate_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = _record()
+    payload = _valid_payload(original)
+    response = _FakeResponse(
+        200,
+        {},
+        {"choices": [{"message": {"content": json.dumps(payload)}}]},
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        augment_vietnamese.requests,
+        "post",
+        lambda *args, **kwargs: response,
+    )
+    monkeypatch.setattr(augment_vietnamese.time, "sleep", sleeps.append)
+    client = _GroqBatchClient(
+        "test-key",
+        "test-model",
+        minimum_interval_seconds=12.0,
+    )
+
+    client([original])
+    client([original])
+
+    assert sleeps == [12.0]
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        status_code: int,
+        headers: dict[str, str],
+        payload: dict[str, object],
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            error = requests.HTTPError(f"status {self.status_code}")
+            error.response = self  # type: ignore[assignment]
+            raise error
+
+    def json(self) -> dict[str, object]:
+        return self._payload
