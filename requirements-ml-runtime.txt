@@ -1,0 +1,6 @@
+# Optional local-inference dependencies.
+# For NVIDIA CUDA on Windows/Linux, install the matching PyTorch wheel from
+# https://pytorch.org/get-started/locally/ before installing this file.
+torch>=2.11,<2.14
+transformers>=5.14,<6
+safetensors>=0.6,<1
