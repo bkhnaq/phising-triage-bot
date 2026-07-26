@@ -40,6 +40,7 @@ class TrainingConfig:
     max_steps: int
     seed: int
     smoke: bool
+    freeze_token_embeddings: bool
 
 
 def training_config(
@@ -51,6 +52,7 @@ def training_config(
     model_id: str = _MODEL_ID,
     model_revision: str = _MODEL_REVISION,
     max_length: int = 512,
+    freeze_token_embeddings: bool = True,
 ) -> TrainingConfig:
     if max_length <= 0:
         raise ValueError("max_length must be positive")
@@ -71,6 +73,7 @@ def training_config(
         max_steps=2 if smoke else -1,
         seed=seed,
         smoke=smoke,
+        freeze_token_embeddings=freeze_token_embeddings,
     )
 
 
@@ -102,6 +105,22 @@ def model_load_options(config: TrainingConfig) -> dict[str, object]:
         "trust_remote_code": False,
         "use_safetensors": False,
     }
+
+
+def model_weight_dtype_name(
+    cuda_available: bool,
+    bf16_available: bool,
+) -> str | None:
+    """Select native BF16 weights only when hardware supports their range."""
+    return "bfloat16" if cuda_available and bf16_available else None
+
+
+def freeze_token_embeddings(model: Any) -> int:
+    """Freeze the large pretrained vocabulary table and return parameter count."""
+    parameters = list(model.get_input_embeddings().parameters())
+    for parameter in parameters:
+        parameter.requires_grad = False
+    return len(parameters)
 
 
 def compute_class_weights(labels: Sequence[int]) -> tuple[float, float]:
@@ -383,8 +402,13 @@ def train_mmbert(
         raise ValueError("train and validation data must contain both classes")
     config = schedule_warmup(config, len(train[1]))
 
+    cuda_available = torch.cuda.is_available()
+    bf16_available = cuda_available and torch.cuda.is_bf16_supported()
+    dtype_name = model_weight_dtype_name(cuda_available, bf16_available)
+    model_dtype = getattr(torch, dtype_name) if dtype_name else None
+
     transformers.set_seed(config.seed)
-    if torch.cuda.is_available():
+    if cuda_available:
         torch.cuda.reset_peak_memory_stats()
     tokenizer = AutoTokenizer.from_pretrained(
         config.model_id,
@@ -405,7 +429,10 @@ def train_mmbert(
         revision=config.model_revision,
         trust_remote_code=False,
         use_safetensors=False,
+        dtype=model_dtype,
     )
+    if config.freeze_token_embeddings:
+        freeze_token_embeddings(model)
     model.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
@@ -417,8 +444,8 @@ def train_mmbert(
     test_dataset = _EncodedDataset(test[0], test[1], tokenizer, config.max_length)
     training_arguments = build_training_arguments(
         config,
-        cuda_available=torch.cuda.is_available(),
-        bf16_available=(torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+        cuda_available=cuda_available,
+        bf16_available=bf16_available,
     )
     weighted_trainer = _trainer_class(Trainer, compute_class_weights(train[1]))
     trainer = weighted_trainer(
@@ -428,7 +455,7 @@ def train_mmbert(
         eval_dataset=validation_dataset,
         data_collator=DataCollatorWithPadding(
             tokenizer=tokenizer,
-            pad_to_multiple_of=8 if torch.cuda.is_available() else None,
+            pad_to_multiple_of=8 if cuda_available else None,
         ),
         compute_metrics=_metric_callback,
         callbacks=(
@@ -539,6 +566,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-fpr", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--train-token-embeddings", action="store_true")
     return parser
 
 
@@ -552,6 +580,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_id=args.model_id,
         model_revision=args.model_revision,
         max_length=args.max_length,
+        freeze_token_embeddings=not args.train_token_embeddings,
     )
     if args.epochs is not None:
         if args.epochs <= 0 or not math.isfinite(args.epochs):

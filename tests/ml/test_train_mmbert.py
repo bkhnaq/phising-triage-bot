@@ -7,7 +7,9 @@ import pytest
 from ml.train_mmbert import (
     build_training_arguments,
     compute_class_weights,
+    freeze_token_embeddings,
     model_load_options,
+    model_weight_dtype_name,
     probability_rows,
     schedule_warmup,
     training_config,
@@ -40,6 +42,7 @@ def test_smoke_training_configuration_is_gpu_safe_and_bounded(
     assert config.gradient_accumulation_steps == 16
     assert config.max_steps == 2
     assert config.num_train_epochs == 1.0
+    assert config.freeze_token_embeddings is True
     assert config.seed == 42
 
 
@@ -109,6 +112,34 @@ def test_base_model_loading_is_revision_pinned_without_remote_code(
     }
 
 
+@pytest.mark.parametrize(
+    ("cuda_available", "bf16_available", "expected"),
+    [
+        (True, True, "bfloat16"),
+        (True, False, None),
+        (False, False, None),
+    ],
+)
+def test_native_bf16_weights_are_used_only_on_supported_gpu(
+    cuda_available: bool,
+    bf16_available: bool,
+    expected: str | None,
+) -> None:
+    assert model_weight_dtype_name(cuda_available, bf16_available) == expected
+
+
+def test_token_embedding_freeze_only_disables_embedding_parameters() -> None:
+    embedding_parameter = _FakeParameter()
+    encoder_parameter = _FakeParameter()
+    model = _FakeModel(embedding_parameter, encoder_parameter)
+
+    frozen = freeze_token_embeddings(model)
+
+    assert frozen == 1
+    assert embedding_parameter.requires_grad is False
+    assert encoder_parameter.requires_grad is True
+
+
 def test_probability_rows_preserve_record_metadata() -> None:
     rows = probability_rows(
         [
@@ -138,3 +169,29 @@ def test_probability_rows_preserve_record_metadata() -> None:
 def test_probability_rows_reject_length_mismatch() -> None:
     with pytest.raises(ValueError, match="same length"):
         probability_rows([], [0.5])
+
+
+class _FakeParameter:
+    def __init__(self) -> None:
+        self.requires_grad = True
+
+
+class _FakeEmbeddings:
+    def __init__(self, parameter: _FakeParameter) -> None:
+        self._parameter = parameter
+
+    def parameters(self) -> list[_FakeParameter]:
+        return [self._parameter]
+
+
+class _FakeModel:
+    def __init__(
+        self,
+        embedding_parameter: _FakeParameter,
+        encoder_parameter: _FakeParameter,
+    ) -> None:
+        self._embeddings = _FakeEmbeddings(embedding_parameter)
+        self.encoder_parameter = encoder_parameter
+
+    def get_input_embeddings(self) -> _FakeEmbeddings:
+        return self._embeddings
