@@ -71,12 +71,13 @@ class _TransformersBackend:
         self._torch = torch
         self._max_length = max_length
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._tokenizer = AutoTokenizer.from_pretrained(
+        # The checksummed artifact is a validated local directory; no Hub download.
+        self._tokenizer = AutoTokenizer.from_pretrained(  # nosec B615
             str(directory),
             local_files_only=True,
             trust_remote_code=False,
         )
-        self._model = AutoModelForSequenceClassification.from_pretrained(
+        self._model = AutoModelForSequenceClassification.from_pretrained(  # nosec B615
             str(directory),
             local_files_only=True,
             trust_remote_code=False,
