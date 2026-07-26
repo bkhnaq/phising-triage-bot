@@ -17,6 +17,7 @@ from typing import Any
 from ml.calibrate import select_thresholds
 from ml.contracts import DecisionThresholds, EmailRecord
 from ml.evaluate import compute_metrics, evaluate_slices
+from ml.text import balanced_truncate
 from ml.train_baseline import load_split
 
 _MODEL_ID = "jhu-clsp/mmBERT-small"
@@ -213,6 +214,15 @@ def _balanced_smoke(
     )
 
 
+def bound_tokenizer_inputs(
+    texts: Sequence[str],
+    max_length: int,
+) -> list[str]:
+    """Avoid scanning content that cannot fit while retaining both email ends."""
+    max_chars = max(80, max_length * 4)
+    return [balanced_truncate(text, max_chars) for text in texts]
+
+
 class _EncodedDataset:
     def __init__(
         self,
@@ -224,7 +234,7 @@ class _EncodedDataset:
         import torch
 
         encodings = tokenizer(
-            list(texts),
+            bound_tokenizer_inputs(texts, max_length),
             truncation=True,
             max_length=max_length,
             padding=False,

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from ml.train_mmbert import (
+    bound_tokenizer_inputs,
     build_training_arguments,
     compute_class_weights,
     freeze_token_embeddings,
@@ -138,6 +139,17 @@ def test_token_embedding_freeze_only_disables_embedding_parameters() -> None:
     assert frozen == 1
     assert embedding_parameter.requires_grad is False
     assert encoder_parameter.requires_grad is True
+
+
+def test_tokenizer_inputs_are_balanced_and_bounded_before_encoding() -> None:
+    text = "HEAD" + ("x" * 8_000) + "TAIL"
+
+    bounded = bound_tokenizer_inputs([text], max_length=512)
+
+    assert len(bounded[0]) == 2_048
+    assert bounded[0].startswith("HEAD")
+    assert bounded[0].endswith("TAIL")
+    assert "[...]" in bounded[0]
 
 
 def test_probability_rows_preserve_record_metadata() -> None:
