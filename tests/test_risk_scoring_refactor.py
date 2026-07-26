@@ -374,9 +374,7 @@ class RiskScoringRefactorTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(result["category_scores"]["URL behavior"], 10)
-        self.assertTrue(
-            any("URL obfuscation" in item for item in result["breakdown"])
-        )
+        self.assertTrue(any("URL obfuscation" in item for item in result["breakdown"]))
 
     def test_generic_credential_phish_is_not_low_when_intel_is_clean(self) -> None:
         auth_results = self._auth(

@@ -1,9 +1,13 @@
+import asyncio
 import sys
 import types
 import importlib
+import json
+import logging
 from pathlib import Path
 
 TestClient = importlib.import_module("starlette.testclient").TestClient
+Request = importlib.import_module("starlette.requests").Request
 
 
 def _client_with_auth(monkeypatch, api_key: str = "test-key"):
@@ -81,6 +85,72 @@ def test_analyze_file_too_large_returns_413(monkeypatch, tmp_path: Path) -> None
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "http_error"
     assert list(tmp_path.glob("*")) == []
+
+
+def test_analysis_failure_does_not_expose_exception_details(monkeypatch) -> None:
+    client, _routes = _client_with_auth(monkeypatch)
+    fake_pipeline_module = types.ModuleType("email_analysis.pipeline")
+
+    class FailingPipeline:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def analyze_raw(self, email_raw: str) -> dict:
+            raise RuntimeError("sensitive-token")
+
+    setattr(fake_pipeline_module, "PhishingPipeline", FailingPipeline)
+    monkeypatch.setitem(sys.modules, "email_analysis.pipeline", fake_pipeline_module)
+
+    response = client.post(
+        "/analyze_email",
+        headers={"X-API-Key": "test-key"},
+        json={"email_raw": "From: a@b.com\n\nHello"},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"] == {
+        "code": "http_error",
+        "message": "Analysis failed",
+    }
+    assert "sensitive-token" not in response.text
+
+
+def test_unhandled_exception_is_sanitized_and_logged(caplog) -> None:
+    from api import routes
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/probe",
+        "headers": [],
+        "query_string": b"",
+        "server": ("testserver", 80),
+        "client": ("testclient", 50000),
+        "scheme": "http",
+        "root_path": "",
+        "http_version": "1.1",
+    }
+    try:
+        raise RuntimeError("sensitive-token")
+    except RuntimeError as exc:
+        error = exc
+
+    with caplog.at_level(logging.ERROR, logger=routes.__name__):
+        response = asyncio.run(
+            routes.unhandled_exception_handler(Request(scope), error)
+        )
+
+    payload = json.loads(response.body)
+    assert response.status_code == 500
+    assert payload["error"] == {
+        "code": "internal_error",
+        "message": "Internal server error",
+    }
+    assert "sensitive-token" not in response.body.decode()
+    assert caplog.records[-1].exc_info is not None
+    assert caplog.records[-1].exc_info[1] is error
+    assert error.__traceback__ is not None
+    assert caplog.records[-1].exc_info[2] is error.__traceback__
 
 
 def test_split_message_keeps_markdown_fences_balanced() -> None:

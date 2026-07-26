@@ -469,7 +469,9 @@ def calculate_risk(
         categories = language_analysis.get("categories", {})
         has_credential_language = "credential_harvesting" in categories
         has_threat_language = "threats" in categories
-        if has_credential_language and (has_threat_language or suspicious_url_keyword_count >= 2):
+        if has_credential_language and (
+            has_threat_language or suspicious_url_keyword_count >= 2
+        ):
             pts = 18
             category_scores["correlation"] += pts
             breakdown.append(
@@ -513,9 +515,7 @@ def calculate_risk(
                 str(finding.get("brand", "")).lower(),
                 str(finding.get("sender_domain", "")).lower(),
             )
-            for finding in (brand_impersonation or {}).get(
-                "display_name_spoofing", []
-            )
+            for finding in (brand_impersonation or {}).get("display_name_spoofing", [])
         }
         for finding in display_name_spoofing:
             key = (

@@ -253,7 +253,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content={
             "success": False,
             "request_id": _request_id_from(request),
@@ -268,7 +268,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled error")
+    logger.error(
+        "Unhandled error",
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
@@ -276,7 +279,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
             "request_id": _request_id_from(request),
             "error": {
                 "code": "internal_error",
-                "message": f"Internal server error: {exc}",
+                "message": "Internal server error",
             },
         },
     )
@@ -337,7 +340,7 @@ async def analyze_email(payload: EmailAnalysisRequest, request: Request):
         raise
     except Exception as exc:
         logger.exception("Analysis failed")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Analysis failed") from exc
 
 
 @app.post("/analyze_file", response_model=AnalysisResponse)
@@ -357,7 +360,7 @@ async def analyze_file(request: Request, file: UploadFile = File(...)):
         content = await file.read()
         if len(content) > MAX_UPLOAD_SIZE_BYTES:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=(
                     "Uploaded file exceeds maximum allowed size "
                     f"({MAX_UPLOAD_SIZE_BYTES} bytes)"
@@ -378,7 +381,7 @@ async def analyze_file(request: Request, file: UploadFile = File(...)):
         raise
     except Exception as exc:
         logger.exception("Analysis failed for uploaded file")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Analysis failed") from exc
     finally:
         try:
             save_path.unlink(missing_ok=True)
