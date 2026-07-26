@@ -29,16 +29,16 @@ jobs:
         run: ruff check .
 
       - name: Format check (black)
-        run: black --check api bot config email_analysis report scoring threat_intel main.py
+        run: black --check api bot config email_analysis ml report scoring threat_intel main.py
 
       - name: Type check (mypy)
-        run: mypy api bot config email_analysis report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
+        run: mypy api bot config email_analysis ml report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
 
       - name: Tests (pytest)
         run: pytest -q tests
 
       - name: Security scan (bandit)
-        run: bandit -r api bot config email_analysis report scoring threat_intel -lll
+        run: bandit -r api bot config email_analysis ml report scoring threat_intel -lll
 
       - name: Dependency scan (pip-audit)
         run: pip-audit
