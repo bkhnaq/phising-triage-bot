@@ -18,7 +18,7 @@ from ml.calibrate import select_bilingual_thresholds, select_thresholds
 from ml.contracts import DecisionThresholds, EmailRecord
 from ml.evaluate import compute_metrics, evaluate_slices
 from ml.promote import validate_artifact
-from ml.text import balanced_truncate
+from ml.text import prepare_model_input
 from ml.train_baseline import load_split
 
 _MODEL_ID = "jhu-clsp/mmBERT-small"
@@ -235,8 +235,7 @@ def bound_tokenizer_inputs(
     max_length: int,
 ) -> list[str]:
     """Avoid scanning content that cannot fit while retaining both email ends."""
-    max_chars = max(80, max_length * 4)
-    return [balanced_truncate(text, max_chars) for text in texts]
+    return [prepare_model_input(text, max_length) for text in texts]
 
 
 class _EncodedDataset:

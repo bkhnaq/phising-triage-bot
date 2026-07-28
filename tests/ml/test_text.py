@@ -5,6 +5,7 @@ from ml.text import (
     content_sha256,
     format_email_text,
     normalize_text,
+    prepare_model_input,
 )
 
 
@@ -68,3 +69,14 @@ def test_formatter_uses_cleaned_html_when_plain_body_is_missing() -> None:
     assert "From: security@example.test" in formatted
     assert "Body:\nClick now" in formatted
     assert "<b>" not in formatted
+
+
+def test_model_input_preserves_long_email_head_and_tail() -> None:
+    text = "SUBJECT-HEAD" + (" middle" * 2_000) + "PHISHING-TAIL"
+
+    prepared = prepare_model_input(text, max_length=512)
+
+    assert len(prepared) == 2_048
+    assert prepared.startswith("SUBJECT-HEAD")
+    assert prepared.endswith("PHISHING-TAIL")
+    assert "[...]" in prepared

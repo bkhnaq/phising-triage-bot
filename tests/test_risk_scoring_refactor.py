@@ -504,6 +504,7 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
                 "url_extractor": url_extractor.OFFLINE_MODE,
                 "url_intel": url_intelligence.OFFLINE_MODE,
             },
+            "local_ai_enabled": ai_classifier.LOCAL_AI_ENABLED,
         }
 
         # Keep integration tests deterministic and offline-friendly.
@@ -512,6 +513,7 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         ip_reputation.ABUSEIPDB_API_KEY = ""
         passive_dns.SECURITYTRAILS_API_KEY = ""
         ai_classifier.OFFLINE_MODE = True
+        ai_classifier.LOCAL_AI_ENABLED = False
         domain_intelligence.OFFLINE_MODE = True
         header_forensics.OFFLINE_MODE = True
         heuristic_analyzer.OFFLINE_MODE = True
@@ -545,6 +547,7 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         ip_reputation.ABUSEIPDB_API_KEY = cls._orig_keys["abuse"]
         passive_dns.SECURITYTRAILS_API_KEY = cls._orig_keys["st"]
         ai_classifier.OFFLINE_MODE = cls._orig_keys["offline"]["ai"]
+        ai_classifier.LOCAL_AI_ENABLED = cls._orig_keys["local_ai_enabled"]
         domain_intelligence.OFFLINE_MODE = cls._orig_keys["offline"]["domain"]
         header_forensics.OFFLINE_MODE = cls._orig_keys["offline"]["header"]
         heuristic_analyzer.OFFLINE_MODE = cls._orig_keys["offline"]["heuristic"]
@@ -638,7 +641,7 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         risk = result["risk"]
         verdict = str(risk.get("verdict", ""))
 
-        self.assertIn(verdict, ["CRITICAL", "HIGH", "SUSPICIOUS"])
+        self.assertIn(verdict, ["HIGH", "SUSPICIOUS"])
         self.assertNotIn(verdict, ["INCONCLUSIVE", "LOW"])
 
         providers = [

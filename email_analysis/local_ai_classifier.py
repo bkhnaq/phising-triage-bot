@@ -13,7 +13,7 @@ from typing import Protocol
 from config import settings
 from ml.contracts import DecisionThresholds
 from ml.promote import validate_artifact
-from ml.text import format_email_text
+from ml.text import format_email_text, prepare_model_input
 
 logger = logging.getLogger(__name__)
 
@@ -197,10 +197,9 @@ def classify_email_local(
         return _base_result("local model load failed")
 
     try:
-        text = format_email_text(
-            email_data,
-            urls,
-            max_chars=max(4000, LOCAL_AI_MAX_LENGTH * 12),
+        text = prepare_model_input(
+            format_email_text(email_data, urls),
+            LOCAL_AI_MAX_LENGTH,
         )
         with _INFERENCE_LOCK:
             probability = state.backend.predict_probability(text)

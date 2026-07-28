@@ -43,6 +43,15 @@ def balanced_truncate(text: str, max_chars: int, marker: str = "\n[...]\n") -> s
     return f"{text[:head]}{marker}{text[-tail:]}"
 
 
+def prepare_model_input(text: str, max_length: int) -> str:
+    """Apply the shared character bound before model tokenization."""
+    if isinstance(max_length, bool) or not isinstance(max_length, int):
+        raise ValueError("max_length must be a positive integer")
+    if max_length <= 0:
+        raise ValueError("max_length must be a positive integer")
+    return balanced_truncate(text, max(80, max_length * 4))
+
+
 def _clean_html(value: object) -> str:
     raw = html.unescape(str(value or ""))
     return normalize_text(_HTML_TAG_PATTERN.sub(" ", raw))

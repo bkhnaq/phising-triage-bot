@@ -62,6 +62,16 @@ class _Backend:
         )
 
 
+class _CapturingBackend(_Backend):
+    def __init__(self, probability: float) -> None:
+        super().__init__(probability)
+        self.text: str | None = None
+
+    def predict_probability(self, text: str) -> float:
+        self.text = text
+        return super().predict_probability(text)
+
+
 @pytest.fixture(autouse=True)
 def _clean_local_cache() -> None:
     local.reset_local_model_cache()
@@ -165,6 +175,31 @@ def test_loaded_model_is_reused_for_later_inference(
     second = local.classify_email_local({"subject": "Two", "body_text": "Body"})
 
     assert first["verdict"] == second["verdict"] == "phishing"
+
+
+def test_runtime_uses_training_balanced_context_for_long_email(
+    monkeypatch, tmp_path: Path
+) -> None:
+    artifact = _artifact(tmp_path / "artifact")
+    backend = _CapturingBackend(0.9)
+    monkeypatch.setattr(local, "LOCAL_AI_ENABLED", True)
+    monkeypatch.setattr(local, "LOCAL_AI_MODEL_DIR", str(artifact))
+    monkeypatch.setattr(local, "LOCAL_AI_MAX_LENGTH", 512)
+    monkeypatch.setattr(
+        local,
+        "_load_transformers_backend",
+        lambda _directory, _max_length: backend,
+    )
+    body = "SAFE-HEAD " + ("middle " * 2_000) + " PHISHING-TAIL"
+
+    result = local.classify_email_local({"subject": "Notice", "body_text": body})
+
+    assert result["verdict"] == "phishing"
+    assert backend.text is not None
+    assert len(backend.text) == 2_048
+    assert backend.text.startswith("Subject: Notice")
+    assert backend.text.endswith("PHISHING-TAIL")
+    assert "[...]" in backend.text
 
 
 def test_missing_optional_dependencies_do_not_escape_runtime(
