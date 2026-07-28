@@ -239,7 +239,12 @@ def _augmentation_provenance(
             key = (split, str(resolved))
             existing = grouped.get(key)
             if existing is not None:
-                existing["multiplicity"] = int(existing["multiplicity"]) + 1
+                multiplicity = existing.get("multiplicity")
+                if isinstance(multiplicity, bool) or not isinstance(
+                    multiplicity, int
+                ):
+                    raise ValueError("augmentation multiplicity must be an integer")
+                existing["multiplicity"] = multiplicity + 1
                 continue
             if not resolved.is_file() or resolved.is_symlink():
                 raise ValueError(f"augmentation file not found: {path}")
