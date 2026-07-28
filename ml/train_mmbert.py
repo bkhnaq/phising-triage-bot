@@ -240,17 +240,13 @@ def _augmentation_provenance(
             existing = grouped.get(key)
             if existing is not None:
                 multiplicity = existing.get("multiplicity")
-                if isinstance(multiplicity, bool) or not isinstance(
-                    multiplicity, int
-                ):
+                if isinstance(multiplicity, bool) or not isinstance(multiplicity, int):
                     raise ValueError("augmentation multiplicity must be an integer")
                 existing["multiplicity"] = multiplicity + 1
                 continue
             if not resolved.is_file() or resolved.is_symlink():
                 raise ValueError(f"augmentation file not found: {path}")
-            generation_path = resolved.with_suffix(
-                resolved.suffix + ".manifest.json"
-            )
+            generation_path = resolved.with_suffix(resolved.suffix + ".manifest.json")
             if not generation_path.is_file() or generation_path.is_symlink():
                 raise ValueError(
                     f"augmentation generation manifest not found: {generation_path}"
@@ -275,9 +271,7 @@ def _augmentation_provenance(
     for index, entry in enumerate(entries):
         prefix = f"augmentation/{entry['split']}/{index}"
         checksums[f"{prefix}/data"] = str(entry["sha256"])
-        checksums[f"{prefix}/manifest"] = str(
-            entry["generation_manifest_sha256"]
-        )
+        checksums[f"{prefix}/manifest"] = str(entry["generation_manifest_sha256"])
     return entries, checksums
 
 

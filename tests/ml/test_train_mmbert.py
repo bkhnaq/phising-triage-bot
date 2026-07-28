@@ -409,9 +409,7 @@ def test_merged_manifest_binds_augmentation_and_multiplicity(
     assert manifest["splits"]["train"]["sample_count"] == base_train_count + 2
     assert len(train[2]) == base_train_count + 2
     assert "base/train.jsonl" in manifest["checksums"]
-    assert any(
-        key.startswith("augmentation/train/") for key in manifest["checksums"]
-    )
+    assert any(key.startswith("augmentation/train/") for key in manifest["checksums"])
 
 
 class _FakeParameter:

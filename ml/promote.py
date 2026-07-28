@@ -161,10 +161,7 @@ def _validate_model_contract(
     if not isinstance(dataset_manifest.get("checksums"), Mapping):
         raise ValueError("dataset manifest requires checksums")
     model_id, model_revision = _training_identity(directory)
-    if (
-        manifest.model_id != model_id
-        or manifest.model_revision != model_revision
-    ):
+    if manifest.model_id != model_id or manifest.model_revision != model_revision:
         raise ValueError("artifact model identity does not match training metadata")
 
     index_name = "model.safetensors.index.json"
@@ -240,9 +237,7 @@ def _positive_sample_count(data: Mapping[str, object], *path: str) -> int:
             raise ValueError(f"missing metric: {'.'.join(path)}")
         current = current[key]
     if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
-        raise ValueError(
-            f"metric must be a positive integer: {'.'.join(path)}"
-        )
+        raise ValueError(f"metric must be a positive integer: {'.'.join(path)}")
     return current
 
 
@@ -258,9 +253,7 @@ def evaluate_promotion_gates(
     """Return every failed promotion requirement without mutating artifacts."""
     try:
         _positive_sample_count(metrics, "test", "english", "sample_count")
-        _positive_sample_count(
-            metrics, "test", "synthetic_vietnamese", "sample_count"
-        )
+        _positive_sample_count(metrics, "test", "synthetic_vietnamese", "sample_count")
         english_recall = _metric(
             metrics,
             "test",

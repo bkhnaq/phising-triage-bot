@@ -76,9 +76,7 @@ def _make_artifact(
             {
                 "config": {
                     "model_id": "jhu-clsp/mmBERT-small",
-                    "model_revision": (
-                        "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
-                    ),
+                    "model_revision": ("abc32620dd4f6ab06f5fbe905dc25f310618e09f"),
                 }
             }
         ),
@@ -100,10 +98,7 @@ def test_valid_artifact_manifest_checks_every_runtime_file(tmp_path: Path) -> No
     validated = validate_artifact(artifact)
 
     assert validated.model_id == "jhu-clsp/mmBERT-small"
-    assert (
-        validated.model_revision
-        == "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
-    )
+    assert validated.model_revision == "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
     assert set(validated.files) >= {
         "config.json",
         "dataset-manifest.json",
@@ -273,10 +268,7 @@ def test_manifest_builder_excludes_manifest_from_recursive_checksum(
 
     assert "artifact-manifest.json" not in manifest["files"]
     assert manifest["model_id"] == "jhu-clsp/mmBERT-small"
-    assert (
-        manifest["model_revision"]
-        == "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
-    )
+    assert manifest["model_revision"] == "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
 
 
 @pytest.mark.parametrize("field", ["model_id", "model_revision"])

@@ -245,9 +245,10 @@ def test_tampered_cache_is_quarantined_and_regenerated(tmp_path: Path) -> None:
     assert requests_made == 1
     assert failures == []
     assert stats.cache_hits == 0
-    assert generated[0].body == parse_augmentation_response(
-        _valid_payload(original), [original]
-    )[0].body
+    assert (
+        generated[0].body
+        == parse_augmentation_response(_valid_payload(original), [original])[0].body
+    )
     assert list(tmp_path.glob("*.invalid-*"))
 
 

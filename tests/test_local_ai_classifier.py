@@ -51,9 +51,7 @@ def _artifact(directory: Path, *, low: float = 0.2, high: float = 0.8) -> Path:
             {
                 "config": {
                     "model_id": "jhu-clsp/mmBERT-small",
-                    "model_revision": (
-                        "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
-                    ),
+                    "model_revision": ("abc32620dd4f6ab06f5fbe905dc25f310618e09f"),
                 }
             }
         ),
