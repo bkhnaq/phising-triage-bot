@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -182,7 +183,12 @@ def validate_artifact(directory: Path) -> ArtifactManifest:
     return manifest
 
 
-def _metric(data: Mapping[str, object], *path: str) -> float:
+def _metric(
+    data: Mapping[str, object],
+    *path: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
     current: object = data
     for key in path:
         if not isinstance(current, Mapping) or key not in current:
@@ -190,7 +196,27 @@ def _metric(data: Mapping[str, object], *path: str) -> float:
         current = current[key]
     if isinstance(current, bool) or not isinstance(current, (int, float)):
         raise ValueError(f"metric must be numeric: {'.'.join(path)}")
-    return float(current)
+    value = float(current)
+    if not math.isfinite(value):
+        raise ValueError(f"metric must be finite: {'.'.join(path)}")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"metric must be at least {minimum}: {'.'.join(path)}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"metric must be at most {maximum}: {'.'.join(path)}")
+    return value
+
+
+def _positive_sample_count(data: Mapping[str, object], *path: str) -> int:
+    current: object = data
+    for key in path:
+        if not isinstance(current, Mapping) or key not in current:
+            raise ValueError(f"missing metric: {'.'.join(path)}")
+        current = current[key]
+    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
+        raise ValueError(
+            f"metric must be a positive integer: {'.'.join(path)}"
+        )
+    return current
 
 
 def evaluate_promotion_gates(
@@ -204,16 +230,58 @@ def evaluate_promotion_gates(
 ) -> list[str]:
     """Return every failed promotion requirement without mutating artifacts."""
     try:
-        english_recall = _metric(metrics, "test", "english", "phishing_recall")
-        english_fpr = _metric(metrics, "test", "english", "false_positive_rate")
-        english_macro_f1 = _metric(metrics, "test", "english", "macro_f1")
+        _positive_sample_count(metrics, "test", "english", "sample_count")
+        _positive_sample_count(
+            metrics, "test", "synthetic_vietnamese", "sample_count"
+        )
+        english_recall = _metric(
+            metrics,
+            "test",
+            "english",
+            "phishing_recall",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        english_fpr = _metric(
+            metrics,
+            "test",
+            "english",
+            "false_positive_rate",
+            minimum=0.0,
+            maximum=1.0,
+        )
+        english_macro_f1 = _metric(
+            metrics,
+            "test",
+            "english",
+            "macro_f1",
+            minimum=0.0,
+            maximum=1.0,
+        )
         vietnamese_recall = _metric(
-            metrics, "test", "synthetic_vietnamese", "phishing_recall"
+            metrics,
+            "test",
+            "synthetic_vietnamese",
+            "phishing_recall",
+            minimum=0.0,
+            maximum=1.0,
         )
         vietnamese_fpr = _metric(
-            metrics, "test", "synthetic_vietnamese", "false_positive_rate"
+            metrics,
+            "test",
+            "synthetic_vietnamese",
+            "false_positive_rate",
+            minimum=0.0,
+            maximum=1.0,
         )
-        baseline_macro_f1 = _metric(baseline_metrics, "test", "english", "macro_f1")
+        baseline_macro_f1 = _metric(
+            baseline_metrics,
+            "test",
+            "english",
+            "macro_f1",
+            minimum=0.0,
+            maximum=1.0,
+        )
     except ValueError as exc:
         return [f"Metrics contract invalid: {exc}"]
 

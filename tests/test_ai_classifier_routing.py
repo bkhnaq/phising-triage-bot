@@ -279,6 +279,64 @@ def test_groq_result_preserves_old_fields_and_adds_provider_metadata(
     assert result["phishing_probability"] is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        None,
+        7,
+        {},
+        {"choices": []},
+        {"choices": None},
+        {"choices": [None]},
+        {"choices": [{"message": []}]},
+        {"choices": [{"message": {"content": None}}]},
+    ],
+)
+def test_malformed_groq_response_shapes_are_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: object,
+) -> None:
+    monkeypatch.setattr(ai, "GROQ_API_KEY", "configured")
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return payload
+
+    monkeypatch.setattr(ai.requests, "post", lambda *_args, **_kwargs: Response())
+
+    result = ai._classify_with_groq({}, [], [])
+
+    assert result["verdict"] == "unknown"
+    assert result["error"] == "Response parse error"
+    assert set(result) == _RESULT_KEYS
+
+
+@pytest.mark.parametrize("content", ["[]", "null", "7", '"text"'])
+def test_non_object_groq_content_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+) -> None:
+    monkeypatch.setattr(ai, "GROQ_API_KEY", "configured")
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr(ai.requests, "post", lambda *_args, **_kwargs: Response())
+
+    result = ai._classify_with_groq({}, [], [])
+
+    assert result["verdict"] == "unknown"
+    assert result["error"] == "Response parse error"
+
+
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf", float("nan")])
 def test_non_finite_groq_confidence_is_safely_zero(value: object) -> None:
     confidence = ai._safe_confidence(value)

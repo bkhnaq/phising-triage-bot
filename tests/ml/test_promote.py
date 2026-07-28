@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,45 @@ def test_each_failed_quality_gate_has_actionable_reason(
     failures = evaluate_promotion_gates(metrics, _baseline_metrics())
 
     assert any(expected in failure for failure in failures)
+
+
+@pytest.mark.parametrize("invalid", [math.nan, math.inf, -math.inf, -0.01, 1.01])
+def test_quality_gates_reject_non_finite_or_out_of_range_rates(
+    invalid: float,
+) -> None:
+    metrics = _metrics(english_recall=invalid)
+
+    failures = evaluate_promotion_gates(metrics, _baseline_metrics())
+
+    assert failures
+    assert "Metrics contract invalid" in failures[0]
+
+
+@pytest.mark.parametrize("sample_count", [0, -1, 1.5, True, math.nan])
+def test_quality_gates_require_positive_integer_slice_counts(
+    sample_count: object,
+) -> None:
+    metrics = _metrics()
+    english = metrics["test"]["english"]  # type: ignore[index]
+    english["sample_count"] = sample_count  # type: ignore[index]
+
+    failures = evaluate_promotion_gates(metrics, _baseline_metrics())
+
+    assert failures
+    assert "sample_count" in failures[0]
+
+
+@pytest.mark.parametrize("baseline_macro_f1", [math.nan, math.inf, -0.01, 1.01])
+def test_quality_gates_reject_invalid_baseline_metrics(
+    baseline_macro_f1: float,
+) -> None:
+    failures = evaluate_promotion_gates(
+        _metrics(),
+        _baseline_metrics(baseline_macro_f1),
+    )
+
+    assert failures
+    assert "Metrics contract invalid" in failures[0]
 
 
 def test_failed_quality_gate_does_not_replace_active_artifact(

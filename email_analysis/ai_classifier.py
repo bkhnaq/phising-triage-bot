@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Mapping
 
 import requests
 
@@ -201,13 +202,7 @@ def _classify_with_groq(
         )
         resp.raise_for_status()
 
-        data = resp.json()
-        # Groq response: choices[0].message.content
-        reply = (
-            data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-        )
-        if not reply:
-            raise ValueError("Empty response from LLM")
+        reply = _extract_groq_reply(resp.json())
 
         parsed = _parse_llm_response(reply)
 
@@ -330,6 +325,25 @@ def _safe_confidence(value: object) -> float:
     return conf
 
 
+def _extract_groq_reply(data: object) -> str:
+    """Validate the upstream response shape before extracting message text."""
+    if not isinstance(data, Mapping):
+        raise ValueError("Groq response must be an object")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("Groq response choices must be a non-empty list")
+    choice = choices[0]
+    if not isinstance(choice, Mapping):
+        raise ValueError("Groq response choice must be an object")
+    message = choice.get("message")
+    if not isinstance(message, Mapping):
+        raise ValueError("Groq response message must be an object")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Groq response content must be a non-empty string")
+    return content.strip()
+
+
 def _parse_llm_response(text: str) -> dict:
     """
     Parse the LLM response, extracting JSON even if wrapped in markdown or text.
@@ -343,18 +357,28 @@ def _parse_llm_response(text: str) -> dict:
 
     # Try direct JSON parse first
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
     except json.JSONDecodeError:
-        pass
+        parsed = None
+    if isinstance(parsed, Mapping):
+        return dict(parsed)
+    if parsed is not None:
+        raise ValueError("LLM response JSON must be an object")
 
     # LLM may wrap JSON in explanatory text — extract the JSON object
     json_match = re.search(r"\{[^{}]*\"verdict\"[^{}]*\}", cleaned, re.DOTALL)
     if json_match:
-        return json.loads(json_match.group(0))
+        parsed = json.loads(json_match.group(0))
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+        raise ValueError("LLM response JSON must be an object")
 
     # Fallback: try to find any {...} block
     brace_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if brace_match:
-        return json.loads(brace_match.group(0))
+        parsed = json.loads(brace_match.group(0))
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+        raise ValueError("LLM response JSON must be an object")
 
     raise ValueError("No valid JSON found in response")
