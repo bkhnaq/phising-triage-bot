@@ -24,6 +24,7 @@ _REQUIRED_FILES = frozenset(
         "thresholds.json",
         "tokenizer.json",
         "tokenizer_config.json",
+        "training-metadata.json",
     }
 )
 
@@ -57,15 +58,31 @@ def _require_runtime_files(files: set[str]) -> None:
         raise ValueError("artifact requires safetensors model weights")
 
 
-def build_artifact_manifest(directory: Path, model_id: str) -> dict[str, object]:
+def _training_identity(directory: Path) -> tuple[str, str]:
+    metadata = _json_object(directory / "training-metadata.json")
+    config = metadata.get("config")
+    if not isinstance(config, Mapping):
+        raise ValueError("training metadata requires config")
+    model_id = config.get("model_id")
+    model_revision = config.get("model_revision")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ValueError("training metadata requires model_id")
+    if not isinstance(model_revision, str) or not model_revision.strip():
+        raise ValueError("training metadata requires model_revision")
+    return model_id, model_revision
+
+
+def build_artifact_manifest(directory: Path) -> dict[str, object]:
     """Build checksums for every artifact file except the manifest itself."""
     if not directory.is_dir() or directory.is_symlink():
         raise ValueError(f"artifact directory not found: {directory}")
     files = _artifact_files(directory)
     _require_runtime_files(set(files))
+    model_id, model_revision = _training_identity(directory)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "model_id": model_id,
+        "model_revision": model_revision,
         "files": {
             relative: {
                 "sha256": _sha256(path),
@@ -76,9 +93,9 @@ def build_artifact_manifest(directory: Path, model_id: str) -> dict[str, object]
     }
 
 
-def write_artifact_manifest(directory: Path, model_id: str) -> Path:
+def write_artifact_manifest(directory: Path) -> Path:
     """Write the generated artifact manifest atomically."""
-    payload = build_artifact_manifest(directory, model_id)
+    payload = build_artifact_manifest(directory)
     destination = directory / _MANIFEST_NAME
     temporary = directory / f".{_MANIFEST_NAME}.tmp"
     temporary.write_text(
@@ -112,7 +129,11 @@ def _safe_artifact_path(root: Path, relative: str) -> Path:
     return resolved
 
 
-def _validate_model_contract(directory: Path, files: set[str]) -> None:
+def _validate_model_contract(
+    directory: Path,
+    files: set[str],
+    manifest: ArtifactManifest,
+) -> None:
     DecisionThresholds.from_mapping(_json_object(directory / "thresholds.json"))
     config = _json_object(directory / "config.json")
     if config.get("num_labels") not in {None, 2}:
@@ -139,6 +160,12 @@ def _validate_model_contract(directory: Path, files: set[str]) -> None:
     dataset_manifest = _json_object(directory / "dataset-manifest.json")
     if not isinstance(dataset_manifest.get("checksums"), Mapping):
         raise ValueError("dataset manifest requires checksums")
+    model_id, model_revision = _training_identity(directory)
+    if (
+        manifest.model_id != model_id
+        or manifest.model_revision != model_revision
+    ):
+        raise ValueError("artifact model identity does not match training metadata")
 
     index_name = "model.safetensors.index.json"
     if index_name in files:
@@ -179,7 +206,7 @@ def validate_artifact(directory: Path) -> ArtifactManifest:
             raise ValueError(f"artifact checksum metadata size mismatch: {relative}")
         if _sha256(path) != metadata.sha256:
             raise ValueError(f"artifact checksum mismatch: {relative}")
-    _validate_model_contract(directory, manifest_files)
+    _validate_model_contract(directory, manifest_files, manifest)
     return manifest
 
 
@@ -368,7 +395,6 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     manifest = subparsers.add_parser("manifest", help="write artifact manifest")
     manifest.add_argument("--candidate", type=Path, required=True)
-    manifest.add_argument("--model-id", required=True)
     promote = subparsers.add_parser("promote", help="quality-gate and publish")
     promote.add_argument("--candidate", type=Path, required=True)
     promote.add_argument("--target", type=Path, required=True)
@@ -379,7 +405,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "manifest":
-        path = write_artifact_manifest(args.candidate, args.model_id)
+        path = write_artifact_manifest(args.candidate)
         print(json.dumps({"manifest": str(path)}, sort_keys=True))
         return 0
     baseline = _json_object(args.baseline_metrics)

@@ -9,6 +9,7 @@ import math
 import os
 import re
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -181,19 +182,51 @@ def _load_cache(
             or payload.get("source_content_sha256") != original.content_sha256
             or not isinstance(payload.get("record"), Mapping)
         ):
-            return None
+            raise ValueError("cache metadata does not match request")
         record = EmailRecord.from_mapping(payload["record"])
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        _quarantine_cache(path)
         return None
+    if not _valid_cached_variant(record, original):
+        _quarantine_cache(path)
+        return None
+    return record
+
+
+def _valid_cached_variant(record: EmailRecord, original: EmailRecord) -> bool:
     if (
-        record.group_id != original.group_id
+        record.id != f"{original.id}:vi"
+        or record.source
+        not in {f"{original.source}:groq-vi", f"{original.source}:local-vi"}
+        or record.source_id != f"{original.source_id}:vi"
+        or record.sender != original.sender
+        or record.group_id != original.group_id
         or record.source_split != original.source_split
         or record.label != original.label
         or record.language != "vi"
         or not record.synthetic
+        or not record.body
+        or (original.subject and not record.subject)
+        or record.content_sha256
+        != content_sha256(record.subject, record.sender, record.body)
     ):
-        return None
-    return record
+        return False
+    original_text = f"{original.subject}\n{original.body}"
+    translated_text = f"{record.subject}\n{record.body}"
+    return (
+        _urls(translated_text) == _urls(original_text)
+        and _domains(translated_text) == _domains(original_text)
+        and _protected_tokens(translated_text) == _protected_tokens(original_text)
+    )
+
+
+def _quarantine_cache(path: Path) -> None:
+    destination = path.with_name(f"{path.name}.invalid-{uuid.uuid4().hex}")
+    try:
+        path.replace(destination)
+    except OSError:
+        # A later successful save still replaces the invalid entry atomically.
+        pass
 
 
 def _save_cache(

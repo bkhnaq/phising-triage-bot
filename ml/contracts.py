@@ -156,13 +156,16 @@ class ArtifactManifest:
 
     schema_version: int
     model_id: str
+    model_revision: str
     files: dict[str, ArtifactFile]
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version != 2:
             raise ValueError("unsupported artifact manifest schema_version")
         if not self.model_id.strip():
             raise ValueError("artifact manifest model_id must be non-empty")
+        if not self.model_revision.strip():
+            raise ValueError("artifact manifest model_revision must be non-empty")
         if not self.files:
             raise ValueError("artifact manifest files must be non-empty")
 
@@ -170,11 +173,14 @@ class ArtifactManifest:
     def from_mapping(cls, data: Mapping[str, object]) -> "ArtifactManifest":
         schema_version = data.get("schema_version")
         model_id = data.get("model_id")
+        model_revision = data.get("model_revision")
         raw_files = data.get("files")
         if isinstance(schema_version, bool) or not isinstance(schema_version, int):
             raise ValueError("artifact manifest schema_version must be an integer")
         if not isinstance(model_id, str):
             raise ValueError("artifact manifest model_id must be a string")
+        if not isinstance(model_revision, str):
+            raise ValueError("artifact manifest model_revision must be a string")
         if not isinstance(raw_files, Mapping):
             raise ValueError("artifact manifest files must be an object")
         files: dict[str, ArtifactFile] = {}
@@ -185,5 +191,6 @@ class ArtifactManifest:
         return cls(
             schema_version=schema_version,
             model_id=model_id,
+            model_revision=model_revision,
             files=files,
         )

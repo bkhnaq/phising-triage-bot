@@ -203,6 +203,54 @@ def test_content_addressed_cache_avoids_second_network_call(
     assert second_stats.requests == 0
 
 
+def test_tampered_cache_is_quarantined_and_regenerated(tmp_path: Path) -> None:
+    original = _record()
+    augment_records(
+        [original],
+        cache_dir=tmp_path,
+        model="model-a",
+        prompt_version="v1",
+        request_batch=lambda _records: _valid_payload(original),
+        max_requests=1,
+    )
+    cache_path = next(tmp_path.glob("*.json"))
+    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    record = cached["record"]
+    record["body"] = str(record["body"]).replace(
+        "https://evil.test/login",
+        "https://tampered.test/login",
+    )
+    record["content_sha256"] = content_sha256(
+        str(record["subject"]),
+        str(record["sender"]),
+        str(record["body"]),
+    )
+    cache_path.write_text(json.dumps(cached), encoding="utf-8")
+    requests_made = 0
+
+    def regenerate(_records: list[EmailRecord]) -> object:
+        nonlocal requests_made
+        requests_made += 1
+        return _valid_payload(original)
+
+    generated, failures, stats = augment_records(
+        [original],
+        cache_dir=tmp_path,
+        model="model-a",
+        prompt_version="v1",
+        request_batch=regenerate,
+        max_requests=1,
+    )
+
+    assert requests_made == 1
+    assert failures == []
+    assert stats.cache_hits == 0
+    assert generated[0].body == parse_augmentation_response(
+        _valid_payload(original), [original]
+    )[0].body
+    assert list(tmp_path.glob("*.invalid-*"))
+
+
 def test_request_budget_quarantines_unprocessed_records(tmp_path: Path) -> None:
     records = [_record("source:train:1"), _record("source:train:2")]
 

@@ -46,7 +46,20 @@ def _artifact(directory: Path, *, low: float = 0.2, high: float = 0.8) -> Path:
         json.dumps({"checksums": {"train.jsonl": "a" * 64}}),
         encoding="utf-8",
     )
-    write_artifact_manifest(directory, "jhu-clsp/mmBERT-small")
+    (directory / "training-metadata.json").write_text(
+        json.dumps(
+            {
+                "config": {
+                    "model_id": "jhu-clsp/mmBERT-small",
+                    "model_revision": (
+                        "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
+                    ),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_artifact_manifest(directory)
     return directory
 
 

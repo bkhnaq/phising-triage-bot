@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import math
-import shutil
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -17,6 +17,7 @@ from typing import Any
 from ml.calibrate import select_bilingual_thresholds, select_thresholds
 from ml.contracts import DecisionThresholds, EmailRecord
 from ml.evaluate import compute_metrics, evaluate_slices
+from ml.prepare_data import validate_group_splits
 from ml.promote import validate_artifact
 from ml.text import prepare_model_input
 from ml.train_baseline import load_split
@@ -181,7 +182,120 @@ def _probabilities_from_logits(logits: Any) -> list[float]:
     return [max(0.0, min(1.0, float(value))) for value in values]
 
 
-def _load_corpus(
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _json_object(path: Path) -> Mapping[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid JSON file: {path}") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError(f"JSON file must contain an object: {path}")
+    return value
+
+
+def _verified_base_manifest(
+    data_dir: Path,
+) -> tuple[Mapping[str, object], dict[str, str]]:
+    manifest_path = data_dir / "dataset-manifest.json"
+    manifest = _json_object(manifest_path)
+    raw_checksums = manifest.get("checksums")
+    if not isinstance(raw_checksums, Mapping):
+        raise ValueError("dataset manifest requires checksums")
+    checksums: dict[str, str] = {
+        "base/dataset-manifest.json": _file_sha256(manifest_path)
+    }
+    root = data_dir.resolve()
+    required = {"train.jsonl", "validation.jsonl", "test.jsonl"}
+    if not required.issubset(raw_checksums):
+        missing = sorted(required - set(raw_checksums))
+        raise ValueError(f"dataset manifest is missing checksums: {missing}")
+    for relative, expected in raw_checksums.items():
+        if not isinstance(relative, str) or not isinstance(expected, str):
+            raise ValueError("dataset manifest checksum entries must be strings")
+        path = (data_dir / relative).resolve()
+        if not path.is_relative_to(root) or not path.is_file() or path.is_symlink():
+            raise ValueError(f"dataset manifest path is invalid: {relative}")
+        actual = _file_sha256(path)
+        if actual != expected:
+            raise ValueError(f"dataset checksum mismatch: {relative}")
+        checksums[f"base/{relative}"] = actual
+    return manifest, checksums
+
+
+def _augmentation_provenance(
+    paths_by_split: Sequence[tuple[str, Sequence[Path]]],
+) -> tuple[list[dict[str, object]], dict[str, str]]:
+    grouped: dict[tuple[str, str], dict[str, object]] = {}
+    for split, paths in paths_by_split:
+        for path in paths:
+            resolved = path.resolve()
+            key = (split, str(resolved))
+            existing = grouped.get(key)
+            if existing is not None:
+                existing["multiplicity"] = int(existing["multiplicity"]) + 1
+                continue
+            if not resolved.is_file() or resolved.is_symlink():
+                raise ValueError(f"augmentation file not found: {path}")
+            generation_path = resolved.with_suffix(
+                resolved.suffix + ".manifest.json"
+            )
+            if not generation_path.is_file() or generation_path.is_symlink():
+                raise ValueError(
+                    f"augmentation generation manifest not found: {generation_path}"
+                )
+            generation_manifest = _json_object(generation_path)
+            if generation_manifest.get("split") != split:
+                raise ValueError(
+                    f"augmentation manifest split does not match {split}: {path}"
+                )
+            grouped[key] = {
+                "split": split,
+                "path": str(resolved),
+                "sha256": _file_sha256(resolved),
+                "multiplicity": 1,
+                "generation_manifest_path": str(generation_path),
+                "generation_manifest_sha256": _file_sha256(generation_path),
+                "generation_manifest": dict(generation_manifest),
+            }
+
+    entries = list(grouped.values())
+    checksums: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        prefix = f"augmentation/{entry['split']}/{index}"
+        checksums[f"{prefix}/data"] = str(entry["sha256"])
+        checksums[f"{prefix}/manifest"] = str(
+            entry["generation_manifest_sha256"]
+        )
+    return entries, checksums
+
+
+def _split_summary(records: Sequence[EmailRecord]) -> dict[str, object]:
+    return {
+        "sample_count": len(records),
+        "unique_group_count": len({record.group_id for record in records}),
+        "label_distribution": dict(
+            sorted(Counter(record.label for record in records).items())
+        ),
+        "language_distribution": dict(
+            sorted(Counter(record.language for record in records).items())
+        ),
+        "synthetic_distribution": {
+            str(value).lower(): count
+            for value, count in sorted(
+                Counter(record.synthetic for record in records).items()
+            )
+        },
+    }
+
+
+def load_training_corpus(
     data_dir: Path,
     train_augmentations: Sequence[Path],
     validation_augmentations: Sequence[Path],
@@ -190,7 +304,17 @@ def _load_corpus(
     tuple[list[str], list[int], list[EmailRecord]],
     tuple[list[str], list[int], list[EmailRecord]],
     tuple[list[str], list[int], list[EmailRecord]],
+    dict[str, object],
 ]:
+    base_manifest, checksums = _verified_base_manifest(data_dir)
+    augmentations, augmentation_checksums = _augmentation_provenance(
+        (
+            ("train", train_augmentations),
+            ("validation", validation_augmentations),
+            ("test", test_augmentations),
+        )
+    )
+    checksums.update(augmentation_checksums)
     train = load_split(data_dir / "train.jsonl", "train")
     validation = load_split(data_dir / "validation.jsonl", "validation")
     test = load_split(data_dir / "test.jsonl", "test")
@@ -209,7 +333,19 @@ def _load_corpus(
         test[0].extend(extra[0])
         test[1].extend(extra[1])
         test[2].extend(extra[2])
-    return train, validation, test
+    validate_group_splits((*train[2], *validation[2], *test[2]))
+    merged_manifest: dict[str, object] = {
+        "schema_version": 2,
+        "base_manifest": dict(base_manifest),
+        "augmentations": augmentations,
+        "checksums": checksums,
+        "splits": {
+            "train": _split_summary(train[2]),
+            "validation": _split_summary(validation[2]),
+            "test": _split_summary(test[2]),
+        },
+    }
+    return train, validation, test, merged_manifest
 
 
 def _balanced_smoke(
@@ -416,8 +552,16 @@ def train_mmbert(
         raise ValueError(
             "evaluate_only and resume_from_checkpoint are mutually exclusive"
         )
+    initial_manifest = None
     if config.initial_model_dir is not None:
-        validate_artifact(config.initial_model_dir)
+        initial_manifest = validate_artifact(config.initial_model_dir)
+        if (
+            initial_manifest.model_id != config.model_id
+            or initial_manifest.model_revision != config.model_revision
+        ):
+            raise ValueError(
+                "initial model identity does not match configured model identity"
+            )
 
     try:
         import torch
@@ -436,7 +580,7 @@ def train_mmbert(
             "install requirements-ml.txt"
         ) from exc
 
-    train, validation, test = _load_corpus(
+    train, validation, test, dataset_manifest = load_training_corpus(
         data_dir,
         train_augmentations,
         validation_augmentations,
@@ -567,9 +711,12 @@ def train_mmbert(
     test_rows = probability_rows(
         [record.to_dict() for record in test[2]], test_probabilities
     )
+    exported_model_id = (
+        initial_manifest.model_id if initial_manifest is not None else config.model_id
+    )
     metrics = {
         "schema_version": 1,
-        "model": config.model_id,
+        "model": exported_model_id,
         "validation": compute_metrics(
             validation[1], validation_probabilities, thresholds
         ),
@@ -591,10 +738,7 @@ def train_mmbert(
     config.output_dir.mkdir(parents=True, exist_ok=True)
     trainer.save_model(str(config.output_dir))
     tokenizer.save_pretrained(str(config.output_dir))
-    dataset_manifest = data_dir / "dataset-manifest.json"
-    if not dataset_manifest.is_file():
-        raise ValueError(f"dataset manifest not found: {dataset_manifest}")
-    shutil.copyfile(dataset_manifest, config.output_dir / "dataset-manifest.json")
+    _write_json(config.output_dir / "dataset-manifest.json", dataset_manifest)
     _write_json(
         config.output_dir / "thresholds.json",
         {

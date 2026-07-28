@@ -212,18 +212,23 @@ python -m ml.augment_vietnamese_local --input data/processed/phishing/validation
 python -m ml.augment_vietnamese_local --input data/processed/phishing/test.jsonl --output data/processed/phishing/test.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split test --batch-size 8 --max-records 200 --max-source-chars 2000 --seed 42
 python -m ml.train_baseline --data-dir data/processed/phishing --output-dir artifacts/baseline-full --seed 42
 python -m ml.train_mmbert --data-dir data/processed/phishing --train-augmentation data/processed/phishing/train.vi.jsonl --output-dir artifacts/mmbert-epoch1 --epochs 1 --seed 42
-python -m ml.promote manifest --candidate artifacts/mmbert-epoch1 --model-id jhu-clsp/mmBERT-small
+python -m ml.promote manifest --candidate artifacts/mmbert-epoch1
 python -m ml.train_mmbert --data-dir data/processed/phishing --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --initial-model-dir artifacts/mmbert-epoch1 --output-dir artifacts/mmbert-weights --epochs 1 --learning-rate 3e-6 --seed 42
-python -m ml.promote manifest --candidate artifacts/mmbert-weights --model-id jhu-clsp/mmBERT-small
+python -m ml.promote manifest --candidate artifacts/mmbert-weights
 python -m ml.train_mmbert --data-dir data/processed/phishing --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --initial-model-dir artifacts/mmbert-weights --output-dir artifacts/mmbert-candidate --evaluate-only --min-recall 0.95 --min-vietnamese-recall 0.90 --max-vietnamese-fpr 0.20 --seed 42
-python -m ml.promote manifest --candidate artifacts/mmbert-candidate --model-id jhu-clsp/mmBERT-small
+python -m ml.promote manifest --candidate artifacts/mmbert-candidate
 python -m ml.promote promote --candidate artifacts/mmbert-candidate --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
 ```
 
 The translator is downloaded once at its pinned revision, then generation is
 local, content-addressed and safe to resume. URLs, domains, currency amounts and
-attachment names are preserved rather than translated. Train and test
-synthetic records are generated from separate source splits. The Groq
+attachment names are preserved rather than translated. Invalid cache entries
+are quarantined and regenerated. Training verifies the prepared-dataset
+checksums and group isolation, then exports a merged provenance manifest with
+every augmentation checksum, generation manifest and oversampling
+multiplicity. Warm starts must match the pinned model ID and revision recorded
+by the source artifact. Train and test synthetic records are generated from
+separate source splits. The Groq
 augmenter remains available as an optional alternative, but may consume API
 daily-token quota.
 

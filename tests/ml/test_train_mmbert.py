@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import ml.train_mmbert as train_module
 from ml.train_mmbert import (
     bound_tokenizer_inputs,
     build_training_arguments,
     compute_class_weights,
     freeze_token_embeddings,
+    load_training_corpus,
     model_load_options,
     model_weight_dtype_name,
     probability_rows,
@@ -18,6 +21,10 @@ from ml.train_mmbert import (
     train_mmbert,
     training_config,
 )
+from ml.contracts import ArtifactFile, ArtifactManifest, EmailRecord
+from ml.prepare_data import prepare_fixture
+from ml.text import content_sha256
+from ml.train_baseline import load_split
 
 
 def test_class_weights_upweight_minority_class() -> None:
@@ -192,6 +199,42 @@ def test_evaluate_only_requires_a_validated_initial_artifact(
 
 
 @pytest.mark.parametrize(
+    ("model_id", "model_revision"),
+    [
+        ("different/model", "abc32620dd4f6ab06f5fbe905dc25f310618e09f"),
+        ("jhu-clsp/mmBERT-small", "different-revision"),
+    ],
+)
+def test_warm_start_requires_exact_configured_model_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    model_id: str,
+    model_revision: str,
+) -> None:
+    initial_model_dir = tmp_path / "initial"
+    config = training_config(
+        tmp_path / "candidate",
+        smoke=False,
+        seed=42,
+        initial_model_dir=initial_model_dir,
+    )
+    manifest = ArtifactManifest(
+        schema_version=2,
+        model_id=model_id,
+        model_revision=model_revision,
+        files={"model.safetensors": ArtifactFile("a" * 64, 1)},
+    )
+    monkeypatch.setattr(
+        train_module,
+        "validate_artifact",
+        lambda _directory: manifest,
+    )
+
+    with pytest.raises(ValueError, match="identity"):
+        train_mmbert(config, tmp_path / "data", evaluate_only=True)
+
+
+@pytest.mark.parametrize(
     ("cuda_available", "bf16_available", "expected"),
     [
         (True, True, "bfloat16"),
@@ -259,6 +302,116 @@ def test_probability_rows_preserve_record_metadata() -> None:
 def test_probability_rows_reject_length_mismatch() -> None:
     with pytest.raises(ValueError, match="same length"):
         probability_rows([], [0.5])
+
+
+def _prepared_data(tmp_path: Path) -> Path:
+    data_dir = tmp_path / "data"
+    fixture = Path(__file__).parents[1] / "fixtures" / "ml" / "tiny_emails.jsonl"
+    prepare_fixture(fixture, data_dir)
+    return data_dir
+
+
+def _write_augmentation(
+    path: Path,
+    original: EmailRecord,
+    split: str,
+    *,
+    group_id: str | None = None,
+) -> EmailRecord:
+    body = f"Báº£n dá»‹ch {original.body}"
+    record = EmailRecord(
+        id=f"{original.id}:{split}:vi",
+        source=f"{original.source}:local-vi",
+        source_split=split,
+        source_id=f"{original.source_id}:{split}:vi",
+        language="vi",
+        subject=f"Báº£n dá»‹ch {original.subject}",
+        sender=original.sender,
+        body=body,
+        label=original.label,
+        content_sha256=content_sha256(
+            f"Báº£n dá»‹ch {original.subject}",
+            original.sender,
+            body,
+        ),
+        group_id=group_id or f"{original.group_id}:{split}:vi",
+        synthetic=True,
+    )
+    path.write_text(
+        json.dumps(record.to_dict(), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    path.with_suffix(path.suffix + ".manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mode": "local",
+                "model": "translator",
+                "revision": "pinned-revision",
+                "split": split,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return record
+
+
+def test_training_rejects_base_dataset_checksum_mismatch(tmp_path: Path) -> None:
+    data_dir = _prepared_data(tmp_path)
+    train_path = data_dir / "train.jsonl"
+    train_path.write_text(
+        train_path.read_text(encoding="utf-8") + " \n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="checksum mismatch.*train.jsonl"):
+        load_training_corpus(data_dir, (), (), ())
+
+
+def test_training_rejects_augmentation_group_leakage(tmp_path: Path) -> None:
+    data_dir = _prepared_data(tmp_path)
+    original = load_split(data_dir / "train.jsonl", "train")[2][0]
+    augmentation = tmp_path / "validation.vi.jsonl"
+    _write_augmentation(
+        augmentation,
+        original,
+        "validation",
+        group_id=original.group_id,
+    )
+
+    with pytest.raises(ValueError, match="crosses splits"):
+        load_training_corpus(data_dir, (), (augmentation,), ())
+
+
+def test_merged_manifest_binds_augmentation_and_multiplicity(
+    tmp_path: Path,
+) -> None:
+    data_dir = _prepared_data(tmp_path)
+    original = load_split(data_dir / "train.jsonl", "train")[2][0]
+    augmentation = tmp_path / "train.vi.jsonl"
+    _write_augmentation(augmentation, original, "train")
+    base_train_count = len(load_split(data_dir / "train.jsonl", "train")[2])
+
+    train, _validation, _test, manifest = load_training_corpus(
+        data_dir,
+        (augmentation, augmentation),
+        (),
+        (),
+    )
+
+    entries = manifest["augmentations"]
+    assert isinstance(entries, list)
+    assert len(entries) == 1
+    assert entries[0]["split"] == "train"
+    assert entries[0]["multiplicity"] == 2
+    assert len(entries[0]["sha256"]) == 64
+    assert entries[0]["generation_manifest"]["revision"] == "pinned-revision"
+    assert manifest["splits"]["train"]["sample_count"] == base_train_count + 2
+    assert len(train[2]) == base_train_count + 2
+    assert "base/train.jsonl" in manifest["checksums"]
+    assert any(
+        key.startswith("augmentation/train/") for key in manifest["checksums"]
+    )
 
 
 class _FakeParameter:

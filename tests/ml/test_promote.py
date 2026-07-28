@@ -71,9 +71,22 @@ def _make_artifact(
         json.dumps({"schema_version": 1, "checksums": {"train.jsonl": "a" * 64}}),
         encoding="utf-8",
     )
+    (directory / "training-metadata.json").write_text(
+        json.dumps(
+            {
+                "config": {
+                    "model_id": "jhu-clsp/mmBERT-small",
+                    "model_revision": (
+                        "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
+                    ),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     if marker is not None:
         (directory / "marker").write_text(marker, encoding="utf-8")
-    write_artifact_manifest(directory, model_id="jhu-clsp/mmBERT-small")
+    write_artifact_manifest(directory)
     return directory
 
 
@@ -87,6 +100,10 @@ def test_valid_artifact_manifest_checks_every_runtime_file(tmp_path: Path) -> No
     validated = validate_artifact(artifact)
 
     assert validated.model_id == "jhu-clsp/mmBERT-small"
+    assert (
+        validated.model_revision
+        == "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
+    )
     assert set(validated.files) >= {
         "config.json",
         "dataset-manifest.json",
@@ -134,7 +151,7 @@ def test_reversed_model_label_mapping_is_rejected(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    write_artifact_manifest(artifact, model_id="jhu-clsp/mmBERT-small")
+    write_artifact_manifest(artifact)
 
     with pytest.raises(ValueError, match="label 0.*legitimate.*label 1.*phishing"):
         validate_artifact(artifact)
@@ -154,7 +171,7 @@ def test_transformers_config_may_derive_num_labels_from_exact_id_mapping(
         ),
         encoding="utf-8",
     )
-    write_artifact_manifest(artifact, model_id="jhu-clsp/mmBERT-small")
+    write_artifact_manifest(artifact)
 
     validated = validate_artifact(artifact)
 
@@ -252,6 +269,26 @@ def test_manifest_builder_excludes_manifest_from_recursive_checksum(
 ) -> None:
     artifact = _make_artifact(tmp_path / "artifact")
 
-    manifest = build_artifact_manifest(artifact, model_id="jhu-clsp/mmBERT-small")
+    manifest = build_artifact_manifest(artifact)
 
     assert "artifact-manifest.json" not in manifest["files"]
+    assert manifest["model_id"] == "jhu-clsp/mmBERT-small"
+    assert (
+        manifest["model_revision"]
+        == "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
+    )
+
+
+@pytest.mark.parametrize("field", ["model_id", "model_revision"])
+def test_artifact_identity_must_match_training_metadata(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    artifact = _make_artifact(tmp_path / "artifact")
+    manifest_path = artifact / "artifact-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[field] = "mismatched"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="identity"):
+        validate_artifact(artifact)
