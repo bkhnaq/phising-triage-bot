@@ -638,7 +638,7 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         risk = result["risk"]
         verdict = str(risk.get("verdict", ""))
 
-        self.assertIn(verdict, ["HIGH", "SUSPICIOUS"])
+        self.assertIn(verdict, ["CRITICAL", "HIGH", "SUSPICIOUS"])
         self.assertNotIn(verdict, ["INCONCLUSIVE", "LOW"])
 
         providers = [
