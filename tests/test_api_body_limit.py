@@ -18,7 +18,7 @@ def test_streamed_body_over_limit_returns_413() -> None:
         sent.append(message)
 
     async def downstream(_scope, wrapped_receive, downstream_send) -> None:
-        while (message := await wrapped_receive()).get("more_body", False):
+        while (await wrapped_receive()).get("more_body", False):
             pass
         await downstream_send(
             {"type": "http.response.start", "status": 204, "headers": []}
@@ -129,3 +129,119 @@ def test_non_http_scope_is_forwarded_unchanged() -> None:
     asyncio.run(middleware({"type": "websocket"}, receive, send))
 
     assert called is True
+
+
+def test_exact_limit_multichunk_body_replays_once_in_order() -> None:
+    from api.body_limit import RequestBodyLimitMiddleware
+
+    expected = [
+        {"type": "http.request", "body": b"12", "more_body": True},
+        {"type": "http.request", "body": b"345", "more_body": False},
+    ]
+    incoming = expected.copy()
+    delivered: list[dict] = []
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return incoming.pop(0)
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    async def downstream(_scope, wrapped_receive, downstream_send) -> None:
+        delivered.append(await wrapped_receive())
+        delivered.append(await wrapped_receive())
+        await downstream_send(
+            {"type": "http.response.start", "status": 204, "headers": []}
+        )
+        await downstream_send({"type": "http.response.body", "body": b""})
+
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_size=5)
+    scope = {"type": "http", "method": "POST", "path": "/", "headers": []}
+
+    asyncio.run(middleware(scope, receive, send))
+
+    assert delivered == expected
+    assert incoming == []
+    assert sent[0]["status"] == 204
+
+
+def test_empty_terminal_body_replays_once() -> None:
+    from api.body_limit import RequestBodyLimitMiddleware
+
+    expected = [{"type": "http.request", "body": b"", "more_body": False}]
+    incoming = expected.copy()
+    delivered: list[dict] = []
+
+    async def receive() -> dict:
+        return incoming.pop(0)
+
+    async def send(_message: dict) -> None:
+        pass
+
+    async def downstream(_scope, wrapped_receive, _downstream_send) -> None:
+        delivered.append(await wrapped_receive())
+
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_size=5)
+    scope = {"type": "http", "method": "POST", "path": "/", "headers": []}
+
+    asyncio.run(middleware(scope, receive, send))
+
+    assert delivered == expected
+    assert incoming == []
+
+
+def test_disconnect_before_body_replays_once() -> None:
+    from api.body_limit import RequestBodyLimitMiddleware
+
+    expected = [{"type": "http.disconnect"}]
+    incoming = expected.copy()
+    delivered: list[dict] = []
+
+    async def receive() -> dict:
+        return incoming.pop(0)
+
+    async def send(_message: dict) -> None:
+        pass
+
+    async def downstream(_scope, wrapped_receive, _downstream_send) -> None:
+        delivered.append(await wrapped_receive())
+
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_size=5)
+    scope = {"type": "http", "method": "POST", "path": "/", "headers": []}
+
+    asyncio.run(middleware(scope, receive, send))
+
+    assert delivered == expected
+    assert incoming == []
+
+
+def test_repeated_reads_delegate_after_replay_queue_is_exhausted() -> None:
+    from api.body_limit import RequestBodyLimitMiddleware
+
+    expected = [
+        {"type": "http.request", "body": b"123", "more_body": False},
+        {"type": "http.disconnect"},
+        {"type": "http.disconnect"},
+    ]
+    incoming = expected.copy()
+    delivered: list[dict] = []
+
+    async def receive() -> dict:
+        return incoming.pop(0)
+
+    async def send(_message: dict) -> None:
+        pass
+
+    async def downstream(_scope, wrapped_receive, _downstream_send) -> None:
+        delivered.append(await wrapped_receive())
+        delivered.append(await wrapped_receive())
+        delivered.append(await wrapped_receive())
+
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_size=5)
+    scope = {"type": "http", "method": "POST", "path": "/", "headers": []}
+
+    asyncio.run(middleware(scope, receive, send))
+
+    assert delivered == expected
+    assert incoming == []

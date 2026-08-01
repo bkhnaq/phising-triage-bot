@@ -28,6 +28,27 @@ def _client_with_auth(monkeypatch, api_key: str = "test-key"):
     return TestClient(routes.app), routes
 
 
+class RecordingUpload:
+    def __init__(self, content: bytes, filename: str = "mail.eml") -> None:
+        self.filename = filename
+        self.read_sizes: list[int] = []
+        self.remaining = content
+        self.closed = False
+
+    async def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        if not self.remaining:
+            return b""
+        if size == -1:
+            chunk, self.remaining = self.remaining, b""
+            return chunk
+        chunk, self.remaining = self.remaining[:size], self.remaining[size:]
+        return chunk
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def test_upload_path_traversal_protection(monkeypatch, tmp_path: Path) -> None:
     from bot import telegram_handler
 
@@ -97,34 +118,13 @@ def test_analyze_file_streams_upload_and_cleans_up(monkeypatch, tmp_path: Path) 
     monkeypatch.setattr(routes, "UPLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(routes, "MAX_UPLOAD_SIZE_BYTES", 5)
 
-    class RecordingUpload:
-        filename = "mail.eml"
-
-        def __init__(self) -> None:
-            self.read_sizes: list[int] = []
-            self.remaining = b"123456"
-            self.closed = False
-
-        async def read(self, size: int = -1) -> bytes:
-            self.read_sizes.append(size)
-            if not self.remaining:
-                return b""
-            if size == -1:
-                chunk, self.remaining = self.remaining, b""
-                return chunk
-            chunk, self.remaining = self.remaining[:size], self.remaining[size:]
-            return chunk
-
-        async def close(self) -> None:
-            self.closed = True
-
     scope = {
         "type": "http",
         "method": "POST",
         "path": "/analyze_file",
         "headers": [],
     }
-    upload = RecordingUpload()
+    upload = RecordingUpload(b"123456")
 
     with pytest.raises(routes.HTTPException) as caught:
         asyncio.run(routes.analyze_file(Request(scope), upload))
@@ -134,6 +134,50 @@ def test_analyze_file_streams_upload_and_cleans_up(monkeypatch, tmp_path: Path) 
     assert -1 not in upload.read_sizes
     assert upload.closed is True
     assert list(tmp_path.glob("*")) == []
+
+
+def test_analyze_file_closes_upload_when_filename_is_invalid(monkeypatch) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    client.close()
+    upload = RecordingUpload(b"", filename="mail.txt")
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/analyze_file",
+        "headers": [],
+    }
+
+    with pytest.raises(routes.HTTPException) as caught:
+        asyncio.run(routes.analyze_file(Request(scope), upload))
+
+    assert caught.value.status_code == 400
+    assert upload.read_sizes == []
+    assert upload.closed is True
+
+
+def test_analyze_file_closes_upload_when_path_creation_fails(monkeypatch) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    client.close()
+    upload = RecordingUpload(b"")
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/analyze_file",
+        "headers": [],
+    }
+
+    def reject_path(_filename: str, prefix: str) -> Path:
+        assert prefix == "api"
+        raise routes.HTTPException(status_code=400, detail="Invalid upload path")
+
+    monkeypatch.setattr(routes, "_safe_upload_path", reject_path)
+
+    with pytest.raises(routes.HTTPException) as caught:
+        asyncio.run(routes.analyze_file(Request(scope), upload))
+
+    assert caught.value.status_code == 400
+    assert upload.read_sizes == []
+    assert upload.closed is True
 
 
 def test_analysis_failure_does_not_expose_exception_details(monkeypatch) -> None:
@@ -253,9 +297,7 @@ def test_raw_email_model_rejects_content_over_character_limit() -> None:
     from api import routes
 
     with pytest.raises(ValidationError):
-        routes.EmailAnalysisRequest(
-            email_raw="x" * (routes.MAX_RAW_EMAIL_CHARS + 1)
-        )
+        routes.EmailAnalysisRequest(email_raw="x" * (routes.MAX_RAW_EMAIL_CHARS + 1))
 
 
 def test_api_key_authentication_uses_constant_time_comparison(monkeypatch) -> None:

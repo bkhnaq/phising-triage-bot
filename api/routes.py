@@ -47,8 +47,7 @@ from config.settings import (
 
 logger = logging.getLogger(__name__)
 UPLOAD_TOO_LARGE = (
-    "Uploaded file exceeds maximum allowed size "
-    f"({MAX_UPLOAD_SIZE_BYTES} bytes)"
+    "Uploaded file exceeds maximum allowed size " f"({MAX_UPLOAD_SIZE_BYTES} bytes)"
 )
 
 
@@ -396,15 +395,15 @@ async def analyze_file(request: Request, file: UploadFile = File(...)):
     """
     Analyze an uploaded .eml file for phishing indicators.
     """
-    if not file.filename or not file.filename.lower().endswith(".eml"):
-        raise HTTPException(
-            status_code=400,
-            detail="Only .eml files are supported",
-        )
-
-    save_path = _safe_upload_path(file.filename, prefix="api")
-
+    save_path: Path | None = None
     try:
+        if not file.filename or not file.filename.lower().endswith(".eml"):
+            raise HTTPException(
+                status_code=400,
+                detail="Only .eml files are supported",
+            )
+
+        save_path = _safe_upload_path(file.filename, prefix="api")
         written = 0
         with open(save_path, "wb") as destination:
             while chunk := await file.read(64 * 1024):
@@ -430,10 +429,11 @@ async def analyze_file(request: Request, file: UploadFile = File(...)):
         logger.exception("Analysis failed for uploaded file")
         raise HTTPException(status_code=500, detail="Analysis failed") from exc
     finally:
-        try:
-            save_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if save_path is not None:
+            try:
+                save_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         await file.close()
 
 
