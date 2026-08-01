@@ -712,9 +712,9 @@ def test_downloaded_file_size_is_checked(tmp_path: Path) -> None:
         _validate_downloaded_size(path, 5)
 
 
-def test_analysis_is_offloaded_from_event_loop(monkeypatch, tmp_path: Path) -> None:
+def test_analysis_keeps_event_loop_responsive(monkeypatch, tmp_path: Path) -> None:
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock
+    import time
     from bot import telegram_handler as handler
 
     class FakeTelegramFile:
@@ -743,22 +743,29 @@ def test_analysis_is_offloaded_from_event_loop(monkeypatch, tmp_path: Path) -> N
         effective_chat=SimpleNamespace(id=42),
     )
     path = tmp_path / "mail.eml"
-    offload = AsyncMock(return_value="report")
+    events: list[str] = []
+
+    def slow_analysis(_path: str, _analysis_id: str) -> str:
+        events.append("analysis-start")
+        time.sleep(0.15)
+        events.append("analysis-end")
+        return "report"
+
     monkeypatch.setattr(handler, "ALLOWED_CHAT_IDS", [])
     monkeypatch.setattr(handler, "_safe_upload_path", lambda *_args, **_kwargs: path)
-    monkeypatch.setattr(
-        handler,
-        "asyncio",
-        SimpleNamespace(to_thread=offload),
-        raising=False,
-    )
+    monkeypatch.setattr(handler, "_run_analysis", slow_analysis)
 
-    asyncio.run(handler.handle_document(update, None))
+    async def scenario() -> None:
+        analysis = asyncio.create_task(handler.handle_document(update, None))
+        while "analysis-start" not in events:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
+        events.append("heartbeat")
+        await analysis
 
-    args = offload.await_args.args
-    assert args[0] is handler._run_analysis
-    assert args[1] == str(path)
-    assert isinstance(args[2], str)
+    asyncio.run(scenario())
+
+    assert events.index("heartbeat") < events.index("analysis-end")
     assert message.replies[-1] == "report"
     assert not path.exists()
 ```
