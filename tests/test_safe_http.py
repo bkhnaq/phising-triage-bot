@@ -4,11 +4,56 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
+import requests
 
 from email_analysis import safe_http
-
+from email_analysis.safe_http import SafeHTTPResponse
 
 PUBLIC_IP = "93.184.216.34"
+
+
+def test_landing_page_uses_safe_fetch(monkeypatch) -> None:
+    from email_analysis import landing_page_analyzer as landing
+
+    calls: list[tuple[str, dict]] = []
+    landing._CACHE.clear()
+    monkeypatch.setattr(landing, "OFFLINE_MODE", False)
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("direct requests.get is forbidden")
+        ),
+    )
+    monkeypatch.setattr(
+        requests,
+        "head",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("direct requests.head is forbidden")
+        ),
+    )
+
+    def fake_fetch(url: str, **kwargs) -> SafeHTTPResponse:
+        calls.append((url, kwargs))
+        return SafeHTTPResponse(
+            url=url,
+            status_code=200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            body=b"<title>Account Login</title>",
+            history=(),
+        )
+
+    monkeypatch.setattr(landing, "fetch_url", fake_fetch, raising=False)
+
+    assert landing.analyze_landing_page("https://public.test/")["state"] == (
+        "suspicious"
+    )
+    assert calls == [
+        (
+            "https://public.test/",
+            {"method": "GET", "max_bytes": safe_http.SAFE_HTTP_MAX_BYTES},
+        )
+    ]
 
 
 @pytest.mark.parametrize(

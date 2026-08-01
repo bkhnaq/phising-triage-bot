@@ -13,9 +13,10 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
-import requests
+from urllib3.exceptions import HTTPError
 
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.safe_http import SafeHTTPError, fetch_url
 from email_analysis.url_utils import analyze_url
 from threat_intel.cache import TTLCache
 
@@ -46,8 +47,6 @@ _SHORTENER_DOMAINS = frozenset(
     }
 )
 
-# Request timeout for expanding shortened URLs (seconds)
-_EXPAND_TIMEOUT = 5
 _EXPAND_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 
@@ -153,13 +152,13 @@ def _expand_url(short_url: str) -> str:
         return cached
 
     try:
-        resp = requests.head(
+        resp = fetch_url(
             short_url,
-            allow_redirects=True,
-            timeout=_EXPAND_TIMEOUT,
+            method="HEAD",
+            max_bytes=0,
         )
         expanded = resp.url
-    except requests.RequestException as exc:
+    except (SafeHTTPError, HTTPError, OSError) as exc:
         logger.warning("Could not expand URL %s: %s", short_url, exc)
         expanded = short_url
 
