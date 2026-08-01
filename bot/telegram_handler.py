@@ -105,10 +105,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("📨 Received! Analyzing the email…")
 
     # Download the file to a temp location
-    tg_file = await document.get_file()
     analysis_id = uuid.uuid4().hex[:8]
     local_path = _safe_upload_path(document.file_name, prefix=f"tg_{analysis_id}")
     try:
+        tg_file = await document.get_file()
         await tg_file.download_to_drive(str(local_path))
         try:
             _validate_downloaded_size(local_path, MAX_UPLOAD_SIZE_BYTES)

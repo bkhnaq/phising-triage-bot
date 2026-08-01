@@ -215,6 +215,41 @@ def test_download_failure_is_sanitized_and_cleans_temporary_file(
     assert not path.exists()
 
 
+def test_get_file_failure_is_sanitized_and_cleans_temporary_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from bot import telegram_handler as handler
+
+    class FakeDocument:
+        file_name = "mail.eml"
+        file_size = 1
+
+        async def get_file(self) -> None:
+            raise RuntimeError("sensitive-token")
+
+    class FakeMessage:
+        document = FakeDocument()
+
+        def __init__(self) -> None:
+            self.replies: list[str] = []
+
+        async def reply_text(self, text: str, **_kwargs) -> None:
+            self.replies.append(text)
+
+    message = FakeMessage()
+    update = SimpleNamespace(message=message, effective_chat=SimpleNamespace(id=42))
+    path = tmp_path / "mail.eml"
+
+    monkeypatch.setattr(handler, "ALLOWED_CHAT_IDS", [])
+    monkeypatch.setattr(handler, "_safe_upload_path", lambda *_args, **_kwargs: path)
+
+    asyncio.run(handler.handle_document(update, None))
+
+    assert message.replies[-1] == "❌ Analysis failed. Check bot logs for details."
+    assert "sensitive-token" not in message.replies[-1]
+    assert not path.exists()
+
+
 def test_analysis_value_error_is_sanitized_as_generic_failure(
     monkeypatch, tmp_path: Path
 ) -> None:
