@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 import unicodedata
@@ -30,11 +31,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from api.body_limit import RequestBodyLimitMiddleware
 from config.settings import (
     API_KEY,
-    MAX_UPLOAD_SIZE_BYTES,
     API_PROTECTION_ENABLED,
     ENV,
+    MAX_RAW_EMAIL_CHARS,
+    MAX_UPLOAD_SIZE_BYTES,
+    RATE_LIMIT_MAX_CLIENTS,
     RATE_LIMIT_MAX_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
     UPLOAD_DIR,
@@ -42,6 +46,10 @@ from config.settings import (
 )
 
 logger = logging.getLogger(__name__)
+UPLOAD_TOO_LARGE = (
+    "Uploaded file exceeds maximum allowed size "
+    f"({MAX_UPLOAD_SIZE_BYTES} bytes)"
+)
 
 
 @asynccontextmanager
@@ -69,7 +77,12 @@ _rate_limit_buckets: dict[str, deque[float]] = defaultdict(deque)
 class EmailAnalysisRequest(BaseModel):
     """Request body for raw email analysis."""
 
-    email_raw: str = Field(..., description="Raw email content (RFC 5322 format)")
+    email_raw: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_RAW_EMAIL_CHARS,
+        description="Raw email content (RFC 5322 format)",
+    )
 
 
 class RiskResult(BaseModel):
@@ -174,7 +187,7 @@ async def api_key_auth_middleware(request: Request, call_next):
         )
 
     provided_key = request.headers.get("X-API-Key", "")
-    if provided_key != API_KEY:
+    if not secrets.compare_digest(provided_key, API_KEY):
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={
@@ -190,12 +203,37 @@ async def api_key_auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-def _is_rate_limited(client_id: str, now: float) -> bool:
-    with _rate_limit_lock:
-        bucket = _rate_limit_buckets[client_id]
-        threshold = now - RATE_LIMIT_WINDOW_SECONDS
+def _prune_rate_limit_buckets(now: float) -> None:
+    """Prune expired and excess buckets while the caller holds the lock."""
+    threshold = now - RATE_LIMIT_WINDOW_SECONDS
+    for client_id, bucket in list(_rate_limit_buckets.items()):
         while bucket and bucket[0] <= threshold:
             bucket.popleft()
+        if not bucket:
+            del _rate_limit_buckets[client_id]
+
+    while len(_rate_limit_buckets) > RATE_LIMIT_MAX_CLIENTS:
+        oldest_client = min(
+            _rate_limit_buckets,
+            key=lambda client_id: _rate_limit_buckets[client_id][-1],
+        )
+        del _rate_limit_buckets[oldest_client]
+
+
+def _is_rate_limited(client_id: str, now: float) -> bool:
+    with _rate_limit_lock:
+        _prune_rate_limit_buckets(now)
+        if (
+            client_id not in _rate_limit_buckets
+            and len(_rate_limit_buckets) >= RATE_LIMIT_MAX_CLIENTS
+        ):
+            oldest_client = min(
+                _rate_limit_buckets,
+                key=lambda existing: _rate_limit_buckets[existing][-1],
+            )
+            del _rate_limit_buckets[oldest_client]
+
+        bucket = _rate_limit_buckets[client_id]
         if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
             return True
         bucket.append(now)
@@ -227,6 +265,12 @@ async def rate_limit_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_body_size=MAX_UPLOAD_SIZE_BYTES,
+)
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     code = "http_error"
@@ -252,6 +296,10 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    details = [
+        {key: value for key, value in error.items() if key != "input"}
+        for error in exc.errors()
+    ]
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content={
@@ -260,7 +308,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "error": {
                 "code": "validation_error",
                 "message": "Invalid request payload",
-                "details": exc.errors(),
+                "details": details,
             },
         },
     )
@@ -357,17 +405,16 @@ async def analyze_file(request: Request, file: UploadFile = File(...)):
     save_path = _safe_upload_path(file.filename, prefix="api")
 
     try:
-        content = await file.read()
-        if len(content) > MAX_UPLOAD_SIZE_BYTES:
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail=(
-                    "Uploaded file exceeds maximum allowed size "
-                    f"({MAX_UPLOAD_SIZE_BYTES} bytes)"
-                ),
-            )
-        with open(save_path, "wb") as f:
-            f.write(content)
+        written = 0
+        with open(save_path, "wb") as destination:
+            while chunk := await file.read(64 * 1024):
+                written += len(chunk)
+                if written > MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail=UPLOAD_TOO_LARGE,
+                    )
+                destination.write(chunk)
 
         from email_analysis.pipeline import PhishingPipeline
 

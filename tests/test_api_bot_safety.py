@@ -1,10 +1,14 @@
 import asyncio
+from collections import deque
 import sys
 import types
 import importlib
 import json
 import logging
 from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
 
 TestClient = importlib.import_module("starlette.testclient").TestClient
 Request = importlib.import_module("starlette.requests").Request
@@ -84,6 +88,51 @@ def test_analyze_file_too_large_returns_413(monkeypatch, tmp_path: Path) -> None
 
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "http_error"
+    assert list(tmp_path.glob("*")) == []
+
+
+def test_analyze_file_streams_upload_and_cleans_up(monkeypatch, tmp_path: Path) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    client.close()
+    monkeypatch.setattr(routes, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(routes, "MAX_UPLOAD_SIZE_BYTES", 5)
+
+    class RecordingUpload:
+        filename = "mail.eml"
+
+        def __init__(self) -> None:
+            self.read_sizes: list[int] = []
+            self.remaining = b"123456"
+            self.closed = False
+
+        async def read(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            if not self.remaining:
+                return b""
+            if size == -1:
+                chunk, self.remaining = self.remaining, b""
+                return chunk
+            chunk, self.remaining = self.remaining[:size], self.remaining[size:]
+            return chunk
+
+        async def close(self) -> None:
+            self.closed = True
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/analyze_file",
+        "headers": [],
+    }
+    upload = RecordingUpload()
+
+    with pytest.raises(routes.HTTPException) as caught:
+        asyncio.run(routes.analyze_file(Request(scope), upload))
+
+    assert caught.value.status_code == 413
+    assert upload.read_sizes
+    assert -1 not in upload.read_sizes
+    assert upload.closed is True
     assert list(tmp_path.glob("*")) == []
 
 
@@ -187,6 +236,48 @@ def test_request_id_and_error_envelope_consistent(monkeypatch) -> None:
     assert set(payload["error"].keys()) >= {"code", "message"}
 
 
+def test_validation_error_does_not_echo_email_input(monkeypatch) -> None:
+    client, _routes = _client_with_auth(monkeypatch)
+
+    response = client.post(
+        "/analyze_email",
+        headers={"X-API-Key": "test-key"},
+        json={"email_raw": {"secret": "do-not-echo"}},
+    )
+
+    assert response.status_code == 422
+    assert "do-not-echo" not in response.text
+
+
+def test_raw_email_model_rejects_content_over_character_limit() -> None:
+    from api import routes
+
+    with pytest.raises(ValidationError):
+        routes.EmailAnalysisRequest(
+            email_raw="x" * (routes.MAX_RAW_EMAIL_CHARS + 1)
+        )
+
+
+def test_api_key_authentication_uses_constant_time_comparison(monkeypatch) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    compared: list[tuple[str, str]] = []
+
+    def accept_with_recording(provided_key: str, configured_key: str) -> bool:
+        compared.append((provided_key, configured_key))
+        return True
+
+    monkeypatch.setattr(routes.secrets, "compare_digest", accept_with_recording)
+
+    response = client.post(
+        "/analyze_email",
+        headers={"X-API-Key": "different-key"},
+        json={},
+    )
+
+    assert response.status_code == 422
+    assert compared == [("different-key", "test-key")]
+
+
 def test_rate_limit_returns_429(monkeypatch) -> None:
     client, routes = _client_with_auth(monkeypatch)
 
@@ -208,3 +299,39 @@ def test_rate_limit_returns_429(monkeypatch) -> None:
     assert first.status_code == 422
     assert second.status_code == 429
     assert second.json()["error"]["code"] == "rate_limited"
+
+
+def test_rate_limit_state_is_bounded(monkeypatch) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    client.close()
+    monkeypatch.setattr(routes, "RATE_LIMIT_MAX_CLIENTS", 2)
+    routes._rate_limit_buckets.update(
+        {
+            "old-a": deque([0.0]),
+            "old-b": deque([0.0]),
+            "old-c": deque([0.0]),
+        }
+    )
+
+    routes._prune_rate_limit_buckets(1_000.0)
+
+    assert len(routes._rate_limit_buckets) <= 2
+
+
+def test_rate_limit_evicts_oldest_bucket_before_allocating_new_client(
+    monkeypatch,
+) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    client.close()
+    monkeypatch.setattr(routes, "RATE_LIMIT_MAX_CLIENTS", 2)
+    monkeypatch.setattr(routes, "RATE_LIMIT_WINDOW_SECONDS", 1_000)
+    routes._rate_limit_buckets.update(
+        {
+            "oldest": deque([10.0]),
+            "newer": deque([20.0]),
+        }
+    )
+
+    assert routes._is_rate_limited("new-client", 30.0) is False
+
+    assert set(routes._rate_limit_buckets) == {"newer", "new-client"}
