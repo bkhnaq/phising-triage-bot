@@ -11,6 +11,7 @@ Usage:
     start_bot()
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -107,16 +108,27 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     tg_file = await document.get_file()
     analysis_id = uuid.uuid4().hex[:8]
     local_path = _safe_upload_path(document.file_name, prefix=f"tg_{analysis_id}")
-    await tg_file.download_to_drive(str(local_path))
-
     try:
+        await tg_file.download_to_drive(str(local_path))
+        try:
+            _validate_downloaded_size(local_path, MAX_UPLOAD_SIZE_BYTES)
+        except ValueError:
+            await update.message.reply_text(
+                "File too large. "
+                f"Maximum allowed size is {MAX_UPLOAD_SIZE_BYTES} bytes."
+            )
+            return
         logger.info(
             "Starting Telegram analysis id=%s chat_id=%s file=%s",
             analysis_id,
             update.effective_chat.id,
             local_path.name,
         )
-        report_text = _run_analysis(str(local_path), analysis_id=analysis_id)
+        report_text = await asyncio.to_thread(
+            _run_analysis,
+            str(local_path),
+            analysis_id,
+        )
     except Exception:
         logger.exception("Analysis failed id=%s for %s", analysis_id, local_path)
         await update.message.reply_text(
@@ -148,6 +160,12 @@ def _run_analysis(eml_path: str, analysis_id: str | None = None) -> str:
     pipeline = PhishingPipeline(analysis_id=analysis_id)
     result = pipeline.analyze_file(eml_path)
     return result["report"]
+
+
+def _validate_downloaded_size(path: Path, maximum: int) -> None:
+    """Reject downloads whose actual size exceeds the configured limit."""
+    if path.stat().st_size > maximum:
+        raise ValueError(f"Downloaded file is too large (maximum {maximum} bytes)")
 
 
 # ── Helpers ──────────────────────────────────────────────────

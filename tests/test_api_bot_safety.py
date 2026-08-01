@@ -1,11 +1,13 @@
 import asyncio
 from collections import deque
 import sys
+import time
 import types
 import importlib
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -59,6 +61,201 @@ def test_upload_path_traversal_protection(monkeypatch, tmp_path: Path) -> None:
     assert path.parent == tmp_path.resolve()
     assert ".." not in path.name
     assert "secret.eml" in path.name
+
+
+def test_downloaded_file_size_is_checked(tmp_path: Path) -> None:
+    from bot.telegram_handler import _validate_downloaded_size
+
+    path = tmp_path / "mail.eml"
+    path.write_bytes(b"123456")
+
+    with pytest.raises(ValueError, match="too large"):
+        _validate_downloaded_size(path, 5)
+
+
+def test_analysis_keeps_event_loop_responsive(monkeypatch, tmp_path: Path) -> None:
+    from bot import telegram_handler as handler
+
+    class FakeTelegramFile:
+        async def download_to_drive(self, path: str) -> None:
+            Path(path).write_bytes(b"From: a@example.test\n\nHello")
+
+    class FakeDocument:
+        file_name = "mail.eml"
+        file_size = 32
+
+        async def get_file(self) -> FakeTelegramFile:
+            return FakeTelegramFile()
+
+    class FakeMessage:
+        document = FakeDocument()
+
+        def __init__(self) -> None:
+            self.replies: list[str] = []
+
+        async def reply_text(self, text: str, **_kwargs) -> None:
+            self.replies.append(text)
+
+    message = FakeMessage()
+    update = SimpleNamespace(
+        message=message,
+        effective_chat=SimpleNamespace(id=42),
+    )
+    path = tmp_path / "mail.eml"
+    events: list[str] = []
+
+    def slow_analysis(_path: str, analysis_id: str) -> str:
+        events.append("analysis-start")
+        time.sleep(0.15)
+        events.append("analysis-end")
+        return "report"
+
+    monkeypatch.setattr(handler, "ALLOWED_CHAT_IDS", [])
+    monkeypatch.setattr(handler, "_safe_upload_path", lambda *_args, **_kwargs: path)
+    monkeypatch.setattr(handler, "_run_analysis", slow_analysis)
+
+    async def scenario() -> None:
+        analysis = asyncio.create_task(handler.handle_document(update, None))
+        while "analysis-start" not in events:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
+        events.append("heartbeat")
+        await analysis
+
+    asyncio.run(scenario())
+
+    assert events.index("heartbeat") < events.index("analysis-end")
+    assert message.replies[-1] == "report"
+    assert not path.exists()
+
+
+def test_downloaded_oversize_is_rejected_before_analysis_and_cleaned(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from bot import telegram_handler as handler
+
+    class FakeTelegramFile:
+        async def download_to_drive(self, path: str) -> None:
+            Path(path).write_bytes(b"123456")
+
+    class FakeDocument:
+        file_name = "mail.eml"
+        file_size = 5
+
+        async def get_file(self) -> FakeTelegramFile:
+            return FakeTelegramFile()
+
+    class FakeMessage:
+        document = FakeDocument()
+
+        def __init__(self) -> None:
+            self.replies: list[str] = []
+
+        async def reply_text(self, text: str, **_kwargs) -> None:
+            self.replies.append(text)
+
+    message = FakeMessage()
+    update = SimpleNamespace(message=message, effective_chat=SimpleNamespace(id=42))
+    path = tmp_path / "mail.eml"
+    analysis_calls: list[str] = []
+
+    def record_analysis(_path: str, analysis_id: str) -> str:
+        analysis_calls.append(_path)
+        return "report"
+
+    monkeypatch.setattr(handler, "ALLOWED_CHAT_IDS", [])
+    monkeypatch.setattr(handler, "MAX_UPLOAD_SIZE_BYTES", 5)
+    monkeypatch.setattr(handler, "_safe_upload_path", lambda *_args, **_kwargs: path)
+    monkeypatch.setattr(handler, "_run_analysis", record_analysis)
+
+    asyncio.run(handler.handle_document(update, None))
+
+    assert analysis_calls == []
+    assert "File too large" in message.replies[-1]
+    assert not path.exists()
+
+
+def test_download_failure_is_sanitized_and_cleans_temporary_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from bot import telegram_handler as handler
+
+    class FakeTelegramFile:
+        async def download_to_drive(self, path: str) -> None:
+            Path(path).write_bytes(b"partial")
+            raise RuntimeError("sensitive-token")
+
+    class FakeDocument:
+        file_name = "mail.eml"
+        file_size = 1
+
+        async def get_file(self) -> FakeTelegramFile:
+            return FakeTelegramFile()
+
+    class FakeMessage:
+        document = FakeDocument()
+
+        def __init__(self) -> None:
+            self.replies: list[str] = []
+
+        async def reply_text(self, text: str, **_kwargs) -> None:
+            self.replies.append(text)
+
+    message = FakeMessage()
+    update = SimpleNamespace(message=message, effective_chat=SimpleNamespace(id=42))
+    path = tmp_path / "mail.eml"
+
+    monkeypatch.setattr(handler, "ALLOWED_CHAT_IDS", [])
+    monkeypatch.setattr(handler, "_safe_upload_path", lambda *_args, **_kwargs: path)
+
+    asyncio.run(handler.handle_document(update, None))
+
+    assert message.replies[-1] == "❌ Analysis failed. Check bot logs for details."
+    assert "sensitive-token" not in message.replies[-1]
+    assert not path.exists()
+
+
+def test_analysis_value_error_is_sanitized_as_generic_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from bot import telegram_handler as handler
+
+    class FakeTelegramFile:
+        async def download_to_drive(self, path: str) -> None:
+            Path(path).write_bytes(b"message")
+
+    class FakeDocument:
+        file_name = "mail.eml"
+        file_size = 1
+
+        async def get_file(self) -> FakeTelegramFile:
+            return FakeTelegramFile()
+
+    class FakeMessage:
+        document = FakeDocument()
+
+        def __init__(self) -> None:
+            self.replies: list[str] = []
+
+        async def reply_text(self, text: str, **_kwargs) -> None:
+            self.replies.append(text)
+
+    def fail_analysis(_path: str, analysis_id: str) -> str:
+        raise ValueError("sensitive-token")
+
+    message = FakeMessage()
+    update = SimpleNamespace(message=message, effective_chat=SimpleNamespace(id=42))
+    path = tmp_path / "mail.eml"
+
+    monkeypatch.setattr(handler, "ALLOWED_CHAT_IDS", [])
+    monkeypatch.setattr(handler, "_safe_upload_path", lambda *_args, **_kwargs: path)
+    monkeypatch.setattr(handler, "_run_analysis", fail_analysis)
+
+    asyncio.run(handler.handle_document(update, None))
+
+    assert message.replies[-1] == "❌ Analysis failed. Check bot logs for details."
+    assert "sensitive-token" not in message.replies[-1]
+    assert not path.exists()
 
 
 def test_analyze_file_cleans_up_temporary_upload(monkeypatch, tmp_path: Path) -> None:
