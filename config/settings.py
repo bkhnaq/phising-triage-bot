@@ -107,12 +107,14 @@ MAX_URLS_PER_EMAIL = _get_int("MAX_URLS_PER_EMAIL", 50, minimum=1, maximum=500)
 MAX_ATTACHMENTS_PER_EMAIL = _get_int(
     "MAX_ATTACHMENTS_PER_EMAIL", 25, minimum=1, maximum=100
 )
-SAFE_HTTP_MAX_BYTES = _get_int("SAFE_HTTP_MAX_BYTES", 80_000, minimum=1)
+SAFE_HTTP_MAX_BYTES = _get_int(
+    "SAFE_HTTP_MAX_BYTES", 80_000, minimum=1, maximum=80_000
+)
 SAFE_HTTP_TIMEOUT_SECONDS = _get_int(
-    "SAFE_HTTP_TIMEOUT_SECONDS", 6, minimum=1, maximum=30
+    "SAFE_HTTP_TIMEOUT_SECONDS", 6, minimum=1, maximum=6
 )
 SAFE_HTTP_MAX_REDIRECTS = _get_int(
-    "SAFE_HTTP_MAX_REDIRECTS", 10, minimum=0, maximum=20
+    "SAFE_HTTP_MAX_REDIRECTS", 10, minimum=0, maximum=10
 )
 
 # ── File Storage ─────────────────────────────────────────────

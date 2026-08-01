@@ -18,6 +18,7 @@ from config.settings import (
 
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_SAFE_HTTP_HARD_MAX_BYTES = 80_000
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,9 @@ def fetch_url(
     max_bytes: int = SAFE_HTTP_MAX_BYTES,
 ) -> SafeHTTPResponse:
     """Fetch an HTTP(S) URL while validating and pinning every redirect hop."""
+    if max_bytes > _SAFE_HTTP_HARD_MAX_BYTES:
+        raise SafeHTTPError("invalid_limit", "Response byte limit exceeds hard maximum")
+
     current_url = url
     history: list[str] = []
 

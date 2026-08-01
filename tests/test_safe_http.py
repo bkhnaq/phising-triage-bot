@@ -88,6 +88,18 @@ def test_malformed_port_is_rejected(monkeypatch) -> None:
     assert exc.value.code == "invalid_url"
 
 
+def test_fetch_rejects_max_bytes_above_hard_ceiling_before_io(monkeypatch) -> None:
+    def unexpected_io(*_args, **_kwargs):
+        pytest.fail("oversized max_bytes reached an I/O boundary")
+
+    monkeypatch.setattr(safe_http, "_resolve_addresses", unexpected_io)
+    monkeypatch.setattr(safe_http, "_open_pinned", unexpected_io)
+
+    with pytest.raises(safe_http.SafeHTTPError) as exc:
+        safe_http.fetch_url("https://public.test/", max_bytes=80_001)
+    assert exc.value.code == "invalid_limit"
+
+
 def test_ten_redirects_are_allowed(monkeypatch) -> None:
     calls = 0
     monkeypatch.setattr(
