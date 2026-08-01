@@ -115,11 +115,13 @@ continue to prevent all such requests.
   single-process portfolio application.
 - Validate boolean values, ports, positive limits, risk thresholds, log level,
   and environment name at startup with actionable errors.
-- Keep `/health` lightweight and retain the existing CLI health check. The
-  startup validation and CLI health check will verify configuration, writable
-  temporary storage, and the configured local model artifact without
-  contacting external vendors. A separate readiness subsystem is unnecessary
-  for this single-host portfolio application.
+- Keep `/health` lightweight and retain the existing CLI health check. Startup
+  validation and the CLI health check will verify configuration and writable
+  temporary storage without contacting external vendors. Model integrity stays
+  enforced by the classifier when an artifact is present; an absent optional
+  artifact is reported in analysis output rather than failing application
+  health. A separate readiness subsystem is unnecessary for this single-host
+  portfolio application.
 - Do not add distributed rate limiting, reverse-proxy logic, metrics servers,
   or authentication systems beyond the existing API key.
 
