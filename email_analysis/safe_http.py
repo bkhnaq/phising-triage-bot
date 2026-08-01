@@ -16,7 +16,6 @@ from config.settings import (
     SAFE_HTTP_TIMEOUT_SECONDS,
 )
 
-
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _SAFE_HTTP_HARD_MAX_BYTES = 80_000
 
@@ -44,7 +43,9 @@ def _resolve_addresses(host: str, port: int) -> tuple[str, ...]:
         family=socket.AF_UNSPEC,
         type=socket.SOCK_STREAM,
     )
-    addresses = (address[0] for *_metadata, address in resolved if isinstance(address[0], str))
+    addresses = (
+        address[0] for *_metadata, address in resolved if isinstance(address[0], str)
+    )
     return tuple(dict.fromkeys(addresses))
 
 
@@ -116,7 +117,8 @@ def _open_pinned(
             if len(body) > max_bytes:
                 raise SafeHTTPError("too_large", "Response body exceeds size limit")
             response_headers = {
-                str(name).lower(): str(value) for name, value in response.headers.items()
+                str(name).lower(): str(value)
+                for name, value in response.headers.items()
             }
             return int(response.status), response_headers, body
         finally:

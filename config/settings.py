@@ -74,9 +74,7 @@ AI_GROQ_FALLBACK = _get_bool("AI_GROQ_FALLBACK", False)
 
 # ── Risk Scoring Thresholds ──────────────────────────────────
 RISK_HIGH_THRESHOLD = _get_int("RISK_HIGH_THRESHOLD", 70, minimum=0, maximum=100)
-RISK_MEDIUM_THRESHOLD = _get_int(
-    "RISK_MEDIUM_THRESHOLD", 40, minimum=0, maximum=100
-)
+RISK_MEDIUM_THRESHOLD = _get_int("RISK_MEDIUM_THRESHOLD", 40, minimum=0, maximum=100)
 if RISK_MEDIUM_THRESHOLD >= RISK_HIGH_THRESHOLD:
     raise ValueError("RISK_MEDIUM_THRESHOLD must be less than RISK_HIGH_THRESHOLD")
 
@@ -93,9 +91,7 @@ RATE_LIMIT_WINDOW_SECONDS = _get_int("RATE_LIMIT_WINDOW_SECONDS", 60, minimum=1)
 RATE_LIMIT_MAX_CLIENTS = _get_int(
     "RATE_LIMIT_MAX_CLIENTS", 10_000, minimum=1, maximum=100_000
 )
-MAX_UPLOAD_SIZE_BYTES = _get_int(
-    "MAX_UPLOAD_SIZE_BYTES", 10 * 1024 * 1024, minimum=1
-)
+MAX_UPLOAD_SIZE_BYTES = _get_int("MAX_UPLOAD_SIZE_BYTES", 10 * 1024 * 1024, minimum=1)
 OFFLINE_MODE = _get_bool("OFFLINE_MODE", False)
 THREAT_INTEL_CACHE_TTL_SECONDS = _get_int(
     "THREAT_INTEL_CACHE_TTL_SECONDS", 900, minimum=1
@@ -107,15 +103,11 @@ MAX_URLS_PER_EMAIL = _get_int("MAX_URLS_PER_EMAIL", 50, minimum=1, maximum=500)
 MAX_ATTACHMENTS_PER_EMAIL = _get_int(
     "MAX_ATTACHMENTS_PER_EMAIL", 25, minimum=1, maximum=100
 )
-SAFE_HTTP_MAX_BYTES = _get_int(
-    "SAFE_HTTP_MAX_BYTES", 80_000, minimum=1, maximum=80_000
-)
+SAFE_HTTP_MAX_BYTES = _get_int("SAFE_HTTP_MAX_BYTES", 80_000, minimum=1, maximum=80_000)
 SAFE_HTTP_TIMEOUT_SECONDS = _get_int(
     "SAFE_HTTP_TIMEOUT_SECONDS", 6, minimum=1, maximum=6
 )
-SAFE_HTTP_MAX_REDIRECTS = _get_int(
-    "SAFE_HTTP_MAX_REDIRECTS", 10, minimum=0, maximum=10
-)
+SAFE_HTTP_MAX_REDIRECTS = _get_int("SAFE_HTTP_MAX_REDIRECTS", 10, minimum=0, maximum=10)
 
 # ── File Storage ─────────────────────────────────────────────
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
