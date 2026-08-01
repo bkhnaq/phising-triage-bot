@@ -8,6 +8,7 @@ from email_analysis.header_analyzer import analyze_headers
 from email_analysis.landing_page_analyzer import analyze_landing_page
 from email_analysis.safe_http import SafeHTTPResponse
 from email_analysis.url_extractor import extract_urls
+from report.report_generator import generate_report
 
 
 def test_public_suffix_registered_domain_logic() -> None:
@@ -24,6 +25,46 @@ def test_url_userinfo_obfuscation_uses_real_host() -> None:
     assert urls[0]["registered_domain"] == "evil.example"
     assert urls[0]["has_userinfo"] is True
     assert urls[0]["url_risk_score"] >= 18
+
+
+def test_url_extraction_stops_before_expensive_expansion(monkeypatch) -> None:
+    from email_analysis import url_extractor
+
+    expanded: list[str] = []
+    monkeypatch.setattr(
+        url_extractor,
+        "_expand_url",
+        lambda url: expanded.append(url) or url,
+    )
+    body = " ".join(f"https://bit.ly/{index}" for index in range(5))
+
+    assert url_extractor.count_unique_urls(body) == 5
+    urls = url_extractor.extract_urls(body, max_urls=2)
+
+    assert len(urls) == 2
+    assert len(expanded) == 2
+
+
+def test_report_discloses_truncated_evidence() -> None:
+    report = generate_report(
+        email_data={},
+        auth_results={},
+        urls=[],
+        attachments=[],
+        risk={"score": 0, "verdict": "LOW"},
+        vt_url_reports=[],
+        vt_hash_reports=[],
+        otx_reports=[],
+        analysis_limits={
+            "urls_truncated": True,
+            "attachments_truncated": True,
+            "max_urls": 50,
+            "max_attachments": 25,
+        },
+    )
+
+    assert "URL analysis limited to the first 50 indicators" in report
+    assert "Attachment analysis limited to the first 25 attachments" in report
 
 
 def test_auth_alignment_flags_spf_pass_mismatch() -> None:

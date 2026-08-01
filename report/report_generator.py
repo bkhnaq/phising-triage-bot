@@ -216,6 +216,7 @@ def generate_report(
     domain_intelligence: dict | None = None,
     landing_pages: list[dict] | None = None,
     evidence_bundle: dict | None = None,
+    analysis_limits: dict | None = None,
 ) -> str:
     """
     Generate a professional SOC-grade phishing triage report.
@@ -347,6 +348,11 @@ def generate_report(
 
     # ── 5. URL ANALYSIS ──────────────────────────────────────
     lines.append(f"━━━ URL ANALYSIS ({len(urls)}) ━━━")
+    if analysis_limits and analysis_limits.get("urls_truncated"):
+        lines.append(
+            "⚠️ URL analysis limited to the first "
+            f"{analysis_limits.get('max_urls', 0)} indicators"
+        )
     if urls:
         for u in urls:
             short_tag = " [SHORTENED]" if u.get("is_shortened") else ""
@@ -671,6 +677,11 @@ def generate_report(
 
     # ── 12. ATTACHMENTS ──────────────────────────────────────
     lines.append(f"━━━ ATTACHMENTS ({len(attachments)}) ━━━")
+    if analysis_limits and analysis_limits.get("attachments_truncated"):
+        lines.append(
+            "⚠️ Attachment analysis limited to the first "
+            f"{analysis_limits.get('max_attachments', 0)} attachments"
+        )
     if attachments:
         for a in attachments:
             lines.append(

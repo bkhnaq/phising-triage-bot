@@ -239,6 +239,7 @@ _EXECUTABLE_IN_ARCHIVE_EXTENSIONS = {
 def extract_attachments(
     msg: EmailMessage,
     save_dir: str = "uploads",
+    max_attachments: int | None = None,
 ) -> list[dict]:
     """
     Walk the MIME tree and pull out every attachment.
@@ -246,6 +247,7 @@ def extract_attachments(
     Args:
         msg: The parsed EmailMessage object.
         save_dir: Directory where attachment files will be saved.
+        max_attachments: Maximum number of MIME attachments to save and analyze.
 
     Returns:
         List of dicts, each containing:
@@ -259,11 +261,12 @@ def extract_attachments(
 
     attachments: list[dict] = []
     counter = 0
+    total_attachments = 0
 
-    for part in msg.walk():
-        content_disposition = str(part.get("Content-Disposition", ""))
-        if "attachment" not in content_disposition.lower():
-            continue
+    for part in _iter_attachment_parts(msg):
+        total_attachments += 1
+        if max_attachments is not None and total_attachments > max(0, max_attachments):
+            break
 
         payload = part.get_payload(decode=True)
         if payload is None:
@@ -303,6 +306,19 @@ def extract_attachments(
 
     logger.info("Total attachments extracted: %d", len(attachments))
     return attachments
+
+
+def count_attachments(msg: EmailMessage) -> int:
+    """Count MIME attachment parts without decoding their payloads."""
+    return sum(1 for _part in _iter_attachment_parts(msg))
+
+
+def _iter_attachment_parts(msg: EmailMessage):
+    """Yield MIME parts explicitly marked as attachments."""
+    for part in msg.walk():
+        content_disposition = str(part.get("Content-Disposition", ""))
+        if "attachment" in content_disposition.lower():
+            yield part
 
 
 def _sanitize_filename(filename: str) -> str:

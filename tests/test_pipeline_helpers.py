@@ -1,3 +1,6 @@
+from email.message import EmailMessage
+from pathlib import Path
+
 from email_analysis.pipeline import PhishingPipeline
 
 
@@ -95,3 +98,60 @@ def test_parallel_lookup_preserves_input_order() -> None:
         {"value": 1},
         {"value": 2},
     ]
+
+
+def test_attachment_extraction_stops_before_hashing_extra_parts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from email_analysis import attachment_analyzer
+
+    message = EmailMessage()
+    message.set_content("Email body")
+    for index in range(3):
+        message.add_attachment(
+            f"payload-{index}".encode(),
+            maintype="application",
+            subtype="octet-stream",
+            filename=f"sample-{index}.bin",
+        )
+
+    hashed: list[bytes] = []
+    real_compute_sha256 = attachment_analyzer.compute_sha256
+
+    def recording_compute_sha256(data: bytes) -> str:
+        hashed.append(data)
+        return real_compute_sha256(data)
+
+    monkeypatch.setattr(attachment_analyzer, "compute_sha256", recording_compute_sha256)
+
+    assert attachment_analyzer.count_attachments(message) == 3
+    attachments = attachment_analyzer.extract_attachments(
+        message, save_dir=str(tmp_path), max_attachments=2
+    )
+
+    assert [item["filename"] for item in attachments] == [
+        "sample-0.bin",
+        "sample-1.bin",
+    ]
+    assert hashed == [b"payload-0", b"payload-1"]
+    assert len(list(tmp_path.iterdir())) == 2
+
+
+def test_qr_urls_share_the_total_url_limit() -> None:
+    body_urls = [
+        {"url": "https://body.example", "source": "body"},
+    ]
+    qr_urls = [
+        {"url": "https://qr-one.example", "source": "qr_code"},
+        {"url": "https://qr-two.example", "source": "qr_code"},
+    ]
+
+    bounded, truncated = PhishingPipeline._merge_bounded_url_lists(
+        body_urls, qr_urls, max_urls=2
+    )
+
+    assert [item["url"] for item in bounded] == [
+        "https://body.example",
+        "https://qr-one.example",
+    ]
+    assert truncated is True
