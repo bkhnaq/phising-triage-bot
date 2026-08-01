@@ -199,6 +199,12 @@ class PhishingPipeline:
             all_urls, qr_urls_truncated = self._merge_bounded_url_lists(
                 urls, qr_urls, max_urls=MAX_URLS_PER_EMAIL
             )
+            admitted_urls = {item.get("url") for item in all_urls}
+            qr_findings = [
+                finding
+                for finding in qr_findings
+                if not finding.get("url") or finding.get("url") in admitted_urls
+            ]
             analysis_limits["urls_truncated"] = (
                 analysis_limits["urls_truncated"] or qr_urls_truncated
             )
