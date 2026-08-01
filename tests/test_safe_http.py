@@ -56,6 +56,29 @@ def test_landing_page_uses_safe_fetch(monkeypatch) -> None:
     ]
 
 
+def test_landing_page_decodes_declared_windows_1252_charset(monkeypatch) -> None:
+    from email_analysis import landing_page_analyzer as landing
+
+    landing._CACHE.clear()
+    monkeypatch.setattr(landing, "OFFLINE_MODE", False)
+    monkeypatch.setattr(
+        landing,
+        "fetch_url",
+        lambda url, **_kwargs: SafeHTTPResponse(
+            url=url,
+            status_code=200,
+            headers={"content-type": "text/html; charset=windows-1252"},
+            body="<title>Café Account Login</title>".encode("windows-1252"),
+            history=(),
+        ),
+    )
+
+    result = landing.analyze_landing_page("https://public.test/windows-1252")
+
+    assert result["title"] == "Café Account Login"
+    assert result["state"] == "suspicious"
+
+
 @pytest.mark.parametrize(
     "url",
     [

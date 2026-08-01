@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 from html.parser import HTMLParser
 import logging
 import re
@@ -130,7 +131,7 @@ def analyze_landing_page(url: str) -> dict:
             _CACHE.set(url, result)
             return result
 
-        html = resp.body.decode("utf-8", errors="replace")
+        html = resp.body.decode(_response_charset(content_type), errors="replace")
         _analyze_html(result, html)
         result["state"] = "suspicious" if result["risk_score"] > 0 else "clean"
 
@@ -145,6 +146,20 @@ def analyze_landing_page(url: str) -> dict:
 
     _CACHE.set(url, result)
     return result
+
+
+def _response_charset(content_type: str) -> str:
+    match = re.search(
+        r"(?:^|;)\s*charset\s*=\s*['\"]?([^;'\"\s]+)",
+        content_type,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return "utf-8"
+    try:
+        return codecs.lookup(match.group(1)).name
+    except LookupError:
+        return "utf-8"
 
 
 def _analyze_html(result: dict, html: str) -> None:
