@@ -62,8 +62,10 @@ phishing-triage-bot/
 │   ├── heuristic_analyzer.py        # Brand impersonation, keywords, domain age
 │   ├── homograph_analyzer.py        # Unicode / Cyrillic homograph detection
 │   ├── qr_code_analyzer.py          # QR code scanning in image attachments
-│   ├── ai_classifier.py             # AI phishing classifier (Gemini)
+│   ├── ai_classifier.py             # Local-first AI routing + Groq fallback
+│   ├── local_ai_classifier.py       # Offline mmBERT inference
 │   └── phishing_rules.py            # Display name spoofing & lookalike domains
+├── ml/                              # Data, training, evaluation and promotion
 ├── threat_intel/
 │   ├── virustotal_checker.py        # VirusTotal v3 API integration
 │   ├── alienvault_checker.py        # AlienVault OTX API integration
@@ -75,6 +77,8 @@ phishing-triage-bot/
 │   └── report_generator.py          # Markdown report builder
 ├── requirements.txt
 ├── requirements-dev.txt
+├── requirements-ml-runtime.txt
+├── requirements-ml.txt
 ├── Dockerfile
 ├── .env.example
 ├── .gitignore
@@ -97,7 +101,7 @@ phishing-triage-bot/
 | 10 | QR code scanning in image attachments | `email_analysis/qr_code_analyzer.py` |
 | 11 | Display name spoofing detection | `email_analysis/phishing_rules.py` |
 | 12 | Lookalike domain detection (Levenshtein) | `email_analysis/phishing_rules.py` |
-| 13 | AI phishing classification (Gemini) | `email_analysis/ai_classifier.py` |
+| 13 | Local bilingual AI classification with bounded Groq fallback | `email_analysis/ai_classifier.py` |
 | 14 | VirusTotal threat intelligence | `threat_intel/virustotal_checker.py` |
 | 15 | AlienVault OTX threat intelligence | `threat_intel/alienvault_checker.py` |
 | 16 | IP reputation (AbuseIPDB + Spamhaus) | `threat_intel/ip_reputation.py` |
@@ -138,6 +142,21 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
+The core application and CI do not download model weights. To run the optional
+local classifier on CPU:
+
+```bash
+pip install -r requirements-ml-runtime.txt
+```
+
+For NVIDIA CUDA, install the PyTorch wheel matching the host first. The verified
+Windows setup for CUDA 13.0 is:
+
+```powershell
+pip install torch==2.13.0+cu130 --index-url https://download.pytorch.org/whl/cu130
+pip install -r requirements-ml-runtime.txt
+```
+
 ### 3. Get your API keys
 
 | Service | Where to get the key | Required |
@@ -145,11 +164,83 @@ pip install -r requirements-dev.txt
 | **Telegram Bot** | Chat with [@BotFather](https://t.me/BotFather) on Telegram | Yes |
 | **VirusTotal** | https://www.virustotal.com/gui/my-apikey | Recommended |
 | **AlienVault OTX** | https://otx.alienvault.com/accounts/signup | Recommended |
-| **Groq AI** | https://console.groq.com/keys | Optional |
+| **Groq AI** | https://console.groq.com/keys | Optional fallback for uncertain local predictions |
 | **AbuseIPDB** | https://www.abuseipdb.com/account/api | Optional |
 | **SecurityTrails** | https://securitytrails.com/app/signup | Optional |
 
 > The bot runs without optional API keys — those modules will be skipped gracefully.
+
+## Local Bilingual AI (English + Vietnamese)
+
+Runtime classification is local-first:
+
+1. The promoted `jhu-clsp/mmBERT-small` artifact runs from local files only.
+2. High- and low-confidence probabilities return `phishing` or `legitimate`.
+3. Uncertain results may use Groq when `AI_GROQ_FALLBACK=true`.
+4. With `OFFLINE_MODE=true`, no AI or threat-intelligence network request is made.
+
+Configure the artifact and routing in `.env`:
+
+```dotenv
+LOCAL_AI_ENABLED=true
+LOCAL_AI_MODEL_DIR=artifacts/models/phishing-mmbert
+LOCAL_AI_MAX_LENGTH=512
+AI_GROQ_FALLBACK=true
+```
+
+The runtime validates checksums, label mappings, thresholds and safetensors
+before loading. If the optional ML dependencies or artifact are absent, it
+fails closed to the existing fallback policy instead of downloading a model.
+
+### Reproduce training and promotion
+
+Install the training extras after the runtime dependencies:
+
+```bash
+pip install -r requirements-ml.txt
+```
+
+Prepare the revision-pinned public datasets, build a bounded/cached Vietnamese
+slice with the local Apache-2.0 MarianMT translator, train the baseline, then
+fine-tune mmBERT. One-epoch passes keep export memory bounded on a verified
+4 GB NVIDIA GPU:
+
+```bash
+python -m ml.prepare_data --source public --raw-dir data/raw --output-dir data/processed/phishing --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/train.jsonl --output data/processed/phishing/train.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split train --batch-size 8 --max-records 500 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/validation.jsonl --output data/processed/phishing/validation.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split validation --batch-size 8 --max-records 200 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/test.jsonl --output data/processed/phishing/test.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split test --batch-size 8 --max-records 200 --max-source-chars 2000 --seed 42
+python -m ml.train_baseline --data-dir data/processed/phishing --output-dir artifacts/baseline-full --seed 42
+python -m ml.train_mmbert --data-dir data/processed/phishing --train-augmentation data/processed/phishing/train.vi.jsonl --output-dir artifacts/mmbert-epoch1 --epochs 1 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-epoch1
+python -m ml.train_mmbert --data-dir data/processed/phishing --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --initial-model-dir artifacts/mmbert-epoch1 --output-dir artifacts/mmbert-weights --epochs 1 --learning-rate 3e-6 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-weights
+python -m ml.train_mmbert --data-dir data/processed/phishing --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --initial-model-dir artifacts/mmbert-weights --output-dir artifacts/mmbert-candidate --evaluate-only --min-recall 0.95 --min-vietnamese-recall 0.90 --max-vietnamese-fpr 0.20 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-candidate
+python -m ml.promote promote --candidate artifacts/mmbert-candidate --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
+```
+
+The translator is downloaded once at its pinned revision, then generation is
+local, content-addressed and safe to resume. URLs, domains, currency amounts and
+attachment names are preserved rather than translated. Invalid cache entries
+are quarantined and regenerated. Training verifies the prepared-dataset
+checksums and group isolation, then exports a merged provenance manifest with
+every augmentation checksum, generation manifest and oversampling
+multiplicity. Warm starts must match the pinned model ID and revision recorded
+by the source artifact. Train and test synthetic records are generated from
+separate source splits. The Groq
+augmenter remains available as an optional alternative, but may consume API
+daily-token quota.
+
+Promotion is atomic and is rejected unless English phishing recall is at least
+0.90, English false-positive rate is at most 0.05, English macro-F1 matches or
+exceeds the baseline, synthetic Vietnamese phishing recall is at least 0.85,
+and synthetic Vietnamese false-positive rate is at most 0.20. The verified
+promoted run scored English macro-F1 `0.9812` (recall `0.9761`, FPR `0.0141`)
+and synthetic Vietnamese macro-F1 `0.8789` (recall `0.94`, FPR `0.1818`) on
+1,506 English and 199 held-out Vietnamese records. Synthetic Vietnamese
+metrics are a rollout gate, not a substitute for monitoring labeled production
+email.
 
 ### 4. Run the bot
 
@@ -235,7 +326,8 @@ Development mode behavior:
 
 ## Runtime Tuning
 
-- `OFFLINE_MODE=true` skips external network lookups (VT/OTX/WHOIS/DNS/redirects/AI) for local demos and deterministic tests.
+- `OFFLINE_MODE=true` skips external network lookups (VT/OTX/WHOIS/DNS/redirects/Groq) for local demos and deterministic tests. The promoted local classifier still runs offline.
+- `LOCAL_AI_MAX_LENGTH` controls runtime token truncation (default: `512`, matching training and threshold calibration).
 - `THREAT_INTEL_CACHE_TTL_SECONDS` controls the in-memory cache TTL for external lookups (default: `900`).
 - `THREAT_INTEL_MAX_WORKERS` controls parallel lookup fan-out for independent threat-intel checks (default: `8`).
 
@@ -274,7 +366,7 @@ Development mode behavior:
 
 10. **Threat Intel** – URLs, URL domains, and attachment hashes are checked against VirusTotal and AlienVault OTX. IPs are checked against AbuseIPDB and Spamhaus. SecurityTrails provides passive DNS data.
 
-11. **AI Classification** – The email is sent to Groq for an independent phishing/suspicious/legitimate verdict.
+11. **AI Classification** – The local bilingual mmBERT classifier runs first. Only uncertain or unavailable local results may use the optional Groq fallback.
 
 12. **Risk Scoring** – A weighted score (0-100) is calculated from all indicators and mapped to a verdict: **LOW**, **MEDIUM**, **HIGH**, or **CRITICAL**.
 

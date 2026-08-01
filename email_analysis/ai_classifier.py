@@ -15,14 +15,23 @@ Usage:
     result = classify_email(email_data, urls)
 """
 
+import html
 import json
 import logging
+import math
 import re
-import html
+from collections.abc import Mapping
 
 import requests
 
-from config.settings import GROQ_API_KEY, GROQ_MODEL, OFFLINE_MODE
+from config.settings import (
+    AI_GROQ_FALLBACK,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+    LOCAL_AI_ENABLED,
+    OFFLINE_MODE,
+)
+from email_analysis.local_ai_classifier import classify_email_local
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +69,87 @@ Return ONLY valid JSON:
 """
 
 
+def _base_result(
+    *,
+    error: str | None = None,
+    provider: str = "none",
+    model: str | None = None,
+) -> dict:
+    return {
+        "verdict": "unknown",
+        "confidence": 0.0,
+        "reasons": [],
+        "risk_score": 0,
+        "error": error,
+        "provider": provider,
+        "model": model,
+        "phishing_probability": None,
+        "fallback_used": False,
+    }
+
+
+def _normalize_result(result: dict) -> dict:
+    normalized = _base_result()
+    normalized.update({key: result[key] for key in normalized if key in result})
+    return normalized
+
+
 def classify_email(
     email_data: dict,
     urls: list[dict] | None = None,
     rule_findings: list[str] | None = None,
+) -> dict:
+    """Return one final AI verdict using local inference before Groq."""
+    url_items = urls or []
+    finding_items = rule_findings or []
+
+    if not LOCAL_AI_ENABLED:
+        if OFFLINE_MODE:
+            return _base_result(error="offline mode enabled")
+        return _normalize_result(
+            _classify_with_groq(email_data, url_items, finding_items)
+        )
+
+    try:
+        local_result = _normalize_result(classify_email_local(email_data, url_items))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        logger.warning("Local AI call failed (%s)", type(exc).__name__)
+        local_result = _base_result(
+            error="local model unavailable",
+            provider="local",
+        )
+
+    local_verdict = str(local_result.get("verdict", "")).lower()
+    if local_verdict in {"legitimate", "phishing"}:
+        return local_result
+    if OFFLINE_MODE:
+        return local_result
+
+    if local_verdict == "suspicious":
+        if not AI_GROQ_FALLBACK:
+            return local_result
+        groq_result = _normalize_result(
+            _classify_with_groq(email_data, url_items, finding_items)
+        )
+        if groq_result["error"] is None and groq_result["verdict"] in _ALLOWED_VERDICTS:
+            groq_result["fallback_used"] = True
+            return groq_result
+        local_result["fallback_used"] = True
+        fallback_error = str(groq_result.get("error") or "unknown error")
+        local_result["error"] = f"Groq fallback failed: {fallback_error}"
+        return local_result
+
+    groq_result = _normalize_result(
+        _classify_with_groq(email_data, url_items, finding_items)
+    )
+    groq_result["fallback_used"] = True
+    return groq_result
+
+
+def _classify_with_groq(
+    email_data: dict,
+    urls: list[dict],
+    rule_findings: list[str],
 ) -> dict:
     """
     Send email content to an LLM for phishing classification.
@@ -81,13 +167,7 @@ def classify_email(
             risk_score – int (25 if phishing, 10 if suspicious, 0 otherwise)
             error      – error string or None
     """
-    result: dict = {
-        "verdict": "unknown",
-        "confidence": 0.0,
-        "reasons": [],
-        "risk_score": 0,
-        "error": None,
-    }
+    result = _base_result(provider="groq", model=GROQ_MODEL)
 
     if not GROQ_API_KEY:
         result["error"] = "GROQ_API_KEY not configured"
@@ -100,7 +180,7 @@ def classify_email(
         return result
 
     # Build the analysis prompt
-    user_content = _build_prompt(email_data, urls or [], rule_findings or [])
+    user_content = _build_prompt(email_data, urls, rule_findings)
 
     try:
         resp = requests.post(
@@ -122,13 +202,7 @@ def classify_email(
         )
         resp.raise_for_status()
 
-        data = resp.json()
-        # Groq response: choices[0].message.content
-        reply = (
-            data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-        )
-        if not reply:
-            raise ValueError("Empty response from LLM")
+        reply = _extract_groq_reply(resp.json())
 
         parsed = _parse_llm_response(reply)
 
@@ -160,14 +234,14 @@ def classify_email(
         )
 
     except requests.Timeout as exc:
-        result["error"] = f"API timeout: {exc}"
-        logger.error("AI classifier timeout: %s", exc)
+        result["error"] = "API timeout"
+        logger.error("AI classifier timeout (%s)", type(exc).__name__)
     except requests.RequestException as exc:
-        result["error"] = f"API request failed: {exc}"
-        logger.error("AI classifier request failed: %s", exc)
+        result["error"] = "API request failed"
+        logger.error("AI classifier request failed (%s)", type(exc).__name__)
     except (TypeError, ValueError, KeyError, IndexError, json.JSONDecodeError) as exc:
-        result["error"] = f"Response parse error: {exc}"
-        logger.error("AI classifier parse error: %s", exc)
+        result["error"] = "Response parse error"
+        logger.error("AI classifier parse error (%s)", type(exc).__name__)
 
     return result
 
@@ -242,11 +316,32 @@ def _safe_confidence(value: object) -> float:
         conf = float(value)
     except (TypeError, ValueError):
         return 0.0
+    if not math.isfinite(conf):
+        return 0.0
     if conf < 0.0:
         return 0.0
     if conf > 1.0:
         return 1.0
     return conf
+
+
+def _extract_groq_reply(data: object) -> str:
+    """Validate the upstream response shape before extracting message text."""
+    if not isinstance(data, Mapping):
+        raise ValueError("Groq response must be an object")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("Groq response choices must be a non-empty list")
+    choice = choices[0]
+    if not isinstance(choice, Mapping):
+        raise ValueError("Groq response choice must be an object")
+    message = choice.get("message")
+    if not isinstance(message, Mapping):
+        raise ValueError("Groq response message must be an object")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Groq response content must be a non-empty string")
+    return content.strip()
 
 
 def _parse_llm_response(text: str) -> dict:
@@ -262,18 +357,28 @@ def _parse_llm_response(text: str) -> dict:
 
     # Try direct JSON parse first
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
     except json.JSONDecodeError:
-        pass
+        parsed = None
+    if isinstance(parsed, Mapping):
+        return dict(parsed)
+    if parsed is not None:
+        raise ValueError("LLM response JSON must be an object")
 
     # LLM may wrap JSON in explanatory text — extract the JSON object
     json_match = re.search(r"\{[^{}]*\"verdict\"[^{}]*\}", cleaned, re.DOTALL)
     if json_match:
-        return json.loads(json_match.group(0))
+        parsed = json.loads(json_match.group(0))
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+        raise ValueError("LLM response JSON must be an object")
 
     # Fallback: try to find any {...} block
     brace_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if brace_match:
-        return json.loads(brace_match.group(0))
+        parsed = json.loads(brace_match.group(0))
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+        raise ValueError("LLM response JSON must be an object")
 
     raise ValueError("No valid JSON found in response")

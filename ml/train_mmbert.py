@@ -1,0 +1,865 @@
+"""Fine-tune mmBERT for calibrated bilingual phishing classification."""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import hashlib
+import json
+import math
+import time
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+from typing import Any
+
+from ml.calibrate import select_bilingual_thresholds, select_thresholds
+from ml.contracts import DecisionThresholds, EmailRecord
+from ml.evaluate import compute_metrics, evaluate_slices
+from ml.prepare_data import validate_group_splits
+from ml.promote import validate_artifact
+from ml.text import prepare_model_input
+from ml.train_baseline import load_split
+
+_MODEL_ID = "jhu-clsp/mmBERT-small"
+_MODEL_REVISION = "abc32620dd4f6ab06f5fbe905dc25f310618e09f"
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingConfig:
+    output_dir: Path
+    checkpoint_dir: Path
+    model_id: str
+    model_revision: str
+    max_length: int
+    per_device_train_batch_size: int
+    per_device_eval_batch_size: int
+    gradient_accumulation_steps: int
+    learning_rate: float
+    weight_decay: float
+    warmup_steps: int
+    num_train_epochs: float
+    max_steps: int
+    seed: int
+    smoke: bool
+    freeze_token_embeddings: bool
+    initial_model_dir: Path | None
+
+
+def training_config(
+    output_dir: Path,
+    smoke: bool,
+    seed: int,
+    *,
+    checkpoint_dir: Path | None = None,
+    model_id: str = _MODEL_ID,
+    model_revision: str = _MODEL_REVISION,
+    max_length: int = 512,
+    freeze_token_embeddings: bool = True,
+    initial_model_dir: Path | None = None,
+    learning_rate: float = 2e-5,
+) -> TrainingConfig:
+    if max_length <= 0:
+        raise ValueError("max_length must be positive")
+    if learning_rate <= 0 or not math.isfinite(learning_rate):
+        raise ValueError("learning_rate must be a positive finite number")
+    return TrainingConfig(
+        output_dir=output_dir,
+        checkpoint_dir=checkpoint_dir
+        or output_dir.parent / f"{output_dir.name}-checkpoints",
+        model_id=model_id,
+        model_revision=model_revision,
+        max_length=max_length,
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=2,
+        gradient_accumulation_steps=16,
+        learning_rate=learning_rate,
+        weight_decay=0.01,
+        warmup_steps=0,
+        num_train_epochs=1.0 if smoke else 4.0,
+        max_steps=2 if smoke else -1,
+        seed=seed,
+        smoke=smoke,
+        freeze_token_embeddings=freeze_token_embeddings,
+        initial_model_dir=initial_model_dir,
+    )
+
+
+def schedule_warmup(
+    config: TrainingConfig,
+    train_examples: int,
+) -> TrainingConfig:
+    """Resolve a stable 10% warmup schedule without deprecated ratios."""
+    if train_examples <= 0:
+        raise ValueError("train_examples must be positive")
+    if config.max_steps > 0:
+        optimizer_steps = config.max_steps
+    else:
+        steps_per_epoch = math.ceil(
+            train_examples
+            / (config.per_device_train_batch_size * config.gradient_accumulation_steps)
+        )
+        optimizer_steps = math.ceil(steps_per_epoch * config.num_train_epochs)
+    return replace(
+        config,
+        warmup_steps=max(1, round(optimizer_steps * 0.1)),
+    )
+
+
+def model_load_options(config: TrainingConfig) -> dict[str, object]:
+    """Return the auditable, non-executable remote base-model load policy."""
+    options: dict[str, object] = {
+        "revision": config.model_revision,
+        "trust_remote_code": False,
+        "use_safetensors": config.initial_model_dir is not None,
+    }
+    if config.initial_model_dir is not None:
+        options["local_files_only"] = True
+    return options
+
+
+def model_weight_dtype_name(
+    cuda_available: bool,
+    bf16_available: bool,
+) -> str | None:
+    """Select native BF16 weights only when hardware supports their range."""
+    return "bfloat16" if cuda_available and bf16_available else None
+
+
+def freeze_token_embeddings(model: Any) -> int:
+    """Freeze the large pretrained vocabulary table and return parameter count."""
+    parameters = list(model.get_input_embeddings().parameters())
+    for parameter in parameters:
+        parameter.requires_grad = False
+    return len(parameters)
+
+
+def compute_class_weights(labels: Sequence[int]) -> tuple[float, float]:
+    counts = Counter(int(label) for label in labels)
+    if set(counts) != {0, 1}:
+        raise ValueError("class weights require both binary classes")
+    total = len(labels)
+    return (
+        total / (2 * counts[0]),
+        total / (2 * counts[1]),
+    )
+
+
+def probability_rows(
+    records: Sequence[Mapping[str, object]],
+    probabilities: Sequence[float],
+) -> list[dict[str, object]]:
+    if len(records) != len(probabilities):
+        raise ValueError("records and probabilities must have the same length")
+    rows: list[dict[str, object]] = []
+    for record, probability in zip(records, probabilities, strict=True):
+        rows.append(
+            {
+                "id": record["id"],
+                "source_split": record["source_split"],
+                "language": record["language"],
+                "synthetic": record["synthetic"],
+                "label": record["label"],
+                "phishing_probability": float(probability),
+            }
+        )
+    return rows
+
+
+def _probabilities_from_logits(logits: Any) -> list[float]:
+    import numpy as np
+
+    array = np.asarray(logits, dtype=np.float64)
+    if array.ndim != 2 or array.shape[1] not in {1, 2}:
+        raise ValueError("model predictions must contain one or two logits")
+    if array.shape[1] == 1:
+        values = 1.0 / (1.0 + np.exp(-array[:, 0]))
+    else:
+        shifted = array - np.max(array, axis=1, keepdims=True)
+        exponentials = np.exp(shifted)
+        values = exponentials[:, 1] / np.sum(exponentials, axis=1)
+    return [max(0.0, min(1.0, float(value))) for value in values]
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _json_object(path: Path) -> Mapping[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid JSON file: {path}") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError(f"JSON file must contain an object: {path}")
+    return value
+
+
+def _verified_base_manifest(
+    data_dir: Path,
+) -> tuple[Mapping[str, object], dict[str, str]]:
+    manifest_path = data_dir / "dataset-manifest.json"
+    manifest = _json_object(manifest_path)
+    raw_checksums = manifest.get("checksums")
+    if not isinstance(raw_checksums, Mapping):
+        raise ValueError("dataset manifest requires checksums")
+    checksums: dict[str, str] = {
+        "base/dataset-manifest.json": _file_sha256(manifest_path)
+    }
+    root = data_dir.resolve()
+    required = {"train.jsonl", "validation.jsonl", "test.jsonl"}
+    if not required.issubset(raw_checksums):
+        missing = sorted(required - set(raw_checksums))
+        raise ValueError(f"dataset manifest is missing checksums: {missing}")
+    for relative, expected in raw_checksums.items():
+        if not isinstance(relative, str) or not isinstance(expected, str):
+            raise ValueError("dataset manifest checksum entries must be strings")
+        path = (data_dir / relative).resolve()
+        if not path.is_relative_to(root) or not path.is_file() or path.is_symlink():
+            raise ValueError(f"dataset manifest path is invalid: {relative}")
+        actual = _file_sha256(path)
+        if actual != expected:
+            raise ValueError(f"dataset checksum mismatch: {relative}")
+        checksums[f"base/{relative}"] = actual
+    return manifest, checksums
+
+
+def _augmentation_provenance(
+    paths_by_split: Sequence[tuple[str, Sequence[Path]]],
+) -> tuple[list[dict[str, object]], dict[str, str]]:
+    grouped: dict[tuple[str, str], dict[str, object]] = {}
+    for split, paths in paths_by_split:
+        for path in paths:
+            resolved = path.resolve()
+            key = (split, str(resolved))
+            existing = grouped.get(key)
+            if existing is not None:
+                multiplicity = existing.get("multiplicity")
+                if isinstance(multiplicity, bool) or not isinstance(multiplicity, int):
+                    raise ValueError("augmentation multiplicity must be an integer")
+                existing["multiplicity"] = multiplicity + 1
+                continue
+            if not resolved.is_file() or resolved.is_symlink():
+                raise ValueError(f"augmentation file not found: {path}")
+            generation_path = resolved.with_suffix(resolved.suffix + ".manifest.json")
+            if not generation_path.is_file() or generation_path.is_symlink():
+                raise ValueError(
+                    f"augmentation generation manifest not found: {generation_path}"
+                )
+            generation_manifest = _json_object(generation_path)
+            if generation_manifest.get("split") != split:
+                raise ValueError(
+                    f"augmentation manifest split does not match {split}: {path}"
+                )
+            grouped[key] = {
+                "split": split,
+                "path": str(resolved),
+                "sha256": _file_sha256(resolved),
+                "multiplicity": 1,
+                "generation_manifest_path": str(generation_path),
+                "generation_manifest_sha256": _file_sha256(generation_path),
+                "generation_manifest": dict(generation_manifest),
+            }
+
+    entries = list(grouped.values())
+    checksums: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        prefix = f"augmentation/{entry['split']}/{index}"
+        checksums[f"{prefix}/data"] = str(entry["sha256"])
+        checksums[f"{prefix}/manifest"] = str(entry["generation_manifest_sha256"])
+    return entries, checksums
+
+
+def _split_summary(records: Sequence[EmailRecord]) -> dict[str, object]:
+    return {
+        "sample_count": len(records),
+        "unique_group_count": len({record.group_id for record in records}),
+        "label_distribution": dict(
+            sorted(Counter(record.label for record in records).items())
+        ),
+        "language_distribution": dict(
+            sorted(Counter(record.language for record in records).items())
+        ),
+        "synthetic_distribution": {
+            str(value).lower(): count
+            for value, count in sorted(
+                Counter(record.synthetic for record in records).items()
+            )
+        },
+    }
+
+
+def load_training_corpus(
+    data_dir: Path,
+    train_augmentations: Sequence[Path],
+    validation_augmentations: Sequence[Path],
+    test_augmentations: Sequence[Path],
+) -> tuple[
+    tuple[list[str], list[int], list[EmailRecord]],
+    tuple[list[str], list[int], list[EmailRecord]],
+    tuple[list[str], list[int], list[EmailRecord]],
+    dict[str, object],
+]:
+    base_manifest, checksums = _verified_base_manifest(data_dir)
+    augmentations, augmentation_checksums = _augmentation_provenance(
+        (
+            ("train", train_augmentations),
+            ("validation", validation_augmentations),
+            ("test", test_augmentations),
+        )
+    )
+    checksums.update(augmentation_checksums)
+    train = load_split(data_dir / "train.jsonl", "train")
+    validation = load_split(data_dir / "validation.jsonl", "validation")
+    test = load_split(data_dir / "test.jsonl", "test")
+    for path in train_augmentations:
+        extra = load_split(path, "train")
+        train[0].extend(extra[0])
+        train[1].extend(extra[1])
+        train[2].extend(extra[2])
+    for path in validation_augmentations:
+        extra = load_split(path, "validation")
+        validation[0].extend(extra[0])
+        validation[1].extend(extra[1])
+        validation[2].extend(extra[2])
+    for path in test_augmentations:
+        extra = load_split(path, "test")
+        test[0].extend(extra[0])
+        test[1].extend(extra[1])
+        test[2].extend(extra[2])
+    validate_group_splits((*train[2], *validation[2], *test[2]))
+    merged_manifest: dict[str, object] = {
+        "schema_version": 2,
+        "base_manifest": dict(base_manifest),
+        "augmentations": augmentations,
+        "checksums": checksums,
+        "splits": {
+            "train": _split_summary(train[2]),
+            "validation": _split_summary(validation[2]),
+            "test": _split_summary(test[2]),
+        },
+    }
+    return train, validation, test, merged_manifest
+
+
+def _balanced_smoke(
+    texts: Sequence[str],
+    labels: Sequence[int],
+    records: Sequence[EmailRecord],
+    per_class: int = 4,
+) -> tuple[list[str], list[int], list[EmailRecord]]:
+    selected: list[int] = []
+    for label in (0, 1):
+        selected.extend(index for index, value in enumerate(labels) if value == label)
+        selected = selected[: per_class * (label + 1)]
+    selected = sorted(set(selected))
+    return (
+        [texts[index] for index in selected],
+        [labels[index] for index in selected],
+        [records[index] for index in selected],
+    )
+
+
+def bound_tokenizer_inputs(
+    texts: Sequence[str],
+    max_length: int,
+) -> list[str]:
+    """Avoid scanning content that cannot fit while retaining both email ends."""
+    return [prepare_model_input(text, max_length) for text in texts]
+
+
+class _EncodedDataset:
+    def __init__(
+        self,
+        texts: Sequence[str],
+        labels: Sequence[int],
+        tokenizer: Any,
+        max_length: int,
+    ) -> None:
+        import torch
+
+        encodings = tokenizer(
+            bound_tokenizer_inputs(texts, max_length),
+            truncation=True,
+            max_length=max_length,
+            padding=False,
+        )
+        self._items: list[dict[str, Any]] = []
+        for index, label in enumerate(labels):
+            item = {
+                name: torch.tensor(values[index], dtype=torch.long)
+                for name, values in encodings.items()
+            }
+            item["labels"] = torch.tensor(label, dtype=torch.long)
+            self._items.append(item)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        return self._items[index]
+
+
+def _trainer_class(
+    trainer_base: type[Any], class_weights: tuple[float, float]
+) -> type[Any]:
+    import torch
+
+    class WeightedTrainer(trainer_base):
+        def compute_loss(
+            self,
+            model: Any,
+            inputs: dict[str, Any],
+            return_outputs: bool = False,
+            num_items_in_batch: Any = None,
+        ) -> Any:
+            del num_items_in_batch
+            model_inputs = dict(inputs)
+            labels = model_inputs.pop("labels")
+            outputs = model(**model_inputs)
+            weights = torch.tensor(
+                class_weights,
+                dtype=outputs.logits.dtype,
+                device=outputs.logits.device,
+            )
+            loss = torch.nn.functional.cross_entropy(
+                outputs.logits, labels, weight=weights
+            )
+            return (loss, outputs) if return_outputs else loss
+
+    return WeightedTrainer
+
+
+def _metric_float(metrics: Mapping[str, object], key: str) -> float:
+    value = metrics.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"metric {key!r} must be numeric")
+    return float(value)
+
+
+def _metric_callback(prediction: Any) -> dict[str, float]:
+    probabilities = _probabilities_from_logits(prediction.predictions)
+    labels = [int(value) for value in prediction.label_ids]
+    metrics = compute_metrics(
+        labels,
+        probabilities,
+        DecisionThresholds(low=0.25, high=0.5),
+    )
+    return {
+        "macro_f1": _metric_float(metrics, "macro_f1"),
+        "phishing_recall": _metric_float(metrics, "phishing_recall"),
+        "false_positive_rate": _metric_float(metrics, "false_positive_rate"),
+    }
+
+
+def build_training_arguments(
+    config: TrainingConfig,
+    *,
+    cuda_available: bool,
+    bf16_available: bool,
+) -> Any:
+    """Build version-checked Transformers arguments outside model loading."""
+    from transformers import TrainingArguments
+
+    eval_strategy = "no" if config.smoke else "epoch"
+    checkpoint_each_epoch = not config.smoke and config.num_train_epochs > 1.0
+    save_strategy = "epoch" if checkpoint_each_epoch else "no"
+    return TrainingArguments(
+        output_dir=str(config.checkpoint_dir),
+        per_device_train_batch_size=config.per_device_train_batch_size,
+        per_device_eval_batch_size=config.per_device_eval_batch_size,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        learning_rate=config.learning_rate,
+        weight_decay=config.weight_decay,
+        warmup_steps=config.warmup_steps,
+        num_train_epochs=config.num_train_epochs,
+        max_steps=config.max_steps,
+        eval_strategy=eval_strategy,
+        save_strategy=save_strategy,
+        eval_steps=None,
+        save_steps=500,
+        logging_steps=1 if config.smoke else 50,
+        load_best_model_at_end=checkpoint_each_epoch,
+        metric_for_best_model="eval_macro_f1",
+        greater_is_better=True,
+        save_total_limit=2,
+        fp16=cuda_available and not bf16_available,
+        bf16=cuda_available and bf16_available,
+        gradient_checkpointing=True,
+        eval_accumulation_steps=4,
+        dataloader_num_workers=0,
+        dataloader_pin_memory=cuda_available,
+        report_to=[],
+        seed=config.seed,
+        data_seed=config.seed,
+        optim="adafactor",
+        save_only_model=config.smoke,
+    )
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _write_jsonl(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(
+                json.dumps(
+                    row, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+                + "\n"
+            )
+    temporary.replace(path)
+
+
+def train_mmbert(
+    config: TrainingConfig,
+    data_dir: Path,
+    *,
+    train_augmentations: Sequence[Path] = (),
+    validation_augmentations: Sequence[Path] = (),
+    test_augmentations: Sequence[Path] = (),
+    resume_from_checkpoint: Path | None = None,
+    max_fpr: float = 0.05,
+    min_recall: float = 0.90,
+    max_vietnamese_fpr: float = 0.20,
+    min_vietnamese_recall: float = 0.90,
+    evaluate_only: bool = False,
+) -> dict[str, object]:
+    """Fine-tune, calibrate, evaluate, and export a clean candidate artifact."""
+    if evaluate_only and config.initial_model_dir is None:
+        raise ValueError("evaluate_only requires initial_model_dir")
+    if config.initial_model_dir is not None and resume_from_checkpoint is not None:
+        raise ValueError(
+            "initial_model_dir and resume_from_checkpoint are mutually exclusive"
+        )
+    if evaluate_only and resume_from_checkpoint is not None:
+        raise ValueError(
+            "evaluate_only and resume_from_checkpoint are mutually exclusive"
+        )
+    initial_manifest = None
+    if config.initial_model_dir is not None:
+        initial_manifest = validate_artifact(config.initial_model_dir)
+        if (
+            initial_manifest.model_id != config.model_id
+            or initial_manifest.model_revision != config.model_revision
+        ):
+            raise ValueError(
+                "initial model identity does not match configured model identity"
+            )
+
+    try:
+        import torch
+        import transformers
+        from transformers import (
+            AutoConfig,
+            AutoModelForSequenceClassification,
+            AutoTokenizer,
+            DataCollatorWithPadding,
+            EarlyStoppingCallback,
+            Trainer,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "PyTorch, Transformers, and Accelerate are required; "
+            "install requirements-ml.txt"
+        ) from exc
+
+    train, validation, test, dataset_manifest = load_training_corpus(
+        data_dir,
+        train_augmentations,
+        validation_augmentations,
+        test_augmentations,
+    )
+    if config.smoke:
+        train = _balanced_smoke(*train)
+        validation = _balanced_smoke(*validation, per_class=2)
+        test = _balanced_smoke(*test, per_class=2)
+    if set(train[1]) != {0, 1} or set(validation[1]) != {0, 1}:
+        raise ValueError("train and validation data must contain both classes")
+    config = schedule_warmup(config, len(train[1]))
+
+    cuda_available = torch.cuda.is_available()
+    bf16_available = cuda_available and torch.cuda.is_bf16_supported()
+    dtype_name = model_weight_dtype_name(cuda_available, bf16_available)
+    model_dtype = getattr(torch, dtype_name) if dtype_name else None
+
+    transformers.set_seed(config.seed)
+    if cuda_available:
+        torch.cuda.reset_peak_memory_stats()
+    model_source = (
+        str(config.initial_model_dir)
+        if config.initial_model_dir is not None
+        else config.model_id
+    )
+    local_files_only = config.initial_model_dir is not None
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_source,
+        revision=config.model_revision,
+        trust_remote_code=False,
+        local_files_only=local_files_only,
+    )
+    model_config = AutoConfig.from_pretrained(
+        model_source,
+        revision=config.model_revision,
+        num_labels=2,
+        id2label={0: "legitimate", 1: "phishing"},
+        label2id={"legitimate": 0, "phishing": 1},
+        trust_remote_code=False,
+        local_files_only=local_files_only,
+    )
+    # model_load_options always pins remote revisions; local starts are checksummed.
+    model = AutoModelForSequenceClassification.from_pretrained(  # nosec B615
+        model_source,
+        config=model_config,
+        dtype=model_dtype,
+        **model_load_options(config),
+    )
+    if config.freeze_token_embeddings:
+        freeze_token_embeddings(model)
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
+
+    train_dataset = (
+        None
+        if evaluate_only
+        else _EncodedDataset(train[0], train[1], tokenizer, config.max_length)
+    )
+    validation_dataset = _EncodedDataset(
+        validation[0], validation[1], tokenizer, config.max_length
+    )
+    test_dataset = _EncodedDataset(test[0], test[1], tokenizer, config.max_length)
+    training_arguments = build_training_arguments(
+        config,
+        cuda_available=cuda_available,
+        bf16_available=bf16_available,
+    )
+    weighted_trainer = _trainer_class(Trainer, compute_class_weights(train[1]))
+    trainer = weighted_trainer(
+        model=model,
+        args=training_arguments,
+        train_dataset=train_dataset,
+        eval_dataset=validation_dataset,
+        data_collator=DataCollatorWithPadding(
+            tokenizer=tokenizer,
+            pad_to_multiple_of=8 if cuda_available else None,
+        ),
+        compute_metrics=_metric_callback,
+        callbacks=(
+            []
+            if config.smoke or config.num_train_epochs <= 1.0
+            else [EarlyStoppingCallback(early_stopping_patience=2)]
+        ),
+        processing_class=tokenizer,
+    )
+
+    if evaluate_only:
+        training_seconds = 0.0
+        train_metrics: dict[str, object] = {"evaluate_only": True}
+    else:
+        started = time.perf_counter()
+        train_result = trainer.train(
+            resume_from_checkpoint=(
+                str(resume_from_checkpoint) if resume_from_checkpoint else None
+            )
+        )
+        training_seconds = time.perf_counter() - started
+        train_metrics = dict(train_result.metrics)
+    validation_output = trainer.predict(validation_dataset)
+    test_output = trainer.predict(test_dataset)
+    validation_probabilities = _probabilities_from_logits(validation_output.predictions)
+    test_probabilities = _probabilities_from_logits(test_output.predictions)
+    validation_languages = [record.language for record in validation[2]]
+    bilingual_calibration = set(validation_languages) == {"en", "vi"}
+    if bilingual_calibration:
+        thresholds = select_bilingual_thresholds(
+            validation[1],
+            validation_probabilities,
+            validation_languages,
+            min_english_recall=min_recall,
+            max_english_fpr=max_fpr,
+            min_vietnamese_recall=min_vietnamese_recall,
+            max_vietnamese_fpr=max_vietnamese_fpr,
+        )
+    else:
+        thresholds = select_thresholds(
+            validation[1],
+            validation_probabilities,
+            max_fpr=max_fpr,
+            min_recall=min_recall,
+        )
+    validation_rows = probability_rows(
+        [record.to_dict() for record in validation[2]],
+        validation_probabilities,
+    )
+    test_rows = probability_rows(
+        [record.to_dict() for record in test[2]], test_probabilities
+    )
+    exported_model_id = (
+        initial_manifest.model_id if initial_manifest is not None else config.model_id
+    )
+    metrics = {
+        "schema_version": 1,
+        "model": exported_model_id,
+        "validation": compute_metrics(
+            validation[1], validation_probabilities, thresholds
+        ),
+        "test": evaluate_slices(test_rows, thresholds),
+        "latency": {
+            "training_seconds": training_seconds,
+            "validation_seconds": float(
+                validation_output.metrics.get("test_runtime", 0.0)
+            ),
+            "test_seconds": float(test_output.metrics.get("test_runtime", 0.0)),
+        },
+    }
+
+    trainer.optimizer = None
+    trainer.lr_scheduler = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    trainer.save_model(str(config.output_dir))
+    tokenizer.save_pretrained(str(config.output_dir))
+    _write_json(config.output_dir / "dataset-manifest.json", dataset_manifest)
+    _write_json(
+        config.output_dir / "thresholds.json",
+        {
+            **thresholds.to_dict(),
+            "calibration": {
+                "max_fpr": max_fpr,
+                "min_recall": min_recall,
+                "mode": "bilingual" if bilingual_calibration else "combined",
+                "max_vietnamese_fpr": max_vietnamese_fpr,
+                "min_vietnamese_recall": min_vietnamese_recall,
+                "validation_sample_count": len(validation[1]),
+            },
+        },
+    )
+    _write_json(config.output_dir / "metrics.json", metrics)
+    _write_jsonl(
+        config.output_dir / "validation-predictions.jsonl",
+        validation_rows,
+    )
+    _write_jsonl(config.output_dir / "test-predictions.jsonl", test_rows)
+    peak_memory = (
+        int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None
+    )
+    _write_json(
+        config.output_dir / "training-metadata.json",
+        {
+            "config": {
+                **asdict(config),
+                "output_dir": str(config.output_dir),
+                "checkpoint_dir": str(config.checkpoint_dir),
+                "initial_model_dir": (
+                    str(config.initial_model_dir)
+                    if config.initial_model_dir is not None
+                    else None
+                ),
+            },
+            "train_metrics": train_metrics,
+            "peak_cuda_memory_bytes": peak_memory,
+            "torch_version": torch.__version__,
+            "transformers_version": transformers.__version__,
+        },
+    )
+    return metrics
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Fine-tune mmBERT for bilingual phishing classification."
+    )
+    parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--checkpoint-dir", type=Path)
+    parser.add_argument("--train-augmentation", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--validation-augmentation",
+        type=Path,
+        action="append",
+        default=[],
+    )
+    parser.add_argument("--test-augmentation", type=Path, action="append", default=[])
+    parser.add_argument("--resume-from-checkpoint", type=Path)
+    parser.add_argument("--initial-model-dir", type=Path)
+    parser.add_argument("--model-id", default=_MODEL_ID)
+    parser.add_argument("--model-revision", default=_MODEL_REVISION)
+    parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--epochs", type=float)
+    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--max-fpr", type=float, default=0.05)
+    parser.add_argument("--min-recall", type=float, default=0.90)
+    parser.add_argument("--max-vietnamese-fpr", type=float, default=0.20)
+    parser.add_argument("--min-vietnamese-recall", type=float, default=0.90)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--evaluate-only", action="store_true")
+    parser.add_argument("--train-token-embeddings", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    config = training_config(
+        args.output_dir,
+        args.smoke,
+        args.seed,
+        checkpoint_dir=args.checkpoint_dir,
+        model_id=args.model_id,
+        model_revision=args.model_revision,
+        max_length=args.max_length,
+        freeze_token_embeddings=not args.train_token_embeddings,
+        initial_model_dir=args.initial_model_dir,
+        learning_rate=args.learning_rate,
+    )
+    if args.epochs is not None:
+        if args.epochs <= 0 or not math.isfinite(args.epochs):
+            raise SystemExit("--epochs must be a positive finite number")
+        config = replace(config, num_train_epochs=args.epochs)
+    metrics = train_mmbert(
+        config,
+        args.data_dir,
+        train_augmentations=args.train_augmentation,
+        validation_augmentations=args.validation_augmentation,
+        test_augmentations=args.test_augmentation,
+        resume_from_checkpoint=args.resume_from_checkpoint,
+        max_fpr=args.max_fpr,
+        min_recall=args.min_recall,
+        max_vietnamese_fpr=args.max_vietnamese_fpr,
+        min_vietnamese_recall=args.min_vietnamese_recall,
+        evaluate_only=args.evaluate_only,
+    )
+    validation = metrics.get("validation")
+    macro_f1 = validation.get("macro_f1") if isinstance(validation, Mapping) else None
+    print(
+        json.dumps(
+            {
+                "output_dir": str(args.output_dir),
+                "validation_macro_f1": macro_f1,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,14 @@
+{"id":"train-legit-1","source_split":"train","language":"en","subject":"Team lunch","sender":"hr@example.test","body":"Lunch is scheduled for Friday at noon.","label":"legitimate"}
+{"id":"train-legit-2","source_split":"train","language":"en","subject":"Quarterly report","sender":"finance@example.test","body":"The quarterly report is available on the internal portal.","label":"legitimate"}
+{"id":"train-legit-3","source_split":"train","language":"vi","subject":"Lịch họp nhóm","sender":"team@example.test","body":"Cuộc họp nhóm bắt đầu lúc chín giờ sáng mai.","label":"legitimate"}
+{"id":"train-phish-1","source_split":"train","language":"en","subject":"Urgent account verification","sender":"security@bank-alert.test","body":"Verify your password now at https://bank-login.test or access will be suspended.","label":"phishing"}
+{"id":"train-phish-2","source_split":"train","language":"en","subject":"Invoice overdue","sender":"billing@vendor-alert.test","body":"Open the attached invoice.exe and pay immediately.","label":"phishing"}
+{"id":"train-phish-3","source_split":"train","language":"vi","subject":"Tài khoản sắp bị khóa","sender":"support@account-alert.test","body":"Đăng nhập https://account-verify.test để xác minh mật khẩu ngay.","label":"phishing"}
+{"id":"validation-legit-1","source_split":"validation","language":"en","subject":"Benefits enrollment","sender":"benefits@example.test","body":"Enrollment opens Monday on the employee portal.","label":"legitimate"}
+{"id":"validation-legit-2","source_split":"validation","language":"vi","subject":"Thông báo nghỉ lễ","sender":"hr@example.test","body":"Văn phòng sẽ nghỉ vào thứ Hai tuần tới.","label":"legitimate"}
+{"id":"validation-phish-1","source_split":"validation","language":"en","subject":"Mailbox disabled today","sender":"admin@mail-alert.test","body":"Confirm credentials at https://mail-restore.test immediately.","label":"phishing"}
+{"id":"validation-phish-2","source_split":"validation","language":"vi","subject":"Yêu cầu chuyển tiền khẩn","sender":"ceo@company-alert.test","body":"Chuyển tiền ngay và gửi mã xác nhận qua email này.","label":"phishing"}
+{"id":"test-legit-1","source_split":"test","language":"en","subject":"Project update","sender":"manager@example.test","body":"The release date remains unchanged.","label":"legitimate"}
+{"id":"test-legit-2","source_split":"test","language":"vi","subject":"Xác nhận đặt phòng","sender":"booking@example.test","body":"Đặt phòng của bạn đã được xác nhận.","label":"legitimate"}
+{"id":"test-phish-1","source_split":"test","language":"en","subject":"Password expires now","sender":"helpdesk@password-alert.test","body":"Enter your password at https://password-reset.test to keep access.","label":"phishing"}
+{"id":"test-phish-2","source_split":"test","language":"vi","subject":"Nhận quà miễn phí","sender":"rewards@gift-alert.test","body":"Nhập thông tin thẻ tại https://claim-gift.test để nhận quà.","label":"phishing"}

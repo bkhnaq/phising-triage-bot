@@ -633,6 +633,12 @@ def generate_report(
         lines.append("━━━ AI PHISHING CLASSIFIER ━━━")
         lines.append(f"{icon} Verdict    : {v.upper()}")
         lines.append(f"  Confidence : {ai_verdict['confidence']:.0%}")
+        provider = ai_verdict.get("provider")
+        if provider:
+            fallback = " (fallback)" if ai_verdict.get("fallback_used") else ""
+            lines.append(f"  Provider   : {_esc(str(provider))}{fallback}")
+        if ai_verdict.get("model"):
+            lines.append(f"  Model      : {_esc(str(ai_verdict['model']))}")
         if ai_verdict.get("reasons"):
             lines.append("  Reasons:")
             for reason in ai_verdict["reasons"]:
