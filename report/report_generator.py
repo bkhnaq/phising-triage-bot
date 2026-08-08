@@ -64,6 +64,61 @@ def _clean_error(raw: str | None) -> str:
     return first_line
 
 
+def _recommended_actions(verdict: str) -> list[str]:
+    """Return concise next steps based solely on the final risk verdict."""
+    normalized = verdict.upper()
+    if normalized in {"CRITICAL", "HIGH"}:
+        return [
+            "Quarantine the message and block confirmed malicious IOCs.",
+            "Check whether recipients clicked links, opened attachments, or entered credentials.",
+            "Reset exposed credentials and review related endpoint/sign-in telemetry when applicable.",
+        ]
+    if normalized in {"SUSPICIOUS", "MEDIUM", "INCONCLUSIVE"}:
+        return [
+            "Validate the sender through a trusted channel before acting.",
+            "Review unresolved URLs or attachments in an approved sandbox.",
+        ]
+    return [
+        "No immediate containment; retain normal monitoring and verify unexpected requests."
+    ]
+
+
+def _collect_iocs(
+    urls: list[dict],
+    attachments: list[dict],
+    url_intelligence: dict | None,
+) -> list[tuple[str, str]]:
+    """Collect already-observed IOCs without another network lookup."""
+    indicators: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, value: object) -> None:
+        normalized = str(value or "").strip()
+        key = (kind, normalized)
+        if normalized and key not in seen and len(indicators) < 20:
+            seen.add(key)
+            indicators.append(key)
+
+    for item in urls:
+        add(
+            "URL",
+            item.get("normalized_url") or item.get("expanded_url") or item.get("url"),
+        )
+        add("Domain", item.get("registered_domain") or item.get("domain"))
+
+    if url_intelligence:
+        for finding in url_intelligence.get("redirect_findings", []):
+            add("URL", finding.get("final_url"))
+            add("Domain", finding.get("final_domain"))
+        for finding in url_intelligence.get("shortener_findings", []):
+            add("URL", finding.get("expanded_url"))
+            add("Domain", finding.get("expanded_domain"))
+
+    for attachment in attachments:
+        add("SHA-256", attachment.get("sha256"))
+    return indicators
+
+
 # ── Threat summary builder ───────────────────────────────────
 
 
@@ -216,6 +271,7 @@ def generate_report(
     domain_intelligence: dict | None = None,
     landing_pages: list[dict] | None = None,
     evidence_bundle: dict | None = None,
+    analysis_limits: dict | None = None,
 ) -> str:
     """
     Generate a professional SOC-grade phishing triage report.
@@ -347,6 +403,11 @@ def generate_report(
 
     # ── 5. URL ANALYSIS ──────────────────────────────────────
     lines.append(f"━━━ URL ANALYSIS ({len(urls)}) ━━━")
+    if analysis_limits and analysis_limits.get("urls_truncated"):
+        lines.append(
+            "⚠️ URL analysis limited to the first "
+            f"{analysis_limits.get('max_urls', 0)} indicators"
+        )
     if urls:
         for u in urls:
             short_tag = " [SHORTENED]" if u.get("is_shortened") else ""
@@ -622,28 +683,43 @@ def generate_report(
             lines.append("")
 
     # ── 11. AI PHISHING CLASSIFIER ───────────────────────────
-    if ai_verdict and not ai_verdict.get("error"):
-        verdict_icons = {
-            "phishing": "🔴",
-            "suspicious": "🟡",
-            "legitimate": "🟢",
-        }
-        v = ai_verdict["verdict"]
-        icon = verdict_icons.get(v, "⚪")
+    if ai_verdict:
         lines.append("━━━ AI PHISHING CLASSIFIER ━━━")
-        lines.append(f"{icon} Verdict    : {v.upper()}")
-        lines.append(f"  Confidence : {ai_verdict['confidence']:.0%}")
         provider = ai_verdict.get("provider")
         if provider:
             fallback = " (fallback)" if ai_verdict.get("fallback_used") else ""
             lines.append(f"  Provider   : {_esc(str(provider))}{fallback}")
         if ai_verdict.get("model"):
             lines.append(f"  Model      : {_esc(str(ai_verdict['model']))}")
-        if ai_verdict.get("reasons"):
-            lines.append("  Reasons:")
-            for reason in ai_verdict["reasons"]:
-                lines.append(f"    – {reason}")
-        lines.append("")
+        if ai_verdict.get("error"):
+            lines.append(
+                "  AI analysis unavailable; deterministic evidence was still evaluated."
+            )
+            lines.append("")
+        else:
+            verdict_icons = {
+                "phishing": "🔴",
+                "suspicious": "🟡",
+                "legitimate": "🟢",
+            }
+            v = ai_verdict.get("verdict", "unknown")
+            icon = verdict_icons.get(v, "⚪")
+            lines.append(f"{icon} Verdict    : {v.upper()}")
+            lines.append(f"  Confidence : {ai_verdict.get('confidence', 0.0):.0%}")
+            if ai_verdict.get("reasons"):
+                lines.append("  Reasons:")
+                for reason in ai_verdict["reasons"]:
+                    lines.append(f"    – {reason}")
+            lines.append("")
+
+    lines.append("━━━ IOC SUMMARY ━━━")
+    iocs = _collect_iocs(urls, attachments, url_intelligence)
+    if iocs:
+        for kind, value in iocs:
+            lines.append(f"• {kind}: {value}")
+    else:
+        lines.append("No IOCs extracted")
+    lines.append("")
 
     if evidence_bundle:
         correlations = evidence_bundle.get("correlations", [])
@@ -671,6 +747,11 @@ def generate_report(
 
     # ── 12. ATTACHMENTS ──────────────────────────────────────
     lines.append(f"━━━ ATTACHMENTS ({len(attachments)}) ━━━")
+    if analysis_limits and analysis_limits.get("attachments_truncated"):
+        lines.append(
+            "⚠️ Attachment analysis limited to the first "
+            f"{analysis_limits.get('max_attachments', 0)} attachments"
+        )
     if attachments:
         for a in attachments:
             lines.append(
@@ -727,6 +808,11 @@ def generate_report(
         lines.append("Indicator Breakdown:")
         for reason in risk["breakdown"]:
             lines.append(f"  – {reason}")
+    lines.append("")
+    lines.append("━━━ RECOMMENDED SOC ACTIONS ━━━")
+    for action in _recommended_actions(str(risk.get("verdict", "LOW"))):
+        lines.append(f"• {action}")
+    lines.append("Human validation and an approved sandbox may still be required.")
     lines.append("")
     lines.append("━━━ END OF REPORT ━━━")
 

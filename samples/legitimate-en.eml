@@ -1,0 +1,11 @@
+From: IT Operations <it-operations@northwind.test>
+To: analyst@example.test
+Subject: Scheduled maintenance completed
+Date: Fri, 1 Aug 2026 09:00:00 +0700
+Message-ID: <legitimate-en@northwind.test>
+Return-Path: <it-operations@northwind.test>
+Authentication-Results: mx.example.test; spf=pass smtp.mailfrom=northwind.test; dkim=pass header.d=northwind.test; dmarc=pass header.from=northwind.test
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+
+The scheduled mail gateway maintenance is complete. No action is required.

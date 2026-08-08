@@ -24,7 +24,6 @@
 - Create `.dockerignore`: explicit private/large context exclusions.
 - Modify `Dockerfile`: optional CPU local-AI dependency build argument and safe runtime defaults.
 - Modify `requirements.txt`: use headless OpenCV for server/CLI environments.
-- Create `tests/test_packaging.py`: static packaging safeguards.
 - Modify `.github/workflows/ci.yml`: Python 3.12/3.13 quality matrix, CLI smoke, core Docker build.
 - Rewrite `README.md`: English recruiter-facing project page.
 - Create `docs/README.vi.md`: Vietnamese counterpart.
@@ -36,44 +35,20 @@
 - Create: `.dockerignore`
 - Modify: `Dockerfile`
 - Modify: `requirements.txt`
-- Create: `tests/test_packaging.py`
 
 **Interfaces:**
 - Produces build: `docker build --build-arg INSTALL_LOCAL_AI=false -t phishing-triage-bot:core .`.
 - Produces build: `docker build --build-arg INSTALL_LOCAL_AI=true -t phishing-triage-bot:ai .`.
 - Runtime model mount remains `/app/artifacts/models/phishing-mmbert`.
 
-- [ ] **Step 1: Write failing packaging tests**
+- [ ] **Step 1: Record the approved configuration-only TDD exception**
 
-```python
-from pathlib import Path
+The user approved behavior-level verification instead of source-text unit
+tests for Docker configuration. Do not add a test that reads Dockerfile or
+`.dockerignore` strings. Verification is the real Docker build and container
+health check in Step 4 and the CI build in Task 2.
 
-
-ROOT = Path(__file__).parents[1]
-
-
-def test_dockerignore_excludes_private_and_large_state() -> None:
-    patterns = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-    required = {".env", ".git", ".venv", ".worktrees", "artifacts", "data", "uploads", "logs"}
-    assert required <= {line.strip().rstrip("/") for line in patterns}
-
-
-def test_dockerfile_has_optional_local_ai_build() -> None:
-    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "ARG INSTALL_LOCAL_AI=false" in dockerfile
-    assert "requirements-ml-runtime.txt" in dockerfile
-    assert "download.pytorch.org/whl/cpu" in dockerfile
-    assert "USER botuser" in dockerfile
-```
-
-- [ ] **Step 2: Run tests and confirm RED**
-
-Run: `.\.venv\Scripts\python.exe -m pytest -q tests/test_packaging.py`
-
-Expected: FAIL because `.dockerignore` does not exist and the Dockerfile has no
-optional AI install path.
-
-- [ ] **Step 3: Add exact Docker context exclusions**
+- [ ] **Step 2: Add exact Docker context exclusions**
 
 Create `.dockerignore` containing:
 
@@ -98,7 +73,7 @@ logs/
 docs/superpowers/
 ```
 
-- [ ] **Step 4: Add the optional CPU-AI build path**
+- [ ] **Step 3: Add the optional CPU-AI build path**
 
 Before copying source code, copy `requirements-ml-runtime.txt`, declare
 `ARG INSTALL_LOCAL_AI=false`, and install runtime AI dependencies only when it
@@ -120,23 +95,23 @@ Retain the non-root user and health check. Replace `opencv-python` with
 `opencv-python-headless>=4.8,<5` in `requirements.txt` so the container needs no
 desktop GUI libraries.
 
-- [ ] **Step 5: Run tests, dependency check, and available Docker build**
+- [ ] **Step 4: Run dependency checks and real Docker behavior**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests/test_packaging.py
 .\.venv\Scripts\python.exe -m pip check
 docker info
 docker build --build-arg INSTALL_LOCAL_AI=false -t phishing-triage-bot:core .
+docker run --rm --env TELEGRAM_ENABLED=false phishing-triage-bot:core python main.py --healthcheck
 ```
 
-Expected: Python checks PASS. If `docker info` reports no daemon, record that
-the build is deferred and rely on the CI build in Task 2; do not claim a local
-Docker build passed.
+Expected: dependency checks PASS. If `docker info` reports no daemon, record
+that the build is deferred and rely on the CI build in Task 2; do not claim a
+local Docker build passed.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```powershell
-git add .dockerignore Dockerfile requirements.txt tests/test_packaging.py
+git add .dockerignore Dockerfile requirements.txt
 git commit -m "build: add safe optional AI container"
 ```
 
@@ -224,36 +199,18 @@ git commit -m "ci: verify portfolio demo on supported Python"
 - Rewrite: `README.md`
 - Create: `docs/README.vi.md`
 - Modify: `SECURITY.md`
-- Modify: `tests/test_packaging.py`
 
 **Interfaces:**
 - Consumes the final CLI, samples, limits, local-AI behavior, Docker arguments, and measured metrics.
 - Produces reciprocal language links and copy-pasteable demo commands.
 
-- [ ] **Step 1: Write failing documentation contract tests**
+- [ ] **Step 1: Record the approved human-documentation TDD exception**
 
-```python
-def test_readmes_link_each_other_and_document_demo() -> None:
-    english = (ROOT / "README.md").read_text(encoding="utf-8")
-    vietnamese = (ROOT / "docs" / "README.vi.md").read_text(encoding="utf-8")
-    for text in (english, vietnamese):
-        assert "samples/phishing-en.eml" in text
-        assert "--analyze" in text
-        assert "0.9812" in text
-        assert "0.8789" in text
-        assert "synthetic" in text.lower() or "tổng hợp" in text.lower()
-    assert "docs/README.vi.md" in english
-    assert "../README.md" in vietnamese
-```
+The user approved review and runnable-command verification for human prose.
+Do not add brittle tests that assert README wording. Verify reciprocal local
+links with `Test-Path` and run the documented demo command in Step 4.
 
-- [ ] **Step 2: Run test and confirm RED**
-
-Run: `.\.venv\Scripts\python.exe -m pytest -q tests/test_packaging.py`
-
-Expected: FAIL because the Vietnamese README and CLI demo documentation are
-absent.
-
-- [ ] **Step 3: Rewrite the English README around the recruiter journey**
+- [ ] **Step 2: Rewrite the English README around the recruiter journey**
 
 Use these headings in this order:
 
@@ -301,7 +258,7 @@ docker build --build-arg INSTALL_LOCAL_AI=true -t phishing-triage-bot:ai .
 docker run --rm --env-file .env -v "${PWD}/artifacts/models/phishing-mmbert:/app/artifacts/models/phishing-mmbert:ro" phishing-triage-bot:ai
 ```
 
-- [ ] **Step 4: Create equivalent natural Vietnamese documentation**
+- [ ] **Step 3: Create equivalent natural Vietnamese documentation**
 
 Use these headings:
 
@@ -328,26 +285,31 @@ Use these headings:
 Translate meaning naturally, retain exact commands/variable names/metrics, and
 use “dữ liệu tiếng Việt tổng hợp” for the synthetic-evaluation limitation.
 
-- [ ] **Step 5: Expand the security boundary**
+- [ ] **Step 4: Expand the security boundary and verify documentation behavior**
 
 Add `Supported Use` and `Handling Suspicious Samples` sections to
 `SECURITY.md`. State that the project performs static triage, does not detonate
 malware, samples must remain inert, unknown attachments should be opened only
 in an approved sandbox, and secrets/model data must not be committed.
 
-- [ ] **Step 6: Run doc contract and link checks, then commit**
+Run the actual link targets and documented quick demo:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests/test_packaging.py
-rg -n "docs/README.vi.md|samples/phishing-en.eml|0.9812|0.8789" README.md docs/README.vi.md
+if (-not (Test-Path docs/README.vi.md)) { throw 'Missing Vietnamese README' }
+if (-not (Test-Path README.md)) { throw 'Missing English README' }
+$env:OFFLINE_MODE='true'
+$env:LOCAL_AI_ENABLED='false'
+.\.venv\Scripts\python.exe main.py --analyze samples/phishing-en.eml --offline
 git diff --check
 ```
 
-Expected: tests PASS, each required term appears in both language documents,
-and no whitespace errors exist.
+Expected: both reciprocal link targets exist, the documented demo exits 0
+with a complete report, and no whitespace errors exist.
+
+- [ ] **Step 5: Commit**
 
 ```powershell
-git add README.md docs/README.vi.md SECURITY.md tests/test_packaging.py
+git add README.md docs/README.vi.md SECURITY.md
 git commit -m "docs: present SOC portfolio in English and Vietnamese"
 ```
 

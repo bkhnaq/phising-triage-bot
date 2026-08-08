@@ -18,7 +18,7 @@ dnspython>=2.4,<3
 Pillow>=12.2,<13
 numpy>=1.26,<3
 pyzbar>=0.1.9,<1            # requires native zbar lib (libzbar0 in Docker)
-opencv-python>=4.8,<5       # fallback QR decoder (self-contained)
+opencv-python-headless>=4.8,<5  # fallback QR decoder without desktop GUI libraries
 
 # REST API
 fastapi>=0.139,<1

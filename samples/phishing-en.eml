@@ -1,0 +1,12 @@
+From: Microsoft Security <alert@account-review.test>
+To: analyst@example.test
+Subject: Urgent: verify your password now
+Date: Fri, 1 Aug 2026 09:05:00 +0700
+Message-ID: <phishing-en@account-review.test>
+Return-Path: <bounce@account-review.test>
+Reply-To: helpdesk@credential-review.test
+Authentication-Results: mx.example.test; spf=fail smtp.mailfrom=account-review.test; dkim=fail header.d=account-review.test; dmarc=fail header.from=account-review.test
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+
+Your mailbox will be disabled today. Verify your password immediately at https://microsoft-login-review.test/account/verify or access will be lost.

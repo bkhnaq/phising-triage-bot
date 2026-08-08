@@ -36,7 +36,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from config.settings import THREAT_INTEL_MAX_WORKERS, UPLOAD_DIR
+from config.settings import (
+    MAX_ATTACHMENTS_PER_EMAIL,
+    MAX_URLS_PER_EMAIL,
+    THREAT_INTEL_MAX_WORKERS,
+    UPLOAD_DIR,
+)
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -101,7 +106,7 @@ class PhishingPipeline:
         """Run all pipeline stages on parsed email data."""
         from email_analysis.header_analyzer import analyze_headers
         from email_analysis.header_forensics import run_header_forensics
-        from email_analysis.url_extractor import extract_urls
+        from email_analysis.url_extractor import count_unique_urls, extract_urls
         from email_analysis.url_intelligence import analyze_urls as url_intel_analyze
         from email_analysis.domain_intelligence import analyze_domain_intelligence
         from email_analysis.brand_impersonation import BrandDetector
@@ -109,8 +114,9 @@ class PhishingPipeline:
         from email_analysis.landing_page_analyzer import analyze_landing_pages
         from email_analysis.language_analyzer import analyze_language
         from email_analysis.attachment_analyzer import (
-            extract_attachments,
             assess_attachment_risk,
+            count_attachments,
+            extract_attachments,
         )
         from email_analysis.qr_code_analyzer import (
             scan_attachments_for_qr,
@@ -142,7 +148,14 @@ class PhishingPipeline:
             header_forensics = run_header_forensics(email_data)
 
             # Stage 4: URL extraction
-            urls = extract_urls(email_data["body_text"], email_data["body_html"])
+            raw_url_count = count_unique_urls(
+                email_data.get("body_text", ""), email_data.get("body_html", "")
+            )
+            urls = extract_urls(
+                email_data.get("body_text", ""),
+                email_data.get("body_html", ""),
+                max_urls=MAX_URLS_PER_EMAIL,
+            )
 
             # Stage 5: HTML credential harvesting detection
             credential_harvesting = detect_credential_harvesting(
@@ -164,16 +177,37 @@ class PhishingPipeline:
             )
 
             # Stage 7: Attachment extraction + risk assessment
+            attachment_count = count_attachments(email_data["raw_message"])
             attachments = extract_attachments(
-                email_data["raw_message"], save_dir=self.upload_dir
+                email_data["raw_message"],
+                save_dir=self.upload_dir,
+                max_attachments=MAX_ATTACHMENTS_PER_EMAIL,
             )
             attachment_risks = assess_attachment_risk(attachments)
+
+            analysis_limits = {
+                "urls_truncated": raw_url_count > MAX_URLS_PER_EMAIL,
+                "attachments_truncated": (attachment_count > MAX_ATTACHMENTS_PER_EMAIL),
+                "max_urls": MAX_URLS_PER_EMAIL,
+                "max_attachments": MAX_ATTACHMENTS_PER_EMAIL,
+            }
 
             # Stage 8: QR code scanning
             qr_findings = scan_attachments_for_qr(attachments)
             qr_urls = extract_qr_urls(qr_findings)
 
-            all_urls = self._merge_url_lists(urls, qr_urls)
+            all_urls, qr_urls_truncated = self._merge_bounded_url_lists(
+                urls, qr_urls, max_urls=MAX_URLS_PER_EMAIL
+            )
+            admitted_urls = {item.get("url") for item in all_urls}
+            qr_findings = [
+                finding
+                for finding in qr_findings
+                if not finding.get("url") or finding.get("url") in admitted_urls
+            ]
+            analysis_limits["urls_truncated"] = (
+                analysis_limits["urls_truncated"] or qr_urls_truncated
+            )
             all_domains = self._extract_unique_domains(all_urls)
 
             # Stage 9: URL intelligence (shorteners + redirect chains)
@@ -297,6 +331,7 @@ class PhishingPipeline:
                 domain_intelligence=domain_intel,
                 landing_pages=landing_pages,
                 evidence_bundle=evidence_bundle,
+                analysis_limits=analysis_limits,
             )
 
             logger.info(
@@ -338,6 +373,7 @@ class PhishingPipeline:
                 "ai_verdict": ai_verdict,
                 "evidence_bundle": evidence_bundle,
                 "risk": risk,
+                "analysis_limits": analysis_limits,
                 "report": report_text,
             }
         finally:
@@ -391,6 +427,15 @@ class PhishingPipeline:
                 seen.add(url)
                 merged.append(item)
         return merged
+
+    @staticmethod
+    def _merge_bounded_url_lists(
+        *groups: list[dict], max_urls: int
+    ) -> tuple[list[dict], bool]:
+        """Merge URL findings and apply one shared total-analysis limit."""
+        merged = PhishingPipeline._merge_url_lists(*groups)
+        limit = max(0, max_urls)
+        return merged[:limit], len(merged) > limit
 
     @staticmethod
     def _extract_unique_domains(urls: list[dict]) -> list[str]:

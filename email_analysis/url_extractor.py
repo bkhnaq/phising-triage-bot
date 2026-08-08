@@ -13,9 +13,10 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
-import requests
+from urllib3.exceptions import HTTPError
 
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.safe_http import SafeHTTPError, fetch_url
 from email_analysis.url_utils import analyze_url
 from threat_intel.cache import TTLCache
 
@@ -46,18 +47,21 @@ _SHORTENER_DOMAINS = frozenset(
     }
 )
 
-# Request timeout for expanding shortened URLs (seconds)
-_EXPAND_TIMEOUT = 5
 _EXPAND_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 
-def extract_urls(body_text: str = "", body_html: str = "") -> list[dict]:
+def extract_urls(
+    body_text: str = "",
+    body_html: str = "",
+    max_urls: int | None = None,
+) -> list[dict]:
     """
     Extract all URLs from the email body (plain text + HTML).
 
     Args:
         body_text: Plain-text email body.
         body_html: HTML email body.
+        max_urls: Maximum number of unique URLs to analyze.
 
     Returns:
         List of dicts, each containing:
@@ -66,19 +70,17 @@ def extract_urls(body_text: str = "", body_html: str = "") -> list[dict]:
             - is_shortened: bool
             - expanded_url: resolved URL if shortened, else same as url
     """
-    raw_urls: set[str] = set()
-
-    # 1) Extract from plain text
-    if body_text:
-        raw_urls.update(_URL_REGEX.findall(body_text))
-
-    # 2) Extract from HTML (href attributes + visible text)
-    if body_html:
-        raw_urls.update(_extract_urls_from_html(body_html))
+    raw_urls = sorted(_collect_raw_urls(body_text, body_html))
+    if max_urls is not None:
+        raw_urls = raw_urls[: max(0, max_urls)]
 
     results: list[dict] = []
-    for url in sorted(raw_urls):
-        url_analysis = analyze_url(url)
+    for url in raw_urls:
+        try:
+            url_analysis = analyze_url(url)
+        except (UnicodeError, ValueError):
+            logger.warning("Skipping malformed URL during extraction")
+            continue
         domain = url_analysis.domain
         is_shortened = domain.lower() in _SHORTENER_DOMAINS
         expanded = _expand_url(url) if is_shortened else url
@@ -102,6 +104,21 @@ def extract_urls(body_text: str = "", body_html: str = "") -> list[dict]:
 
     logger.info("Extracted %d unique URL(s) from email body", len(results))
     return results
+
+
+def count_unique_urls(body_text: str = "", body_html: str = "") -> int:
+    """Count unique raw URLs without normalizing or expanding them."""
+    return len(_collect_raw_urls(body_text, body_html))
+
+
+def _collect_raw_urls(body_text: str, body_html: str) -> set[str]:
+    """Collect deduplicated URL strings from plain-text and HTML bodies."""
+    raw_urls: set[str] = set()
+    if body_text:
+        raw_urls.update(_URL_REGEX.findall(body_text))
+    if body_html:
+        raw_urls.update(_extract_urls_from_html(body_html))
+    return raw_urls
 
 
 # ── HTML link extractor ──────────────────────────────────────
@@ -153,13 +170,13 @@ def _expand_url(short_url: str) -> str:
         return cached
 
     try:
-        resp = requests.head(
+        resp = fetch_url(
             short_url,
-            allow_redirects=True,
-            timeout=_EXPAND_TIMEOUT,
+            method="HEAD",
+            max_bytes=0,
         )
         expanded = resp.url
-    except requests.RequestException as exc:
+    except (SafeHTTPError, HTTPError, OSError) as exc:
         logger.warning("Could not expand URL %s: %s", short_url, exc)
         expanded = short_url
 

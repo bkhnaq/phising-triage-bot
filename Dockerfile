@@ -12,10 +12,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libzbar0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies first (layer caching)
-COPY requirements.txt .
+# Install dependencies first (layer caching). The core image stays ML-free;
+# optional local inference uses CPU-only PyTorch when requested explicitly.
+COPY requirements.txt requirements-ml-runtime.txt ./
+ARG INSTALL_LOCAL_AI=false
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && if [ "$INSTALL_LOCAL_AI" = "true" ]; then \
+         pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch>=2.11,<2.14" \
+         && pip install --no-cache-dir -r requirements-ml-runtime.txt; \
+       fi
 
 # Copy application code
 COPY . .

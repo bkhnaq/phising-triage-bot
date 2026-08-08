@@ -17,16 +17,15 @@ import logging
 import re
 from urllib.parse import urlparse
 
-import requests
+from urllib3.exceptions import HTTPError
 
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_utils import domain_info, is_domain_or_subdomain
+from email_analysis.safe_http import SafeHTTPError, fetch_url
 from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
-_REDIRECT_TIMEOUT = 5
-_MAX_REDIRECTS = 10
 _EXPAND_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 _REDIRECT_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
@@ -57,6 +56,14 @@ def _friendly_error(exc: Exception) -> str:
     ):
         return "Connection failed"
     return "Redirect analysis failed"
+
+
+def _safe_normalized_domain(url: str) -> str:
+    """Return a URL domain without letting malformed attacker input escape."""
+    try:
+        return _normalize_domain(urlparse(url).netloc)
+    except (UnicodeError, ValueError):
+        return ""
 
 
 # ── Extended URL shortener list ──────────────────────────────
@@ -259,14 +266,13 @@ def expand_url(short_url: str) -> str:
         return cached
 
     try:
-        resp = requests.head(
+        resp = fetch_url(
             short_url,
-            allow_redirects=True,
-            timeout=_REDIRECT_TIMEOUT,
-            headers={"User-Agent": "Mozilla/5.0 (PhishBot URL Expander)"},
+            method="HEAD",
+            max_bytes=0,
         )
         expanded = resp.url
-    except requests.RequestException as exc:
+    except (SafeHTTPError, HTTPError, OSError) as exc:
         logger.debug("Could not expand URL %s: %s", short_url, exc)
         expanded = short_url
 
@@ -322,7 +328,7 @@ def follow_redirect_chain(
         Dict with chain details and suspicious intermediate domain analysis.
     """
     source = source_url or url
-    origin_domain = _normalize_domain(urlparse(source).netloc)
+    origin_domain = _safe_normalized_domain(source)
 
     result: dict = {
         "source_url": source,
@@ -330,7 +336,7 @@ def follow_redirect_chain(
         "chain": [url],
         "hops": 0,
         "final_url": url,
-        "final_domain": _normalize_domain(urlparse(url).netloc),
+        "final_domain": _safe_normalized_domain(url),
         "intermediate_domains": [],
         "suspicious_intermediates": [],
         "is_esp_tracking": bool(esp_info and esp_info.get("is_tracking")),
@@ -351,26 +357,23 @@ def follow_redirect_chain(
         return cached
 
     try:
-        resp = requests.get(
+        resp = fetch_url(
             url,
-            allow_redirects=True,
-            timeout=_REDIRECT_TIMEOUT,
-            stream=True,
-            headers={"User-Agent": "Mozilla/5.0 (PhishBot)"},
+            method="HEAD",
+            max_bytes=0,
         )
-        resp.close()
+
+        result["chain"] = list(resp.history) + [resp.url]
+        result["hops"] = len(resp.history)
+        result["final_url"] = resp.url
+        result["final_domain"] = _normalize_domain(urlparse(resp.url).netloc)
 
         if resp.history:
-            result["chain"] = [r.url for r in resp.history] + [resp.url]
-            result["hops"] = len(resp.history)
-            result["final_url"] = resp.url
-            result["final_domain"] = _normalize_domain(urlparse(resp.url).netloc)
-
             # Analyze intermediate domains
             final_domain = _normalize_domain(urlparse(resp.url).netloc)
 
-            for r in resp.history:
-                intermediate_domain = _normalize_domain(urlparse(r.url).netloc)
+            for redirect_url in resp.history:
+                intermediate_domain = _normalize_domain(urlparse(redirect_url).netloc)
                 if intermediate_domain not in (origin_domain, final_domain):
                     result["intermediate_domains"].append(intermediate_domain)
                     # Check if intermediate is a shortener
@@ -410,7 +413,10 @@ def follow_redirect_chain(
             if suspicious_landing:
                 result["risk_score"] += 8
 
-    except requests.RequestException as exc:
+    except SafeHTTPError as exc:
+        result["error"] = exc.code
+        logger.debug("Redirect chain check failed for %s: %s", url, exc)
+    except (HTTPError, OSError) as exc:
         result["error"] = _friendly_error(exc)
         logger.debug("Redirect chain check failed for %s: %s", url, exc)
 

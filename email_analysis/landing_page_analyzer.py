@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+import codecs
 from html.parser import HTMLParser
 import logging
 import re
 from urllib.parse import urljoin, urlparse
 
-import requests
+from urllib3.exceptions import HTTPError
 
-from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from config.settings import (
+    OFFLINE_MODE,
+    SAFE_HTTP_MAX_BYTES,
+    THREAT_INTEL_CACHE_TTL_SECONDS,
+)
 from email_analysis.domain_utils import any_domain_match, registered_domain
+from email_analysis.safe_http import SafeHTTPError, fetch_url
 from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 6
-_MAX_BYTES = 80_000
 _MAX_PAGES = 5
 _CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 _TITLE_KEYWORDS = frozenset({"login", "sign in", "verify", "account", "password"})
@@ -104,7 +108,12 @@ def analyze_landing_page(url: str) -> dict:
         result["error"] = "offline mode enabled"
         return result
 
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except (UnicodeError, ValueError):
+        result["error"] = "invalid_url"
+        result["state"] = "unavailable"
+        return result
     if parsed.scheme not in {"http", "https"}:
         result["error"] = "unsupported URL scheme"
         return result
@@ -114,38 +123,48 @@ def analyze_landing_page(url: str) -> dict:
         return cached
 
     try:
-        resp = requests.get(
+        resp = fetch_url(
             url,
-            timeout=_TIMEOUT,
-            stream=True,
-            headers={
-                "User-Agent": "Mozilla/5.0 (PhishBot Landing Analyzer)",
-                "Range": f"bytes=0-{_MAX_BYTES - 1}",
-            },
+            method="GET",
+            max_bytes=SAFE_HTTP_MAX_BYTES,
         )
-        try:
-            content_type = resp.headers.get("content-type", "").lower()
-            result["final_url"] = resp.url
-            result["domain"] = registered_domain(urlparse(resp.url).hostname or "")
-            if "text/html" not in content_type:
-                result["state"] = "clean"
-                _CACHE.set(url, result)
-                return result
+        content_type = resp.headers.get("content-type", "").lower()
+        result["final_url"] = resp.url
+        result["domain"] = registered_domain(urlparse(resp.url).hostname or "")
+        if "text/html" not in content_type:
+            result["state"] = "clean"
+            _CACHE.set(url, result)
+            return result
 
-            body = resp.raw.read(_MAX_BYTES, decode_content=True)
-            html = body.decode(resp.encoding or "utf-8", errors="replace")
-        finally:
-            resp.close()
+        html = resp.body.decode(_response_charset(content_type), errors="replace")
         _analyze_html(result, html)
         result["state"] = "suspicious" if result["risk_score"] > 0 else "clean"
 
-    except (requests.RequestException, UnicodeError, ValueError) as exc:
-        result["error"] = str(exc)
+    except SafeHTTPError as exc:
+        result["error"] = exc.code
+        result["state"] = "unavailable"
+        logger.debug("Landing page analysis failed for %s: %s", url, exc)
+    except (HTTPError, OSError, UnicodeError, ValueError) as exc:
+        result["error"] = "Landing page analysis failed"
         result["state"] = "unavailable"
         logger.debug("Landing page analysis failed for %s: %s", url, exc)
 
     _CACHE.set(url, result)
     return result
+
+
+def _response_charset(content_type: str) -> str:
+    match = re.search(
+        r"(?:^|;)\s*charset\s*=\s*['\"]?([^;'\"\s]+)",
+        content_type,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return "utf-8"
+    try:
+        return codecs.lookup(match.group(1)).name
+    except LookupError:
+        return "utf-8"
 
 
 def _analyze_html(result: dict, html: str) -> None:

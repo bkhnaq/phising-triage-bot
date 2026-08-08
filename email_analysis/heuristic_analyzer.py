@@ -19,10 +19,11 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-import requests
+from urllib3.exceptions import HTTPError
 
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_utils import any_domain_match, registered_domain
+from email_analysis.safe_http import SafeHTTPError, fetch_url
 
 try:
     whois_lib: Any | None = importlib.import_module("whois")
@@ -122,9 +123,6 @@ _CONFUSABLES: dict[str, str] = {
 
 # ── Redirect chain ───────────────────────────────────────────
 
-_REDIRECT_TIMEOUT = 5  # seconds per request
-_MAX_REDIRECTS = 10  # safety cap
-
 # ── WHOIS timeout (seconds) ─────────────────────────────────
 _WHOIS_TIMEOUT = 10
 _WHOIS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
@@ -158,7 +156,7 @@ def run_heuristics(urls: list[dict]) -> dict:
         "homograph": detect_homograph(domains),
         "homograph_brands": detect_homograph_brands(domains),
         "domain_entropy": calculate_entropy_findings(domains),
-        "redirect_chains": check_redirect_chains(urls),
+        "redirect_chains": [],
     }
 
 
@@ -597,19 +595,15 @@ def check_redirect_chain(url: str) -> dict:
         return cached
 
     try:
-        resp = requests.get(
+        resp = fetch_url(
             url,
-            allow_redirects=True,
-            timeout=_REDIRECT_TIMEOUT,
-            stream=True,  # don't download body
-            headers={"User-Agent": "Mozilla/5.0 (PhishBot)"},
+            method="HEAD",
+            max_bytes=0,
         )
-        resp.close()
 
-        if resp.history:
-            result["chain"] = [r.url for r in resp.history] + [resp.url]
-            result["hops"] = len(resp.history)
-            result["final_url"] = resp.url
+        result["chain"] = list(resp.history) + [resp.url]
+        result["hops"] = len(resp.history)
+        result["final_url"] = resp.url
 
         if result["hops"] > 1:
             result["risk_score"] = 10
@@ -620,8 +614,11 @@ def check_redirect_chain(url: str) -> dict:
                 result["final_url"],
             )
 
-    except requests.RequestException as exc:
-        result["error"] = str(exc)
+    except SafeHTTPError as exc:
+        result["error"] = exc.code
+        logger.debug("Redirect chain check failed for %s: %s", url, exc)
+    except (HTTPError, OSError) as exc:
+        result["error"] = "Redirect analysis failed"
         logger.debug("Redirect chain check failed for %s: %s", url, exc)
 
     _REDIRECT_CACHE.set(url, result)
