@@ -534,6 +534,30 @@ def test_raw_email_model_rejects_content_over_character_limit() -> None:
         routes.EmailAnalysisRequest(email_raw="x" * (routes.MAX_RAW_EMAIL_CHARS + 1))
 
 
+def test_api_returns_ai_provenance_and_analysis_limits_additively() -> None:
+    from api import routes
+
+    response = routes._build_response(
+        {
+            "risk": {"score": 0, "verdict": "LOW"},
+            "ai_verdict": {
+                "verdict": "legitimate",
+                "confidence": 0.9,
+                "provider": "local",
+                "model": "mmbert",
+                "fallback_used": False,
+            },
+            "analysis_limits": {"urls_truncated": False},
+        },
+        request_id="rid",
+    )
+
+    assert response.ai_verdict["provider"] == "local"
+    assert response.ai_verdict["model"] == "mmbert"
+    assert response.ai_verdict["fallback_used"] is False
+    assert response.analysis_limits == {"urls_truncated": False}
+
+
 def test_api_key_authentication_uses_constant_time_comparison(monkeypatch) -> None:
     client, routes = _client_with_auth(monkeypatch)
     compared: list[tuple[str, str]] = []

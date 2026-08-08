@@ -60,7 +60,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Phishing Triage Engine API",
-    description="Enterprise-grade multi-layer phishing detection REST API",
+    description="Multi-layer phishing triage for SOC analysts.",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -112,6 +112,7 @@ class AnalysisResponse(BaseModel):
     email_metadata: dict = Field(default_factory=dict)
     auth_results: dict = Field(default_factory=dict)
     ai_verdict: dict = Field(default_factory=dict)
+    analysis_limits: dict = Field(default_factory=dict)
     url_count: int = 0
     attachment_count: int = 0
     indicators: dict = Field(
@@ -468,6 +469,9 @@ def _build_response(result: dict, request_id: str) -> AnalysisResponse:
         "confidence": ai.get("confidence", 0.0),
         "reasons": ai.get("reasons", []),
         "risk_score": ai.get("risk_score", 0),
+        "provider": ai.get("provider", "none"),
+        "model": ai.get("model"),
+        "fallback_used": bool(ai.get("fallback_used", False)),
     }
 
     return AnalysisResponse(
@@ -490,6 +494,7 @@ def _build_response(result: dict, request_id: str) -> AnalysisResponse:
             "dmarc": result.get("auth_results", {}).get("dmarc", {}),
         },
         ai_verdict=ai_safe,
+        analysis_limits=result.get("analysis_limits", {}),
         url_count=len(result.get("urls", [])),
         attachment_count=len(result.get("attachments", [])),
         indicators=indicators,
