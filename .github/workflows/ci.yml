@@ -7,6 +7,10 @@ on:
 jobs:
   quality-and-security:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -14,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
           cache-dependency-path: |
             requirements.txt
@@ -29,16 +33,31 @@ jobs:
         run: ruff check .
 
       - name: Format check (black)
-        run: black --check api bot config email_analysis ml report scoring threat_intel main.py
+        run: black --check api bot cli.py config email_analysis ml report scoring threat_intel main.py tests
 
       - name: Type check (mypy)
-        run: mypy api bot config email_analysis ml report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
+        run: mypy api bot cli.py config email_analysis ml report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
 
       - name: Tests (pytest)
-        run: pytest -q tests
+        run: pytest -q tests -W error
+
+      - name: Offline CLI smoke test
+        env:
+          OFFLINE_MODE: "true"
+          LOCAL_AI_ENABLED: "false"
+        run: python main.py --analyze samples/phishing-en.eml --offline
 
       - name: Security scan (bandit)
         run: bandit -r api bot config email_analysis ml report scoring threat_intel -lll
 
       - name: Dependency scan (pip-audit)
         run: pip-audit
+
+  docker-core:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build core image
+        run: docker build --build-arg INSTALL_LOCAL_AI=false -t phishing-triage-bot:ci .
