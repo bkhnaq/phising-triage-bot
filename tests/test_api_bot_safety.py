@@ -1,6 +1,8 @@
 import asyncio
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import sys
+import threading
 import time
 import types
 import importlib
@@ -609,3 +611,43 @@ def test_rate_limit_evicts_oldest_bucket_before_allocating_new_client(
     assert routes._is_rate_limited("new-client", 30.0) is False
 
     assert set(routes._rate_limit_buckets) == {"newer", "new-client"}
+
+
+def test_rate_limit_is_atomic_for_simultaneous_requests(monkeypatch) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    client.close()
+    monkeypatch.setattr(routes, "RATE_LIMIT_MAX_REQUESTS", 1)
+    monkeypatch.setattr(routes, "RATE_LIMIT_WINDOW_SECONDS", 60)
+    routes._rate_limit_buckets.clear()
+    barrier = threading.Barrier(8)
+
+    def check_limit() -> bool:
+        barrier.wait()
+        return routes._is_rate_limited("shared-client", 100.0)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _index: check_limit(), range(8)))
+
+    assert results.count(False) == 1
+    assert results.count(True) == 7
+    assert list(routes._rate_limit_buckets["shared-client"]) == [100.0]
+
+
+def test_concurrent_rate_limit_pruning_retains_client_cap(monkeypatch) -> None:
+    client, routes = _client_with_auth(monkeypatch)
+    client.close()
+    monkeypatch.setattr(routes, "RATE_LIMIT_MAX_CLIENTS", 4)
+    monkeypatch.setattr(routes, "RATE_LIMIT_MAX_REQUESTS", 10)
+    monkeypatch.setattr(routes, "RATE_LIMIT_WINDOW_SECONDS", 60)
+    routes._rate_limit_buckets.clear()
+    barrier = threading.Barrier(12)
+
+    def add_client(index: int) -> bool:
+        barrier.wait()
+        return routes._is_rate_limited(f"client-{index}", 100.0)
+
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        results = list(executor.map(add_client, range(12)))
+
+    assert results == [False] * 12
+    assert len(routes._rate_limit_buckets) == 4

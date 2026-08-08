@@ -76,7 +76,11 @@ def extract_urls(
 
     results: list[dict] = []
     for url in raw_urls:
-        url_analysis = analyze_url(url)
+        try:
+            url_analysis = analyze_url(url)
+        except (UnicodeError, ValueError):
+            logger.warning("Skipping malformed URL during extraction")
+            continue
         domain = url_analysis.domain
         is_shortened = domain.lower() in _SHORTENER_DOMAINS
         expanded = _expand_url(url) if is_shortened else url

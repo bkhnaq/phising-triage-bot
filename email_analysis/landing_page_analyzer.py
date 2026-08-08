@@ -108,7 +108,12 @@ def analyze_landing_page(url: str) -> dict:
         result["error"] = "offline mode enabled"
         return result
 
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except (UnicodeError, ValueError):
+        result["error"] = "invalid_url"
+        result["state"] = "unavailable"
+        return result
     if parsed.scheme not in {"http", "https"}:
         result["error"] = "unsupported URL scheme"
         return result

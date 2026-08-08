@@ -45,6 +45,17 @@ def test_url_extraction_stops_before_expensive_expansion(monkeypatch) -> None:
     assert len(expanded) == 2
 
 
+def test_url_extractor_skips_malformed_url_without_stopping_analysis() -> None:
+    urls = extract_urls(
+        "https://valid.test/login and malformed http://[::1 and https://other.test/"
+    )
+
+    assert [item["url"] for item in urls] == [
+        "https://other.test/",
+        "https://valid.test/login",
+    ]
+
+
 def test_report_discloses_truncated_evidence() -> None:
     report = generate_report(
         email_data={},
@@ -206,6 +217,16 @@ def test_url_intelligence_uses_safe_fetch_for_expansion_and_redirects(
         ("https://bit.ly/demo", {"method": "HEAD", "max_bytes": 0}),
         ("https://public.test/start", {"method": "HEAD", "max_bytes": 0}),
     ]
+
+
+def test_redirect_intelligence_represents_malformed_url_safely() -> None:
+    from email_analysis import url_intelligence
+
+    url_intelligence._REDIRECT_CACHE.clear()
+    result = url_intelligence.follow_redirect_chain("http://[::1")
+
+    assert result["chain"] == ["http://[::1"]
+    assert result["error"] == "invalid_url"
 
 
 def test_url_consumers_keep_friendly_fallbacks_for_transport_failures(

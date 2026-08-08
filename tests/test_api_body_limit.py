@@ -34,6 +34,7 @@ def test_streamed_body_over_limit_returns_413() -> None:
     payload = json.loads(sent[1]["body"])
     assert payload["success"] is False
     assert isinstance(payload["request_id"], str)
+    assert dict(sent[0]["headers"])[b"x-request-id"].decode() == payload["request_id"]
     assert set(payload["error"]) >= {"code", "message"}
 
 

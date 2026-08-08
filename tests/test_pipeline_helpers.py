@@ -1,4 +1,4 @@
-from email.message import EmailMessage
+from email.message import EmailMessage, Message
 from pathlib import Path
 
 import requests
@@ -137,6 +137,38 @@ def test_attachment_extraction_stops_before_hashing_extra_parts(
     ]
     assert hashed == [b"payload-0", b"payload-1"]
     assert len(list(tmp_path.iterdir())) == 2
+
+
+def test_attachment_extraction_does_not_decode_parts_beyond_limit(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from email_analysis import attachment_analyzer
+
+    message = EmailMessage()
+    message.set_content("Email body")
+    for index in range(3):
+        message.add_attachment(
+            f"payload-{index}".encode(),
+            maintype="application",
+            subtype="octet-stream",
+            filename=f"sample-{index}.bin",
+        )
+
+    decoded_filenames: list[str] = []
+    real_get_payload = Message.get_payload
+
+    def recording_get_payload(self, *args, **kwargs):
+        if kwargs.get("decode") is True and self.get_filename():
+            decoded_filenames.append(self.get_filename())
+        return real_get_payload(self, *args, **kwargs)
+
+    monkeypatch.setattr(Message, "get_payload", recording_get_payload)
+
+    attachment_analyzer.extract_attachments(
+        message, save_dir=str(tmp_path), max_attachments=2
+    )
+
+    assert decoded_filenames == ["sample-0.bin", "sample-1.bin"]
 
 
 def test_qr_urls_share_the_total_url_limit() -> None:

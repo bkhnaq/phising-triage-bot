@@ -58,6 +58,14 @@ def _friendly_error(exc: Exception) -> str:
     return "Redirect analysis failed"
 
 
+def _safe_normalized_domain(url: str) -> str:
+    """Return a URL domain without letting malformed attacker input escape."""
+    try:
+        return _normalize_domain(urlparse(url).netloc)
+    except (UnicodeError, ValueError):
+        return ""
+
+
 # ── Extended URL shortener list ──────────────────────────────
 SHORTENER_DOMAINS: frozenset[str] = frozenset(
     {
@@ -320,7 +328,7 @@ def follow_redirect_chain(
         Dict with chain details and suspicious intermediate domain analysis.
     """
     source = source_url or url
-    origin_domain = _normalize_domain(urlparse(source).netloc)
+    origin_domain = _safe_normalized_domain(source)
 
     result: dict = {
         "source_url": source,
@@ -328,7 +336,7 @@ def follow_redirect_chain(
         "chain": [url],
         "hops": 0,
         "final_url": url,
-        "final_domain": _normalize_domain(urlparse(url).netloc),
+        "final_domain": _safe_normalized_domain(url),
         "intermediate_domains": [],
         "suspicious_intermediates": [],
         "is_esp_tracking": bool(esp_info and esp_info.get("is_tracking")),
