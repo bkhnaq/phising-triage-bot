@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from cli import build_parser, run_cli
+from cli import _write_report, build_parser, run_cli
 
 
 def _install_fake_pipeline(
@@ -52,6 +52,31 @@ def test_analyze_writes_utf8_report(monkeypatch, tmp_path: Path, capsys) -> None
     assert run_cli(["--analyze", str(sample), "--output", str(output)]) == 0
     assert output.read_text(encoding="utf-8") == "Báo cáo SOC"
     assert capsys.readouterr().out == ""
+
+
+def test_report_falls_back_to_utf8_for_legacy_console(monkeypatch) -> None:
+    import io
+    import cli
+
+    class LegacyConsole:
+        encoding = "cp1252"
+
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO()
+
+        def write(self, text: str) -> int:
+            text.encode(self.encoding)
+            return len(text)
+
+        def flush(self) -> None:
+            pass
+
+    console = LegacyConsole()
+    monkeypatch.setattr(cli.sys, "stdout", console)
+
+    _write_report("Báo cáo 🔍")
+
+    assert console.buffer.getvalue().decode("utf-8") == "Báo cáo 🔍\n"
 
 
 def test_offline_mode_is_enabled_before_pipeline_import(

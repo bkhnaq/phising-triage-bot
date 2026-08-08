@@ -40,6 +40,18 @@ def _usage_error(message: str) -> int:
     return 2
 
 
+def _write_report(report: str) -> None:
+    """Print a report without failing on a legacy Windows console encoding."""
+    try:
+        print(report)
+    except UnicodeEncodeError:
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is None:
+            raise
+        buffer.write(f"{report}\n".encode("utf-8"))
+        buffer.flush()
+
+
 def _analyze_file(path: Path, *, offline: bool, output: Path | None) -> int:
     try:
         resolved_path = path.expanduser().resolve(strict=True)
@@ -67,7 +79,7 @@ def _analyze_file(path: Path, *, offline: bool, output: Path | None) -> int:
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(report, encoding="utf-8")
         else:
-            print(report)
+            _write_report(report)
     except (KeyError, OSError, RuntimeError, ValueError):
         logging.getLogger(__name__).exception("Local analysis failed")
         print("Analysis failed; inspect application logs for details.", file=sys.stderr)
