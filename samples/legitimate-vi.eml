@@ -1,0 +1,12 @@
+From: Phòng Vận hành CNTT <vanhanh@congty-mau.test>
+To: analyst@example.test
+Subject: Đã hoàn tất bảo trì hệ thống
+Date: Fri, 1 Aug 2026 09:10:00 +0700
+Message-ID: <legitimate-vi@congty-mau.test>
+Return-Path: <vanhanh@congty-mau.test>
+Authentication-Results: mx.example.test; spf=pass smtp.mailfrom=congty-mau.test; dkim=pass header.d=congty-mau.test; dmarc=pass header.from=congty-mau.test
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Đợt bảo trì cổng thư điện tử đã hoàn tất. Anh/chị không cần thực hiện thêm thao tác nào.

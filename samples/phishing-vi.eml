@@ -1,0 +1,13 @@
+From: Bộ phận Microsoft 365 <canhbao@kiemtra-taikhoan.test>
+To: analyst@example.test
+Subject: Khẩn cấp: xác minh mật khẩu ngay hôm nay
+Date: Fri, 1 Aug 2026 09:15:00 +0700
+Message-ID: <phishing-vi@kiemtra-taikhoan.test>
+Return-Path: <bounce@kiemtra-taikhoan.test>
+Reply-To: hotro@xacminh-thongtin.test
+Authentication-Results: mx.example.test; spf=fail smtp.mailfrom=kiemtra-taikhoan.test; dkim=fail header.d=kiemtra-taikhoan.test; dmarc=fail header.from=kiemtra-taikhoan.test
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Hộp thư của anh/chị sẽ bị khóa hôm nay. Hãy xác minh mật khẩu ngay tại https://dangnhap-microsoft.test/tai-khoan/xac-minh để tránh mất quyền truy cập.
