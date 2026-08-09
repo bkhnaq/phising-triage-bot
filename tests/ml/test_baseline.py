@@ -36,6 +36,31 @@ def test_load_split_filters_expected_split(tmp_path: Path) -> None:
     assert {record.source_split for record in records} == {"validation"}
 
 
+def test_load_split_applies_explicit_character_bound(tmp_path: Path) -> None:
+    fixture = tmp_path / "long-email.jsonl"
+    fixture.write_text(
+        json.dumps(
+            {
+                "id": "long-1",
+                "source_split": "train",
+                "language": "en",
+                "subject": "Long message",
+                "sender": "sender@example.test",
+                "body": "A" * 5_000,
+                "label": "legitimate",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    texts, _, _ = load_split(fixture, expected_split="train", max_chars=400)
+
+    assert len(texts) == 1
+    assert len(texts[0]) == 400
+    assert "[...]" in texts[0]
+
+
 def test_tiny_baseline_smoke_exports_reproducible_candidate_files(
     tmp_path: Path,
 ) -> None:

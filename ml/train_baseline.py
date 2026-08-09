@@ -16,9 +16,14 @@ from ml.evaluate import compute_metrics, evaluate_slices
 from ml.prepare_data import normalize_source_row
 from ml.text import format_email_text
 
+_BASELINE_MAX_CHARS = 2_400
+
 
 def load_split(
-    path: Path, expected_split: str | None
+    path: Path,
+    expected_split: str | None,
+    *,
+    max_chars: int = 12_000,
 ) -> tuple[list[str], list[int], list[EmailRecord]]:
     """Load normalized records, accepting the raw smoke fixture as input."""
     texts: list[str] = []
@@ -44,7 +49,8 @@ def load_split(
                         "subject": record.subject,
                         "sender": record.sender,
                         "body": record.body,
-                    }
+                    },
+                    max_chars=max_chars,
                 )
             )
             labels.append(1 if record.label == "phishing" else 0)
@@ -54,6 +60,7 @@ def load_split(
 
 def _build_pipeline(seed: int, smoke: bool) -> Any:
     try:
+        import numpy as np
         from sklearn.calibration import CalibratedClassifierCV
         from sklearn.feature_extraction.text import TfidfVectorizer
         from sklearn.pipeline import FeatureUnion, Pipeline
@@ -69,8 +76,15 @@ def _build_pipeline(seed: int, smoke: bool) -> Any:
                 "word",
                 TfidfVectorizer(
                     ngram_range=(1, 2),
-                    min_df=1,
-                    max_features=2_000 if smoke else 50_000,
+                    # In a full corpus, one-off n-grams are predominantly unique
+                    # identifiers and force scikit-learn to allocate a huge
+                    # temporary vocabulary before ``max_features`` can apply.
+                    min_df=1 if smoke else 2,
+                    # Keep full-data training practical on a typical 16 GB laptop.
+                    # float32 is sufficient for TF-IDF and avoids duplicating a large
+                    # sparse matrix in float64 while calibration is fitting.
+                    dtype=np.float32,
+                    max_features=2_000 if smoke else 30_000,
                     sublinear_tf=True,
                 ),
             ),
@@ -79,8 +93,9 @@ def _build_pipeline(seed: int, smoke: bool) -> Any:
                 TfidfVectorizer(
                     analyzer="char_wb",
                     ngram_range=(3, 5),
-                    min_df=1,
-                    max_features=4_000 if smoke else 100_000,
+                    min_df=1 if smoke else 2,
+                    dtype=np.float32,
+                    max_features=4_000 if smoke else 60_000,
                     sublinear_tf=True,
                 ),
             ),
@@ -145,11 +160,21 @@ def train_baseline(
     except ImportError as exc:
         raise RuntimeError("joblib is required; install requirements-ml.txt") from exc
 
-    train_texts, train_labels, _ = load_split(data_dir / "train.jsonl", "train")
-    validation_texts, validation_labels, validation_records = load_split(
-        data_dir / "validation.jsonl", "validation"
+    train_texts, train_labels, _ = load_split(
+        data_dir / "train.jsonl",
+        "train",
+        max_chars=_BASELINE_MAX_CHARS,
     )
-    test_texts, _, test_records = load_split(data_dir / "test.jsonl", "test")
+    validation_texts, validation_labels, validation_records = load_split(
+        data_dir / "validation.jsonl",
+        "validation",
+        max_chars=_BASELINE_MAX_CHARS,
+    )
+    test_texts, _, test_records = load_split(
+        data_dir / "test.jsonl",
+        "test",
+        max_chars=_BASELINE_MAX_CHARS,
+    )
     if set(train_labels) != {0, 1} or min(Counter(train_labels).values()) < 2:
         raise ValueError("training split requires at least two records per class")
     if set(validation_labels) != {0, 1}:

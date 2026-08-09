@@ -65,13 +65,31 @@ URL fetch chặn địa chỉ private/mixed DNS, pin public IP đã xác thực,
 
 Classifier local-first tùy chọn dùng artifact `jhu-clsp/mmBERT-small` đã promote. Model weights được chủ động không lưu trong Git. Nếu artifact hoặc ML dependency chưa có, report hiển thị trạng thái AI unavailable nhưng bằng chứng deterministic vẫn chạy.
 
-Sau khi cài `requirements-ml.txt`, có thể tái tạo luồng train/promote:
+Kết quả local đã kiểm chứng gần nhất (seed 42, ngày 09/08/2026):
+
+| Tập test | Macro F1 | Phishing recall | False-positive rate |
+|---|---:|---:|---:|
+| Tiếng Anh (1.506 email) | 0,9888 | 0,9847 | 0,0076 |
+| Tiếng Việt synthetic (100 email) | 0,8800 | 0,8600 | 0,1000 |
+
+Metrics tiếng Việt dùng email synthetic được dịch hoàn toàn local. Kết quả này chứng minh luồng đánh giá song ngữ có thể tái tạo, không được xem là độ chính xác production trên email tiếng Việt thực tế.
+
+Sau khi cài `requirements-ml.txt`, tái tạo dữ liệu và candidate đầu tiên bằng:
 
 ```powershell
 python -m ml.prepare_data --source public --raw-dir data/raw --output-dir data/processed/phishing --seed 42
-python -m ml.train_mmbert --data-dir data/processed/phishing --output-dir artifacts/mmbert-candidate --epochs 1 --seed 42
-python -m ml.promote promote --candidate artifacts/mmbert-candidate --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
+python -m ml.train_baseline --data-dir data/processed/phishing --output-dir artifacts/baseline-full --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/train.jsonl --output data/processed/phishing/train.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split train --max-records 500 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/validation.jsonl --output data/processed/phishing/validation.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split validation --max-records 200 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/test.jsonl --output data/processed/phishing/test.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split test --max-records 100 --max-source-chars 2000 --seed 42
+python -m ml.train_mmbert --data-dir data/processed/phishing --output-dir artifacts/mmbert-candidate --train-augmentation data/processed/phishing/train.vi.jsonl --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --max-length 256 --epochs 1 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-candidate
+python -m ml.train_mmbert --data-dir data/processed/phishing --initial-model-dir artifacts/mmbert-candidate --output-dir artifacts/mmbert-candidate-v2 --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --max-length 256 --epochs 1 --learning-rate 3e-6 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-candidate-v2
+python -m ml.promote promote --candidate artifacts/mmbert-candidate-v2 --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
 ```
+
+Promotion sẽ bị từ chối nếu hiệu năng tiếng Anh không vượt baseline hoặc một trong hai language slice không đạt gate recall/FPR. Candidate fail vẫn được giữ để warm-start với learning rate thấp, không ghi đè model active.
 
 ## Cài đặt
 

@@ -87,24 +87,24 @@ def test_warmup_is_an_explicit_ten_percent_of_optimizer_steps(
     assert scheduled.warmup_steps == expected_steps
 
 
-def test_training_arguments_match_installed_transformers_api(
+def test_training_arguments_match_installed_cpu_transformers_api(
     tmp_path: Path,
 ) -> None:
     pytest.importorskip("transformers")
     config = training_config(tmp_path / "candidate", smoke=True, seed=42)
 
     arguments = build_training_arguments(
-        config, cuda_available=True, bf16_available=True
+        config, cuda_available=False, bf16_available=False
     )
 
     assert arguments.output_dir == str(config.checkpoint_dir)
     assert arguments.eval_strategy.value == "no"
     assert arguments.save_strategy.value == "no"
     assert arguments.fp16 is False
-    assert arguments.bf16 is True
+    assert arguments.bf16 is False
     assert arguments.optim.value == "adafactor"
     assert arguments.save_only_model is True
-    assert arguments.gradient_checkpointing is True
+    assert arguments.gradient_checkpointing is False
     assert arguments.max_steps == 2
     assert arguments.warmup_steps == 0
 
@@ -120,8 +120,8 @@ def test_single_epoch_full_run_evaluates_without_resident_checkpoint_save(
 
     arguments = build_training_arguments(
         config,
-        cuda_available=True,
-        bf16_available=True,
+        cuda_available=False,
+        bf16_available=False,
     )
 
     assert arguments.eval_strategy.value == "epoch"

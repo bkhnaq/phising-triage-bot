@@ -490,7 +490,9 @@ def build_training_arguments(
         save_total_limit=2,
         fp16=cuda_available and not bf16_available,
         bf16=cuda_available and bf16_available,
-        gradient_checkpointing=True,
+        # Checkpointing trades extra computation for GPU memory. It only slows
+        # down the small model on CPU, where memory is not the bottleneck.
+        gradient_checkpointing=cuda_available,
         eval_accumulation_steps=4,
         dataloader_num_workers=0,
         dataloader_pin_memory=cuda_available,
@@ -595,6 +597,15 @@ def train_mmbert(
 
     cuda_available = torch.cuda.is_available()
     bf16_available = cuda_available and torch.cuda.is_bf16_supported()
+    if not cuda_available:
+        # Preserve the effective batch size of 16 while reducing Python and
+        # optimizer overhead for laptop CPU training.
+        config = replace(
+            config,
+            per_device_train_batch_size=4,
+            per_device_eval_batch_size=8,
+            gradient_accumulation_steps=4,
+        )
     dtype_name = model_weight_dtype_name(cuda_available, bf16_available)
     model_dtype = getattr(torch, dtype_name) if dtype_name else None
 
@@ -631,9 +642,10 @@ def train_mmbert(
     )
     if config.freeze_token_embeddings:
         freeze_token_embeddings(model)
-    model.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs={"use_reentrant": False}
-    )
+    if cuda_available:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
 
     train_dataset = (
         None

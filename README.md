@@ -66,13 +66,31 @@ Network URL fetching rejects private/mixed DNS answers, pins validated public IP
 
 The optional local-first classifier uses a promoted `jhu-clsp/mmBERT-small` artifact. Weights are intentionally not stored in Git. When the artifact or ML dependencies are unavailable, the report exposes that AI is unavailable while deterministic evidence still runs.
 
-To reproduce the training path after installing `requirements-ml.txt`:
+Latest verified local run (seed 42, 9 August 2026):
+
+| Test slice | Macro F1 | Phishing recall | False-positive rate |
+|---|---:|---:|---:|
+| English (1,506 emails) | 0.9888 | 0.9847 | 0.0076 |
+| Synthetic Vietnamese (100 emails) | 0.8800 | 0.8600 | 0.1000 |
+
+Vietnamese metrics use locally translated synthetic emails; they demonstrate a reproducible bilingual evaluation path, not production accuracy on real Vietnamese mail.
+
+After installing `requirements-ml.txt`, reproduce the data and first candidate with:
 
 ```powershell
 python -m ml.prepare_data --source public --raw-dir data/raw --output-dir data/processed/phishing --seed 42
-python -m ml.train_mmbert --data-dir data/processed/phishing --output-dir artifacts/mmbert-candidate --epochs 1 --seed 42
-python -m ml.promote promote --candidate artifacts/mmbert-candidate --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
+python -m ml.train_baseline --data-dir data/processed/phishing --output-dir artifacts/baseline-full --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/train.jsonl --output data/processed/phishing/train.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split train --max-records 500 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/validation.jsonl --output data/processed/phishing/validation.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split validation --max-records 200 --max-source-chars 2000 --seed 42
+python -m ml.augment_vietnamese_local --input data/processed/phishing/test.jsonl --output data/processed/phishing/test.vi.jsonl --cache-dir artifacts/augmentation-cache-local --split test --max-records 100 --max-source-chars 2000 --seed 42
+python -m ml.train_mmbert --data-dir data/processed/phishing --output-dir artifacts/mmbert-candidate --train-augmentation data/processed/phishing/train.vi.jsonl --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --max-length 256 --epochs 1 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-candidate
+python -m ml.train_mmbert --data-dir data/processed/phishing --initial-model-dir artifacts/mmbert-candidate --output-dir artifacts/mmbert-candidate-v2 --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --max-length 256 --epochs 1 --learning-rate 3e-6 --seed 42
+python -m ml.promote manifest --candidate artifacts/mmbert-candidate-v2
+python -m ml.promote promote --candidate artifacts/mmbert-candidate-v2 --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
 ```
+
+Promotion is intentionally refused unless English performance beats the baseline and both language slices meet recall/FPR gates. A failed candidate remains available for an auditable low-learning-rate warm start rather than replacing the active model.
 
 ## Installation
 
