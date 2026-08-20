@@ -189,6 +189,7 @@ def analyze_urls(urls: list[dict]) -> dict:
     shortener_findings = detect_shorteners(urls)
     redirect_findings = analyze_redirect_chains(urls)
     suspicious_endpoints = detect_suspicious_endpoints(urls)
+    deceptive_links = detect_deceptive_links(urls)
     esp_findings = detect_esp_patterns(urls)
     _merge_redirect_context_into_esp(esp_findings, redirect_findings)
 
@@ -196,15 +197,42 @@ def analyze_urls(urls: list[dict]) -> dict:
         sum(f["risk_score"] for f in shortener_findings)
         + sum(f["risk_score"] for f in redirect_findings)
         + sum(f["risk_score"] for f in suspicious_endpoints)
+        + sum(f["risk_score"] for f in deceptive_links)
     )
 
     return {
         "shortener_findings": shortener_findings,
         "redirect_findings": redirect_findings,
         "suspicious_endpoints": suspicious_endpoints,
+        "deceptive_links": deceptive_links,
         "esp_findings": esp_findings,
         "risk_score": min(total_risk, 50),
     }
+
+
+def detect_deceptive_links(urls: list[dict]) -> list[dict]:
+    """Return strong findings when visible anchor URLs differ from actual hrefs."""
+    findings: list[dict] = []
+    for item in urls:
+        if not item.get("deceptive_hyperlink"):
+            continue
+        esp_context = classify_esp_url(str(item.get("url", "")))
+        known_tracking_intermediary = bool(
+            esp_context and esp_context.get("is_tracking")
+        )
+        findings.append(
+            {
+                "url": item.get("url", ""),
+                "displayed_url": item.get("displayed_url", ""),
+                "displayed_domain": item.get("displayed_domain", ""),
+                "actual_domain": item.get("actual_domain", item.get("domain", "")),
+                "state": "contextual" if known_tracking_intermediary else "suspicious",
+                "provider": esp_context.get("provider") if esp_context else "",
+                "requires_redirect_validation": known_tracking_intermediary,
+                "risk_score": 0 if known_tracking_intermediary else 30,
+            }
+        )
+    return findings
 
 
 def detect_shorteners(urls: list[dict]) -> list[dict]:

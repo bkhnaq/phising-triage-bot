@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -91,7 +92,19 @@ def _clean_local_cache() -> None:
 
 
 def test_runtime_default_context_matches_calibrated_training_context() -> None:
-    assert local.LOCAL_AI_MAX_LENGTH == 512
+    assert local.LOCAL_AI_MAX_LENGTH == 256
+
+
+def test_cpu_inference_defaults_to_one_thread_without_overriding_user(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.setenv("MKL_NUM_THREADS", "2")
+
+    local._configure_cpu_thread_defaults()
+
+    assert os.environ["OMP_NUM_THREADS"] == "1"
+    assert os.environ["MKL_NUM_THREADS"] == "2"
 
 
 def test_disabled_local_ai_returns_stable_result(monkeypatch) -> None:
@@ -230,6 +243,29 @@ def test_missing_optional_dependencies_do_not_escape_runtime(
     assert result["verdict"] == "unknown"
     assert result["error"] == "local AI dependencies unavailable"
     assert "torch is missing" not in str(result)
+
+
+def test_memory_error_disables_repeated_load_attempts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    artifact = _artifact(tmp_path / "artifact")
+    monkeypatch.setattr(local, "LOCAL_AI_ENABLED", True)
+    monkeypatch.setattr(local, "LOCAL_AI_MODEL_DIR", str(artifact))
+    attempts = 0
+
+    def out_of_memory(_directory: Path, _max_length: int) -> _Backend:
+        nonlocal attempts
+        attempts += 1
+        raise MemoryError("sensitive allocation details")
+
+    monkeypatch.setattr(local, "_load_transformers_backend", out_of_memory)
+
+    first = local.classify_email_local({"subject": "One", "body_text": "Body"})
+    second = local.classify_email_local({"subject": "Two", "body_text": "Body"})
+
+    assert first["error"] == second["error"] == "local model load failed"
+    assert "sensitive allocation details" not in str(first)
+    assert attempts == 1
 
 
 def test_invalid_artifact_and_inference_failure_are_sanitized(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import sys
 import types
@@ -7,6 +8,26 @@ import types
 import pytest
 
 from cli import _write_report, build_parser, run_cli
+
+
+def test_log_formatter_redacts_telegram_token_from_request_url() -> None:
+    import main
+
+    token = "123456789:abcdefghijklmnopqrstuvwxyz_ABCD12345"
+    record = logging.LogRecord(
+        name="httpx",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg=f"POST https://api.telegram.org/bot{token}/getUpdates",
+        args=(),
+        exc_info=None,
+    )
+
+    rendered = main._RedactingFormatter("%(message)s").format(record)
+
+    assert token not in rendered
+    assert "[REDACTED_TELEGRAM_TOKEN]" in rendered
 
 
 def _install_fake_pipeline(

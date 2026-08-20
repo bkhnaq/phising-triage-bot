@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 
 from telegram import Update
+from telegram.error import InvalidToken
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -310,5 +311,13 @@ def start_bot() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     logger.info("Phishing Triage Bot is polling…")
-    # Pass stop_signals=None to avoid platform.system() WMI error on Windows + Python 3.13
-    app.run_polling(stop_signals=None)
+    # The library removes any existing webhook during polling bootstrap. Dropping
+    # stale updates also prevents an old deployment from being replayed locally.
+    # stop_signals=None avoids platform.system() WMI errors on Windows + Python 3.13.
+    try:
+        app.run_polling(drop_pending_updates=True, stop_signals=None)
+    except InvalidToken:
+        raise RuntimeError(
+            "Telegram rejected TELEGRAM_TOKEN. Generate a fresh token with "
+            "@BotFather, update .env, and restart the bot."
+        ) from None

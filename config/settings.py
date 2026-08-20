@@ -68,18 +68,14 @@ SECURITYTRAILS_API_KEY = os.getenv("SECURITYTRAILS_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 LOCAL_AI_ENABLED = _get_bool("LOCAL_AI_ENABLED", True)
-LOCAL_AI_MODEL_DIR = os.getenv("LOCAL_AI_MODEL_DIR", "artifacts/models/phishing-mmbert")
-LOCAL_AI_MAX_LENGTH = _get_int("LOCAL_AI_MAX_LENGTH", 512, minimum=1)
+LOCAL_AI_MODEL_DIR = os.getenv(
+    "LOCAL_AI_MODEL_DIR", "artifacts/models/phishing-mmbert-v2"
+)
+LOCAL_AI_MAX_LENGTH = _get_int("LOCAL_AI_MAX_LENGTH", 256, minimum=1)
 AI_GROQ_FALLBACK = _get_bool("AI_GROQ_FALLBACK", False)
 
-# ── Risk Scoring Thresholds ──────────────────────────────────
-RISK_HIGH_THRESHOLD = _get_int("RISK_HIGH_THRESHOLD", 70, minimum=0, maximum=100)
-RISK_MEDIUM_THRESHOLD = _get_int("RISK_MEDIUM_THRESHOLD", 40, minimum=0, maximum=100)
-if RISK_MEDIUM_THRESHOLD >= RISK_HIGH_THRESHOLD:
-    raise ValueError("RISK_MEDIUM_THRESHOLD must be less than RISK_HIGH_THRESHOLD")
-
 # ── REST API (FastAPI) ───────────────────────────────────────
-API_HOST = os.getenv("API_HOST", "0.0.0.0")
+API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = _get_int("API_PORT", 8000, minimum=1, maximum=65535)
 API_KEY = os.getenv("API_KEY", "")
 ENV = os.getenv("ENV", "prod").strip().lower()

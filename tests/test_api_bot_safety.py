@@ -493,6 +493,64 @@ def test_split_message_keeps_markdown_fences_balanced() -> None:
         assert chunk.count("```") % 2 == 0
 
 
+def test_bot_polling_removes_webhook_and_drops_stale_updates(monkeypatch) -> None:
+    from bot import telegram_handler as handler
+
+    polling_options: dict[str, object] = {}
+
+    class FakeApplication:
+        def add_handler(self, _handler) -> None:
+            pass
+
+        def run_polling(self, **kwargs) -> None:
+            polling_options.update(kwargs)
+
+    class FakeBuilder:
+        def token(self, token: str):
+            assert token == "test-token"
+            return self
+
+        def build(self) -> FakeApplication:
+            return FakeApplication()
+
+    monkeypatch.setattr(handler, "TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setattr(handler, "ApplicationBuilder", FakeBuilder)
+
+    handler.start_bot()
+
+    assert polling_options == {
+        "drop_pending_updates": True,
+        "stop_signals": None,
+    }
+
+
+def test_bot_reports_rejected_token_without_exposing_it(monkeypatch) -> None:
+    from telegram.error import InvalidToken
+    from bot import telegram_handler as handler
+
+    class FakeApplication:
+        def add_handler(self, _handler) -> None:
+            pass
+
+        def run_polling(self, **_kwargs) -> None:
+            raise InvalidToken("secret-token-value")
+
+    class FakeBuilder:
+        def token(self, _token: str):
+            return self
+
+        def build(self) -> FakeApplication:
+            return FakeApplication()
+
+    monkeypatch.setattr(handler, "TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setattr(handler, "ApplicationBuilder", FakeBuilder)
+
+    with pytest.raises(RuntimeError, match="Telegram rejected TELEGRAM_TOKEN") as exc:
+        handler.start_bot()
+
+    assert "secret-token-value" not in str(exc.value)
+
+
 def test_request_id_and_error_envelope_consistent(monkeypatch) -> None:
     client, _routes = _client_with_auth(monkeypatch)
 

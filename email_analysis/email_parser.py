@@ -49,6 +49,7 @@ def parse_eml_file(file_path: str) -> dict:
         "headers": list(msg.items()),
         "body_text": _get_body(msg, "text/plain"),
         "body_html": _get_body(msg, "text/html"),
+        "mime_parts": _collect_mime_parts(msg),
         "raw_message": msg,
     }
     _recover_pasted_headers(result)
@@ -71,6 +72,21 @@ def _get_body(msg: EmailMessage, content_type: str) -> str:
             payload = msg.get_content()
             return payload if isinstance(payload, str) else ""
         return ""
+
+
+def _collect_mime_parts(msg: EmailMessage) -> list[dict]:
+    """Preserve MIME provenance without duplicating potentially large payloads."""
+    parts = list(msg.walk()) if msg.is_multipart() else [msg]
+    return [
+        {
+            "content_type": part.get_content_type(),
+            "content_disposition": part.get_content_disposition() or "",
+            "content_transfer_encoding": part.get("Content-Transfer-Encoding", ""),
+            "charset": part.get_content_charset() or "",
+        }
+        for part in parts
+        if not part.is_multipart()
+    ]
 
 
 def _recover_pasted_headers(result: dict) -> None:

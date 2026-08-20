@@ -376,7 +376,7 @@ class RiskScoringRefactorTests(unittest.TestCase):
         self.assertGreaterEqual(result["category_scores"]["URL behavior"], 10)
         self.assertTrue(any("URL obfuscation" in item for item in result["breakdown"]))
 
-    def test_generic_credential_phish_is_not_low_when_intel_is_clean(self) -> None:
+    def test_language_and_url_tokens_do_not_overstate_clean_intel(self) -> None:
         auth_results = self._auth(
             spf="none",
             dkim="none",
@@ -423,10 +423,12 @@ class RiskScoringRefactorTests(unittest.TestCase):
             },
         )
 
-        self.assertGreaterEqual(result["risk_score"], 45)
-        self.assertNotEqual(result["verdict"], "LOW")
+        self.assertEqual(result["category_scores"]["threat intelligence"], 0)
+        self.assertEqual(result["category_scores"]["content/language"], 15)
+        self.assertLess(result["risk_score"], 25)
+        self.assertNotIn(result["verdict"], {"HIGH", "CRITICAL"})
 
-    def test_high_confidence_ai_phish_with_matching_language_escalates(self) -> None:
+    def test_ai_and_language_alone_cannot_escalate_to_high(self) -> None:
         result = calculate_risk(
             auth_results=self._auth(
                 spf="none",
@@ -460,8 +462,9 @@ class RiskScoringRefactorTests(unittest.TestCase):
             },
         )
 
-        self.assertGreaterEqual(result["risk_score"], 65)
-        self.assertIn(result["verdict"], {"HIGH", "CRITICAL"})
+        self.assertEqual(result["category_scores"]["AI / ML"], 10)
+        self.assertLess(result["risk_score"], 45)
+        self.assertNotIn(result["verdict"], {"HIGH", "CRITICAL"})
 
 
 class TestPhishingPipelineIntegration(unittest.TestCase):

@@ -244,8 +244,9 @@ def dns_lookup(domain: str) -> dict:
     Perform DNS record analysis.
 
     Returns:
-        Dict with: domain, a_records, aaaa_records, mx_records, ns_records,
-                   txt_records, cname_records, has_mx, has_spf, risk_score, error.
+        Dict with record values plus per-type status. ``absent`` means the
+        resolver answered authoritatively with no record; ``unavailable`` and
+        ``error`` mean no conclusion can be drawn.
     """
     result: dict = {
         "domain": domain,
@@ -257,17 +258,32 @@ def dns_lookup(domain: str) -> dict:
         "cname_records": [],
         "has_mx": False,
         "has_spf": False,
+        "dmarc_records": [],
+        "has_dmarc": False,
+        "dmarc_status": "not_checked",
+        "dmarc_error": None,
         "risk_score": 0,
         "error": None,
+        "record_status": {
+            rtype: "not_checked" for rtype in ("A", "AAAA", "MX", "NS", "TXT", "CNAME")
+        },
+        "record_errors": {},
     }
 
     if dns_resolver is None:
         result["error"] = "dnspython not installed"
-        result["risk_score"] = 10
+        result["record_status"] = {
+            rtype: "unavailable" for rtype in result["record_status"]
+        }
+        result["dmarc_status"] = "unavailable"
         return result
 
     if OFFLINE_MODE:
         result["error"] = "offline mode enabled"
+        result["record_status"] = {
+            rtype: "unavailable" for rtype in result["record_status"]
+        }
+        result["dmarc_status"] = "unavailable"
         return result
 
     found, cached = _DNS_CACHE.get(domain)
@@ -297,24 +313,64 @@ def dns_lookup(domain: str) -> dict:
                 ]
             else:
                 result[key] = [str(r).strip('"') for r in answers]
-        except (
-            dns_resolver.NoAnswer,
-            dns_resolver.NXDOMAIN,
-            dns_resolver.NoNameservers,
-            dns_resolver.Timeout,
-        ):
-            continue
+            result["record_status"][rtype] = "ok"
+        except dns_resolver.NoAnswer:
+            result["record_status"][rtype] = "absent"
+        except dns_resolver.NXDOMAIN:
+            result["record_status"][rtype] = "nxdomain"
+        except dns_resolver.Timeout:
+            result["record_status"][rtype] = "unavailable"
+            result["record_errors"][rtype] = "lookup timed out"
+        except dns_resolver.NoNameservers:
+            result["record_status"][rtype] = "unavailable"
+            result["record_errors"][rtype] = "no nameservers available"
         except Exception as exc:
+            result["record_status"][rtype] = "error"
+            result["record_errors"][rtype] = "lookup failed"
             logger.debug("DNS %s lookup failed for %s: %s", rtype, domain, exc)
 
     # Analyze results
     result["has_mx"] = bool(result["mx_records"])
     result["has_spf"] = any("v=spf1" in t for t in result["txt_records"])
 
-    # No MX records for domains that claim to send email = suspicious
-    if not result["has_mx"] and not result["a_records"]:
+    try:
+        dmarc_answers = resolver.resolve(f"_dmarc.{domain}", "TXT")
+        result["dmarc_records"] = [str(record).strip('"') for record in dmarc_answers]
+        result["has_dmarc"] = any(
+            record.lower().startswith("v=dmarc1") for record in result["dmarc_records"]
+        )
+        result["dmarc_status"] = "ok"
+    except dns_resolver.NoAnswer:
+        result["dmarc_status"] = "absent"
+    except dns_resolver.NXDOMAIN:
+        result["dmarc_status"] = "absent"
+    except dns_resolver.Timeout:
+        result["dmarc_status"] = "unavailable"
+        result["dmarc_error"] = "lookup timed out"
+    except dns_resolver.NoNameservers:
+        result["dmarc_status"] = "unavailable"
+        result["dmarc_error"] = "no nameservers available"
+    except Exception as exc:
+        result["dmarc_status"] = "error"
+        result["dmarc_error"] = "lookup failed"
+        logger.debug("DNS DMARC lookup failed for %s: %s", domain, exc)
+
+    a_state = result["record_status"]["A"]
+    mx_state = result["record_status"]["MX"]
+    if a_state == "nxdomain" and mx_state == "nxdomain":
         result["risk_score"] += 10
-        result["error"] = "No A or MX records found"
+        result["error"] = "Domain does not exist (NXDOMAIN)"
+    elif a_state == "absent" and mx_state == "absent":
+        result["risk_score"] += 10
+        result["error"] = "No A or MX records published"
+    elif (
+        not result["a_records"]
+        and not result["mx_records"]
+        and (
+            a_state in {"unavailable", "error"} or mx_state in {"unavailable", "error"}
+        )
+    ):
+        result["error"] = "A/MX lookup unavailable"
 
     _DNS_CACHE.set(domain, result)
     return result
@@ -390,13 +446,15 @@ def lookalike_check(domain: str) -> list[dict]:
 
 
 def _deduplicate_domains(domains: list[str]) -> list[str]:
+    """Return unique registrable domains while preserving investigation order."""
     seen: set[str] = set()
     result: list[str] = []
     for d in domains:
         d_lower = d.lower().split(":")[0]
-        if d_lower and d_lower not in seen:
-            seen.add(d_lower)
-            result.append(d_lower)
+        root = registered_domain(d_lower)
+        if root and root not in seen:
+            seen.add(root)
+            result.append(root)
     return result
 
 

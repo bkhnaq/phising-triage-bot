@@ -79,6 +79,38 @@ _PATTERNS: dict[str, dict] = {
             r"\bprovide\s+(?:your\s+)?(?:credentials|password|personal|information)\b",
             r"\bsign\s+in\s+(?:to\s+)?(?:verify|confirm|secure)\b",
             r"\bvalidate\s+(?:your\s+)?(?:account|identity)\b",
+            r"\breactivat(?:e|ion)\s+(?:your\s+)?(?:account|identity|access)\b",
+            r"\b(?:account|computing\s+id)\s+(?:authentication|reactivation)\b",
+        ],
+    },
+    "account_verification": {
+        "description": "Account verification / reactivation language",
+        "risk_per_match": 5,
+        "max_risk": 10,
+        "patterns": [
+            r"\breactivat(?:e|ion)\s+(?:your\s+)?(?:account|identity|access)\b",
+            r"\bauthenticat(?:e|ion)\s+(?:your\s+)?(?:account|identity|access)\b",
+            r"\b(?:account|computing\s+id)\s+(?:authentication|reactivation)\b",
+        ],
+    },
+    "password_expiration": {
+        "description": "Password / account expiration lure",
+        "risk_per_match": 5,
+        "max_risk": 10,
+        "patterns": [
+            r"\b(?:your\s+)?(?:account|password|computing\s+id\s+password)\s+"
+            r"(?:will\s+)?expir(?:e|es|ing)\b",
+            r"\bpassword\s+expir(?:y|ation)\b",
+        ],
+    },
+    "call_to_action": {
+        "description": "Call-to-action language",
+        "risk_per_match": 2,
+        "max_risk": 4,
+        "patterns": [
+            r"\bfollow\s+(?:the\s+)?(?:instructions|link|reference)\b",
+            r"\bclick\s+(?:here|below|the\s+link|the\s+button)\b",
+            r"\bvisit\s+(?:the\s+)?(?:link|website|portal)\b",
         ],
     },
     "financial": {

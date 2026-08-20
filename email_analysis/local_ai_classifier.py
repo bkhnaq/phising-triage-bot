@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 LOCAL_AI_ENABLED = getattr(settings, "LOCAL_AI_ENABLED", True)
 LOCAL_AI_MODEL_DIR = getattr(
-    settings, "LOCAL_AI_MODEL_DIR", "artifacts/models/phishing-mmbert"
+    settings, "LOCAL_AI_MODEL_DIR", "artifacts/models/phishing-mmbert-v2"
 )
-LOCAL_AI_MAX_LENGTH = getattr(settings, "LOCAL_AI_MAX_LENGTH", 512)
+LOCAL_AI_MAX_LENGTH = getattr(settings, "LOCAL_AI_MAX_LENGTH", 256)
 
 _LOAD_LOCK = threading.Lock()
 _INFERENCE_LOCK = threading.Lock()
@@ -40,6 +41,13 @@ class _LoadedState:
 
 
 _loaded_state: _LoadedState | None = None
+_failed_load_identity: tuple[str, int, int] | None = None
+
+
+def _configure_cpu_thread_defaults() -> None:
+    """Keep Windows CPU inference stable while allowing explicit overrides."""
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 
 def _base_result(error: str | None = None) -> dict[str, object]:
@@ -58,13 +66,15 @@ def _base_result(error: str | None = None) -> dict[str, object]:
 
 def reset_local_model_cache() -> None:
     """Release this process's cached backend so an artifact can be reloaded."""
-    global _loaded_state
+    global _failed_load_identity, _loaded_state
     with _LOAD_LOCK:
         _loaded_state = None
+        _failed_load_identity = None
 
 
 class _TransformersBackend:
     def __init__(self, directory: Path, max_length: int) -> None:
+        _configure_cpu_thread_defaults()
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -115,24 +125,33 @@ def _identity(directory: Path) -> tuple[str, int, int]:
 
 
 def _load_state(directory: Path, max_length: int) -> _LoadedState:
-    global _loaded_state
+    global _failed_load_identity, _loaded_state
     identity = _identity(directory)
     with _LOAD_LOCK:
         if _loaded_state is not None and _loaded_state.identity == identity:
             return _loaded_state
+        if _failed_load_identity == identity:
+            raise RuntimeError(
+                "local model loading is disabled after an earlier failure"
+            )
         manifest = validate_artifact(directory)
         thresholds_payload = json.loads(
             (directory / "thresholds.json").read_text(encoding="utf-8")
         )
         if not isinstance(thresholds_payload, dict):
             raise ValueError("threshold artifact must be an object")
-        state = _LoadedState(
-            identity=identity,
-            backend=_load_transformers_backend(directory, max_length),
-            thresholds=DecisionThresholds.from_mapping(thresholds_payload),
-            model_id=manifest.model_id,
-        )
+        try:
+            state = _LoadedState(
+                identity=identity,
+                backend=_load_transformers_backend(directory, max_length),
+                thresholds=DecisionThresholds.from_mapping(thresholds_payload),
+                model_id=manifest.model_id,
+            )
+        except (ImportError, MemoryError, OSError, RuntimeError, ValueError):
+            _failed_load_identity = identity
+            raise
         _loaded_state = state
+        _failed_load_identity = None
         return state
 
 
@@ -192,7 +211,7 @@ def classify_email_local(
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("Local AI artifact validation failed (%s)", type(exc).__name__)
         return _base_result("local model artifact invalid")
-    except (OSError, RuntimeError) as exc:
+    except (MemoryError, OSError, RuntimeError) as exc:
         logger.warning("Local AI model loading failed (%s)", type(exc).__name__)
         return _base_result("local model load failed")
 
@@ -206,6 +225,7 @@ def classify_email_local(
         return _success_result(probability, state)
     except (
         ArithmeticError,
+        MemoryError,
         OSError,
         RuntimeError,
         TypeError,

@@ -53,13 +53,27 @@ def analyze_headers(headers: list[tuple[str, str]]) -> dict:
         'forensics' contains sender/path anomalies and forensic findings.
     """
     auth_results: dict[str, Any] = {
-        "spf": {"result": "none", "details": ""},
-        "dkim": {"result": "none", "details": ""},
-        "dmarc": {"result": "none", "details": ""},
+        "spf": {
+            "result": "unknown",
+            "details": "insufficient authentication headers",
+        },
+        "dkim": {
+            "result": "unknown",
+            "details": "no DKIM-Signature or authentication result available",
+        },
+        "dmarc": {
+            "result": "unknown",
+            "details": "authentication result unavailable",
+        },
     }
+
+    has_authentication_results = False
+    has_dkim_signature = False
 
     for name, value in headers:
         lower_name = name.lower()
+        has_authentication_results |= lower_name == "authentication-results"
+        has_dkim_signature |= lower_name == "dkim-signature"
 
         # ── SPF ──────────────────────────────────────────────
         if lower_name == "received-spf":
@@ -68,6 +82,17 @@ def analyze_headers(headers: list[tuple[str, str]]) -> dict:
         # ── Authentication-Results (SPF / DKIM / DMARC) ─────
         if lower_name == "authentication-results":
             _parse_authentication_results(value, auth_results)
+
+    if auth_results["dkim"]["result"] == "unknown" and has_dkim_signature:
+        auth_results["dkim"][
+            "details"
+        ] = "DKIM-Signature present but verification result unavailable"
+    if has_authentication_results:
+        for check in ("spf", "dkim", "dmarc"):
+            if auth_results[check]["result"] == "unknown":
+                auth_results[check][
+                    "details"
+                ] = f"{check.upper()} result absent from Authentication-Results"
 
     auth_results["forensics"] = _run_header_forensics(headers)
     alignment = _analyze_auth_alignment(auth_results, auth_results["forensics"])
@@ -261,23 +286,23 @@ def _analyze_auth_alignment(auth_results: dict, forensics: dict) -> dict:
     dkim_domain = auth_results.get("dkim", {}).get("domain", "")
     dmarc_domain = auth_results.get("dmarc", {}).get("domain", "") or from_domain
 
-    spf_result = str(auth_results.get("spf", {}).get("result", "none")).lower()
-    dkim_result = str(auth_results.get("dkim", {}).get("result", "none")).lower()
-    dmarc_result = str(auth_results.get("dmarc", {}).get("result", "none")).lower()
+    spf_result = str(auth_results.get("spf", {}).get("result", "unknown")).lower()
+    dkim_result = str(auth_results.get("dkim", {}).get("result", "unknown")).lower()
+    dmarc_result = str(auth_results.get("dmarc", {}).get("result", "unknown")).lower()
 
     spf_aligned = (
         same_registered_domain(spf_domain, from_domain)
-        if spf_domain and from_domain
+        if spf_domain and from_domain and spf_result != "unknown"
         else None
     )
     dkim_aligned = (
         same_registered_domain(dkim_domain, from_domain)
-        if dkim_domain and from_domain
+        if dkim_domain and from_domain and dkim_result != "unknown"
         else None
     )
     dmarc_aligned = (
         same_registered_domain(dmarc_domain, from_domain)
-        if dmarc_domain and from_domain
+        if dmarc_domain and from_domain and dmarc_result != "unknown"
         else None
     )
 

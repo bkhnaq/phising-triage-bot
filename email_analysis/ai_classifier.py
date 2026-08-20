@@ -112,7 +112,7 @@ def classify_email(
 
     try:
         local_result = _normalize_result(classify_email_local(email_data, url_items))
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (MemoryError, OSError, RuntimeError, TypeError, ValueError) as exc:
         logger.warning("Local AI call failed (%s)", type(exc).__name__)
         local_result = _base_result(
             error="local model unavailable",

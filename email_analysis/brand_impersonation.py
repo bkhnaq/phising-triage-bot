@@ -22,7 +22,7 @@ Usage:
 import logging
 import re
 
-from email_analysis.domain_utils import any_domain_match, base_label
+from email_analysis.domain_utils import any_domain_match, base_label, registered_domain
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +186,15 @@ _LOOKALIKE_MAP: dict[str, str] = {
 }
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+_IDENTITY_CONTEXT_RE = re.compile(
+    r"\b(?:university|college|bank|company|corporation|help\s*desk|"
+    r"technical\s+support|security\s+(?:team|department)|account)\b",
+    re.IGNORECASE,
+)
+_ORGANIZATION_RE = re.compile(
+    r"\b((?:the\s+)?university\s+of\s+[A-Za-z][A-Za-z .&'-]{1,60})",
+    re.IGNORECASE,
+)
 
 
 class BrandDetector:
@@ -199,6 +208,7 @@ class BrandDetector:
         urls: list[dict],
         from_header: str = "",
         body_text: str = "",
+        recipient_header: str = "",
     ) -> dict:
         """
         Run all brand impersonation checks.
@@ -214,19 +224,118 @@ class BrandDetector:
         domain_findings = self._check_domains(domains)
         display_findings = self._check_display_name(from_header)
         body_findings = self._check_body_brands(body_text, from_header)
+        identity_findings = self._check_sender_identity(
+            urls, from_header, body_text, recipient_header
+        )
 
         total_risk = (
             sum(f["risk_score"] for f in domain_findings)
             + sum(f["risk_score"] for f in display_findings)
             + sum(f["risk_score"] for f in body_findings)
+            + sum(f["risk_score"] for f in identity_findings)
         )
 
         return {
             "domain_impersonation": domain_findings,
             "display_name_spoofing": display_findings,
             "body_brand_mentions": body_findings,
+            "sender_identity_mismatch": identity_findings,
             "risk_score": min(total_risk, 50),
         }
+
+    def _check_sender_identity(
+        self,
+        urls: list[dict],
+        from_header: str,
+        body_text: str,
+        recipient_header: str = "",
+    ) -> list[dict]:
+        """Detect a claimed organization domain that conflicts with the sender.
+
+        A mismatch is emitted only when the same expected domain appears in both
+        a message URL and either a body contact address or recipient domain.
+        Requiring multiple identity cues avoids treating every third-party link
+        as impersonation.
+        """
+        sender_match = _EMAIL_RE.search(from_header)
+        if (
+            not sender_match
+            or not body_text
+            or not _IDENTITY_CONTEXT_RE.search(body_text)
+        ):
+            return []
+
+        sender_domain = sender_match.group(1).lower().rstrip(".")
+        sender_root = registered_domain(sender_domain)
+        url_roots = {
+            registered_domain(
+                str(item.get("registered_domain") or item.get("domain", ""))
+            )
+            for item in urls
+        }
+        body_roots = {
+            registered_domain(match.group(1).lower().rstrip("."))
+            for match in _EMAIL_RE.finditer(body_text)
+        }
+        recipient_roots = {
+            registered_domain(match.group(1).lower().rstrip("."))
+            for match in _EMAIL_RE.finditer(recipient_header)
+        }
+        expected_roots = sorted(
+            root
+            for root in url_roots & (body_roots | recipient_roots)
+            if root and sender_root and root != sender_root
+        )
+        if not expected_roots:
+            return []
+
+        claimed_organization = self._extract_claimed_organization(body_text)
+        claimed_identity = self._extract_claimed_identity(body_text)
+        return [
+            {
+                "type": "sender_identity_mismatch",
+                "claimed_organization": claimed_organization or expected_root,
+                "claimed_identity": claimed_identity,
+                "sender_domain": sender_domain,
+                "expected_domain": expected_root,
+                "detail": (
+                    f"Sender domain {sender_domain} differs from claimed identity "
+                    f"domain {expected_root}"
+                ),
+                "risk": "impersonation / brand spoofing",
+                "risk_score": 20,
+                "source": "email_headers + message_body + url_extraction",
+                "evidence": {
+                    "sender_domain": sender_domain,
+                    "expected_domain": expected_root,
+                    "expected_domain_in_body_contact": expected_root in body_roots,
+                    "expected_domain_in_recipient": expected_root in recipient_roots,
+                    "expected_domain_in_url": expected_root in url_roots,
+                },
+            }
+            for expected_root in expected_roots[:2]
+        ]
+
+    @staticmethod
+    def _extract_claimed_organization(body_text: str) -> str:
+        for line in body_text.splitlines():
+            match = _ORGANIZATION_RE.search(line)
+            if match:
+                return match.group(1).strip(" .|-©")
+        return ""
+
+    @staticmethod
+    def _extract_claimed_identity(body_text: str) -> str:
+        """Prefer a concise support/help-desk identity from the signature."""
+        for line in reversed(body_text.splitlines()):
+            candidate = line.split("|", 1)[0].strip(" .|-©")
+            if not candidate or len(candidate) > 80:
+                continue
+            if re.search(
+                r"\b(?:help\s*desk|support|security\s+team)\b", candidate, re.I
+            ) and not re.match(r"^(?:contact|please|if\b)", candidate, re.I):
+                return candidate
+        return ""
 
     def _check_domains(self, domains: list[str]) -> list[dict]:
         """Check domains for brand keyword presence and lookalike patterns."""

@@ -122,6 +122,7 @@ def run_header_forensics(email_data: dict) -> dict:
         # ── Step 1: Build relay chain ─────────────────────────────────────
         relay_chain = _parse_received_chain(headers)
         result["relay_chain"] = relay_chain
+        result["route_available"] = bool(relay_chain)
 
         # ── Step 2: Identify origin IP ────────────────────────────────────
         origin_ip = _get_origin_ip(relay_chain)
@@ -387,6 +388,7 @@ def _empty_result() -> dict:
         "origin_is_hosting": False,
         "origin_is_proxy": False,
         "relay_chain": [],
+        "route_available": False,
         "from_domain": "",
         "spoofing_detected": False,
         "warnings": [],

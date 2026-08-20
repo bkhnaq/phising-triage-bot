@@ -18,11 +18,18 @@ def build_evidence_bundle(
     attachment_risks: list[dict] | None,
     landing_pages: list[dict] | None,
     domain_intelligence: dict | None,
+    ai_verdict: dict | None = None,
+    url_intelligence: dict | None = None,
 ) -> dict:
     evidence = []
+    suspicious_deceptive_urls = {
+        str(finding.get("url", ""))
+        for finding in (url_intelligence or {}).get("deceptive_links", [])
+        if int(finding.get("risk_score", 0)) > 0
+    }
 
     for check in ("spf", "dkim", "dmarc"):
-        result = str(auth_results.get(check, {}).get("result", "none")).lower()
+        result = str(auth_results.get(check, {}).get("result", "unknown")).lower()
         if result in {"fail", "softfail", "permerror"}:
             evidence.append(
                 make_evidence(
@@ -39,6 +46,41 @@ def build_evidence_bundle(
                     tags=["authentication"],
                 )
             )
+        elif result in {"none", "unknown"}:
+            evidence.append(
+                make_evidence(
+                    category="auth",
+                    source="header_analyzer",
+                    entity_type="email",
+                    indicator=check,
+                    severity="informational",
+                    confidence=1.0,
+                    risk_delta=0,
+                    state="unknown",
+                    summary=f"{check.upper()} result unavailable",
+                    details=auth_results.get(check, {}).get("details", ""),
+                    tags=["authentication", "missing_evidence"],
+                )
+            )
+
+    for finding in auth_results.get("forensics", {}).get("findings", []):
+        finding_type = str(finding.get("type", "header_finding"))
+        risk_delta = int(finding.get("risk_score", 0))
+        evidence.append(
+            make_evidence(
+                category="identity" if "mismatch" in finding_type else "relay",
+                source="header_analyzer",
+                entity_type="email_header",
+                indicator=finding_type,
+                severity="medium" if risk_delta else "informational",
+                confidence=0.85 if risk_delta else 1.0,
+                risk_delta=risk_delta,
+                state="suspicious" if risk_delta else "unknown",
+                summary=finding.get("summary", "Header finding"),
+                details=finding.get("details", ""),
+                tags=[finding_type],
+            )
+        )
 
     for finding in auth_results.get("alignment", {}).get("findings", []):
         evidence.append(
@@ -58,6 +100,28 @@ def build_evidence_bundle(
         )
 
     for url in urls:
+        if url.get("deceptive_hyperlink") and (
+            url_intelligence is None
+            or str(url.get("url", "")) in suspicious_deceptive_urls
+        ):
+            evidence.append(
+                make_evidence(
+                    category="url",
+                    source="html_anchor_analyzer",
+                    entity_type="url",
+                    indicator=url.get("url", ""),
+                    severity="high",
+                    confidence=0.95,
+                    risk_delta=30,
+                    state="suspicious",
+                    summary="Displayed URL differs from actual HREF destination",
+                    details=(
+                        f"displayed={url.get('displayed_url', '')}; "
+                        f"actual={url.get('url', '')}"
+                    ),
+                    tags=["deceptive_link", "credential_delivery"],
+                )
+            )
         if int(url.get("url_risk_score", 0)) <= 0:
             continue
         evidence.append(
@@ -138,6 +202,22 @@ def build_evidence_bundle(
         )
 
     if brand_impersonation:
+        for finding in brand_impersonation.get("sender_identity_mismatch", []):
+            evidence.append(
+                make_evidence(
+                    category="brand_impersonation",
+                    source="sender_identity_detector",
+                    entity_type="domain",
+                    indicator=finding.get("sender_domain", ""),
+                    severity="high",
+                    confidence=0.90,
+                    risk_delta=int(finding.get("risk_score", 0)),
+                    state="suspicious",
+                    summary="Sender domain differs from claimed organization",
+                    details=finding.get("detail", ""),
+                    tags=["brand", "sender_identity_mismatch"],
+                )
+            )
         for finding in brand_impersonation.get("domain_impersonation", []):
             evidence.append(
                 make_evidence(
@@ -154,6 +234,62 @@ def build_evidence_bundle(
                     tags=["brand"],
                 )
             )
+
+    language_weights = {
+        "urgency": 2,
+        "credential_harvesting": 8,
+        "authority": 5,
+        "threats": 5,
+        "financial": 8,
+        "account_verification": 5,
+        "password_expiration": 5,
+        "call_to_action": 3,
+    }
+    for category, finding in (language_analysis or {}).get("categories", {}).items():
+        source_weight = int(finding.get("risk_score", 0))
+        evidence.append(
+            make_evidence(
+                category="content",
+                source="language_analyzer",
+                entity_type="email_body",
+                indicator=category,
+                severity=(
+                    "medium"
+                    if category
+                    in {
+                        "credential_harvesting",
+                        "account_verification",
+                        "password_expiration",
+                        "financial",
+                    }
+                    else "low"
+                ),
+                confidence=0.75,
+                risk_delta=min(language_weights.get(category, 3), source_weight),
+                state="suspicious",
+                summary=finding.get("description", category),
+                details=", ".join(finding.get("matches", [])[:5]),
+                tags=["language", category],
+            )
+        )
+
+    if ai_verdict and not ai_verdict.get("error"):
+        label = str(ai_verdict.get("verdict", "unknown")).lower()
+        evidence.append(
+            make_evidence(
+                category="ai_ml",
+                source=str(ai_verdict.get("provider", "ai_classifier")),
+                entity_type="email",
+                indicator=label,
+                severity="medium" if label == "phishing" else "informational",
+                confidence=float(ai_verdict.get("confidence", 0.0)),
+                risk_delta=0,
+                state="suspicious" if label == "phishing" else label,
+                summary=f"AI classifier verdict: {label}",
+                details="; ".join(ai_verdict.get("reasons", [])[:3]),
+                tags=["ai_ml"],
+            )
+        )
 
     for finding in attachment_risks or []:
         evidence.append(
@@ -221,44 +357,125 @@ def build_evidence_bundle(
 
 
 def _correlate(evidence: list, language_analysis: dict | None) -> list[dict]:
-    categories = {item.category for item in evidence}
+    # Unknown/unavailable observations are useful for completeness, but they must
+    # never satisfy a malicious-evidence correlation rule.
+    categories = {
+        item.category
+        for item in evidence
+        if item.state in {"suspicious", "malicious"} and item.risk_delta > 0
+    }
     correlations: list[dict] = []
+    tags = {tag for item in evidence for tag in item.tags}
+    language_categories = set((language_analysis or {}).get("categories", {}))
 
-    if {"auth", "credential_harvesting", "brand_impersonation"} <= categories:
+    def add(
+        finding_type: str,
+        summary: str,
+        risk_score: int,
+        confidence: float,
+        evidence_lines: list[str],
+    ) -> None:
         correlations.append(
             {
-                "type": "brand_credential_phish",
-                "summary": "Auth anomaly, brand impersonation, and credential harvesting co-occur",
-                "risk_score": 20,
+                "type": finding_type,
+                "name": summary,
+                "summary": summary,
+                "severity": "high" if risk_score >= 12 else "medium",
+                "confidence": confidence,
+                "source": "correlation_engine",
+                "evidence": evidence_lines,
+                "risk_score": risk_score,
+                "status": "detected",
             }
+        )
+
+    credential_language = bool(
+        {"credential_harvesting", "account_verification"} & language_categories
+    )
+    authority_language = "authority" in language_categories
+    if (
+        "sender_identity_mismatch" in tags
+        and credential_language
+        and authority_language
+    ):
+        evidence_lines = [
+            "Sender domain differs from the claimed organization",
+            "Message requests account authentication or reactivation",
+            "Authority/help-desk impersonation language is present",
+        ]
+        if "password_expiration" in language_categories:
+            evidence_lines.append("Password-expiration lure is present")
+        add(
+            "organization_credential_phishing",
+            "Organization credential-phishing pattern",
+            15,
+            0.90,
+            evidence_lines,
+        )
+
+    if "deceptive_link" in tags and credential_language:
+        add(
+            "deceptive_credential_link",
+            "Deceptive hyperlink reinforces a credential-phishing request",
+            15,
+            0.95,
+            [
+                "Displayed URL domain differs from the actual HREF domain",
+                "Message contains credential/account verification language",
+            ],
+        )
+
+    if "reply_to_mismatch" in tags and "financial" in language_categories:
+        add(
+            "reply_to_payment_fraud",
+            "Reply-To mismatch combined with a payment request",
+            12,
+            0.85,
+            ["Reply-To differs from From", "Financial pressure language is present"],
+        )
+
+    if {"auth", "credential_harvesting", "brand_impersonation"} <= categories:
+        add(
+            "brand_credential_phish",
+            "Auth anomaly, brand impersonation, and credential harvesting co-occur",
+            15,
+            0.90,
+            [
+                "Authentication anomaly",
+                "Brand impersonation",
+                "Credential collection evidence",
+            ],
         )
 
     if "landing_page" in categories and "brand_impersonation" in categories:
-        correlations.append(
-            {
-                "type": "brand_landing_page",
-                "summary": "Brand impersonation is reinforced by suspicious landing-page evidence",
-                "risk_score": 15,
-            }
+        add(
+            "brand_landing_page",
+            "Brand impersonation is reinforced by suspicious landing-page evidence",
+            15,
+            0.90,
+            ["Brand impersonation", "Suspicious landing-page evidence"],
         )
 
     if "domain" in categories and ("url" in categories or "landing_page" in categories):
-        correlations.append(
-            {
-                "type": "young_obfuscated_landing",
-                "summary": "Young domain combined with URL or landing-page suspicious indicators",
-                "risk_score": 12,
-            }
+        add(
+            "young_obfuscated_landing",
+            "Young domain combined with URL or landing-page suspicious indicators",
+            12,
+            0.80,
+            ["Young domain", "Suspicious URL or landing page"],
         )
 
     if language_analysis and language_analysis.get("total_matches", 0) >= 3:
         if "credential_harvesting" in categories or "landing_page" in categories:
-            correlations.append(
-                {
-                    "type": "language_plus_credential_collection",
-                    "summary": "Phishing language reinforces credential collection evidence",
-                    "risk_score": 8,
-                }
+            add(
+                "language_plus_credential_collection",
+                "Phishing language reinforces credential collection evidence",
+                8,
+                0.80,
+                [
+                    "Multiple phishing-language categories",
+                    "Credential collection evidence",
+                ],
             )
 
     return correlations[:5]

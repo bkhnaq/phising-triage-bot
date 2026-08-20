@@ -40,4 +40,10 @@ ehthumbs.db
 dist/
 build/
 *.egg-info/
+
+# Test and quality-tool caches
+.pytest_cache/
+.ruff_cache/
 .mypy_cache/
+.coverage
+htmlcov/

@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from urllib3.exceptions import HTTPError
 
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.domain_utils import registered_domain
 from email_analysis.safe_http import SafeHTTPError, fetch_url
 from email_analysis.url_utils import analyze_url
 from threat_intel.cache import TTLCache
@@ -71,6 +72,7 @@ def extract_urls(
             - expanded_url: resolved URL if shortened, else same as url
     """
     raw_urls = sorted(_collect_raw_urls(body_text, body_html))
+    link_relationships = _extract_link_relationships(body_html)
     if max_urls is not None:
         raw_urls = raw_urls[: max(0, max_urls)]
 
@@ -85,6 +87,7 @@ def extract_urls(
         is_shortened = domain.lower() in _SHORTENER_DOMAINS
         expanded = _expand_url(url) if is_shortened else url
 
+        link_evidence = _best_link_evidence(url, link_relationships)
         results.append(
             {
                 "url": url,
@@ -99,6 +102,7 @@ def extract_urls(
                 "has_userinfo": url_analysis.has_userinfo,
                 "is_punycode": url_analysis.is_punycode,
                 "is_ip_host": url_analysis.is_ip_host,
+                **link_evidence,
             }
         )
 
@@ -125,20 +129,43 @@ def _collect_raw_urls(body_text: str, body_html: str) -> set[str]:
 
 
 class _LinkParser(HTMLParser):
-    """Simple HTML parser that collects href values and text URLs."""
+    """Collect hrefs, visible URLs, and anchor text-to-target relationships."""
 
     def __init__(self):
         super().__init__()
         self.urls: list[str] = []
+        self.link_relationships: list[dict] = []
+        self._anchor_href: str | None = None
+        self._anchor_text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
         if tag == "a":
+            self._anchor_href = None
+            self._anchor_text = []
             for attr_name, attr_value in attrs:
-                if attr_name == "href" and attr_value:
-                    self.urls.append(attr_value)
+                if attr_name.lower() == "href" and attr_value:
+                    self._anchor_href = attr_value.strip()
+                    self.urls.append(self._anchor_href)
 
     def handle_data(self, data: str):
         self.urls.extend(_URL_REGEX.findall(data))
+        if self._anchor_href is not None:
+            self._anchor_text.append(data)
+
+    def handle_endtag(self, tag: str):
+        if tag.lower() != "a" or self._anchor_href is None:
+            return
+        visible_text = " ".join(self._anchor_text).strip()
+        for displayed_url in _URL_REGEX.findall(visible_text):
+            self.link_relationships.append(
+                {
+                    "href": self._anchor_href,
+                    "displayed_url": displayed_url,
+                    "anchor_text": visible_text,
+                }
+            )
+        self._anchor_href = None
+        self._anchor_text = []
 
 
 def _extract_urls_from_html(html: str) -> list[str]:
@@ -146,6 +173,62 @@ def _extract_urls_from_html(html: str) -> list[str]:
     parser = _LinkParser()
     parser.feed(html)
     return parser.urls
+
+
+def _extract_link_relationships(html: str) -> list[dict]:
+    """Return URL-like anchor text paired with its actual href target."""
+    if not html:
+        return []
+    parser = _LinkParser()
+    try:
+        parser.feed(html)
+    except (UnicodeError, ValueError):
+        logger.debug("Could not parse HTML anchor relationships")
+        return []
+    return parser.link_relationships
+
+
+def _best_link_evidence(url: str, relationships: list[dict]) -> dict:
+    """Describe whether an HTML anchor's displayed URL matches its target."""
+    relevant = [item for item in relationships if item.get("href") == url]
+    if not relevant:
+        return {
+            "link_target_comparison": "unavailable",
+            "deceptive_hyperlink": False,
+        }
+
+    candidates: list[dict] = []
+    for item in relevant:
+        displayed_url = str(item.get("displayed_url", ""))
+        try:
+            actual_domain = (urlparse(url).hostname or "").lower()
+            displayed_domain = (urlparse(displayed_url).hostname or "").lower()
+            actual_root = registered_domain(actual_domain)
+            displayed_root = registered_domain(displayed_domain)
+        except (UnicodeError, ValueError):
+            continue
+        if not actual_root or not displayed_root:
+            continue
+        mismatch = actual_root != displayed_root
+        candidates.append(
+            {
+                "link_target_comparison": "mismatch" if mismatch else "match",
+                "deceptive_hyperlink": mismatch,
+                "displayed_url": displayed_url,
+                "displayed_domain": displayed_domain,
+                "actual_domain": actual_domain,
+                "anchor_text": str(item.get("anchor_text", ""))[:500],
+            }
+        )
+
+    if not candidates:
+        return {
+            "link_target_comparison": "unavailable",
+            "deceptive_hyperlink": False,
+        }
+    return next(
+        (item for item in candidates if item["deceptive_hyperlink"]), candidates[0]
+    )
 
 
 # ── Helpers ──────────────────────────────────────────────────

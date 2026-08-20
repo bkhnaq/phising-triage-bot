@@ -65,6 +65,8 @@ URL fetch chặn địa chỉ private/mixed DNS, pin public IP đã xác thực,
 
 Classifier local-first tùy chọn dùng artifact `jhu-clsp/mmBERT-small` đã promote. Model weights được chủ động không lưu trong Git. Nếu artifact hoặc ML dependency chưa có, report hiển thị trạng thái AI unavailable nhưng bằng chứng deterministic vẫn chạy.
 
+Model được cache một lần trong mỗi Python process. Nếu chạy đồng thời bot, API và CLI thì mỗi process sẽ nạp một bản model riêng; trên máy demo ít RAM, chỉ nên chạy một process local-AI hoặc tắt local AI cho CLI phụ.
+
 Kết quả local đã kiểm chứng gần nhất (seed 42, ngày 09/08/2026):
 
 | Tập test | Macro F1 | Phishing recall | False-positive rate |
@@ -86,7 +88,7 @@ python -m ml.train_mmbert --data-dir data/processed/phishing --output-dir artifa
 python -m ml.promote manifest --candidate artifacts/mmbert-candidate
 python -m ml.train_mmbert --data-dir data/processed/phishing --initial-model-dir artifacts/mmbert-candidate --output-dir artifacts/mmbert-candidate-v2 --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --max-length 256 --epochs 1 --learning-rate 3e-6 --seed 42
 python -m ml.promote manifest --candidate artifacts/mmbert-candidate-v2
-python -m ml.promote promote --candidate artifacts/mmbert-candidate-v2 --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
+python -m ml.promote promote --candidate artifacts/mmbert-candidate-v2 --target artifacts/models/phishing-mmbert-v2 --baseline-metrics artifacts/baseline-full/metrics.json
 ```
 
 Promotion sẽ bị từ chối nếu hiệu năng tiếng Anh không vượt baseline hoặc một trong hai language slice không đạt gate recall/FPR. Candidate fail vẫn được giữ để warm-start với learning rate thấp, không ghi đè model active.
@@ -139,7 +141,7 @@ Build image local-AI CPU tùy chọn và mount weights read-only:
 
 ```powershell
 docker build --build-arg INSTALL_LOCAL_AI=true -t phishing-triage-bot:ai .
-docker run --rm --env-file .env -v "${PWD}/artifacts/models/phishing-mmbert:/app/artifacts/models/phishing-mmbert:ro" phishing-triage-bot:ai
+docker run --rm --env-file .env -v "${PWD}/artifacts/models/phishing-mmbert-v2:/app/artifacts/models/phishing-mmbert-v2:ro" phishing-triage-bot:ai
 ```
 
 ## Kiểm thử và kiểm soát bảo mật
@@ -157,7 +159,7 @@ GitHub Actions kiểm tra Python 3.12/3.13, smoke CLI offline và core Docker bu
 
 ## Kết quả model và giới hạn
 
-Kết quả evaluation đã promote: English macro-F1 **0.9812**, phishing recall **0.9761**, FPR **0.0141**. Evaluation bằng **dữ liệu tiếng Việt tổng hợp** đạt macro-F1 **0.8789**, recall **0.94**, FPR **0.1818**.
+Kết quả evaluation đã promote: English macro-F1 **0.9888**, phishing recall **0.9847**, FPR **0.0076**. Evaluation bằng **dữ liệu tiếng Việt tổng hợp** đạt macro-F1 **0.8800**, recall **0.8600**, FPR **0.1000**.
 
 Kết quả tiếng Việt tổng hợp chỉ phù hợp để regression evaluation, không chứng minh độ chính xác production. Output model là một nguồn bằng chứng cùng với các signal deterministic, nên vẫn cần analyst xác thực.
 

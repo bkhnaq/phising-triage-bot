@@ -208,10 +208,11 @@ class PhishingPipeline:
             analysis_limits["urls_truncated"] = (
                 analysis_limits["urls_truncated"] or qr_urls_truncated
             )
-            all_domains = self._extract_unique_domains(all_urls)
-
             # Stage 9: URL intelligence (shorteners + redirect chains)
             url_intel = url_intel_analyze(all_urls)
+            all_domains = self._collect_context_domains(
+                auth_results, all_urls, url_intel
+            )
 
             # Stage 10: Domain intelligence
             domain_intel = analyze_domain_intelligence(all_domains)
@@ -221,7 +222,8 @@ class PhishingPipeline:
             brand_results = brand_detector.analyze(
                 all_urls,
                 from_header=email_data.get("from", ""),
-                body_text=email_data.get("body_text", ""),
+                body_text=body_text,
+                recipient_header=email_data.get("to", ""),
             )
 
             # Stage 12: Threat intelligence
@@ -279,6 +281,8 @@ class PhishingPipeline:
                 attachment_risks=attachment_risks,
                 landing_pages=landing_pages,
                 domain_intelligence=domain_intel,
+                ai_verdict=ai_verdict,
+                url_intelligence=url_intel,
             )
 
             # Stage 14: Risk scoring
@@ -303,6 +307,8 @@ class PhishingPipeline:
                 domain_intelligence=domain_intel,
                 landing_pages=landing_pages,
                 evidence_bundle=evidence_bundle,
+                email_data=email_data,
+                urls=all_urls,
             )
 
             # Stage 15: Report generation
@@ -450,6 +456,33 @@ class PhishingPipeline:
         return domains
 
     @staticmethod
+    def _collect_context_domains(
+        auth_results: dict,
+        urls: list[dict],
+        url_intelligence: dict | None,
+    ) -> list[str]:
+        """Collect sender/path/URL domains in SOC investigation priority order."""
+        candidates: list[str] = []
+        forensics = auth_results.get("forensics", {})
+        for key in ("from_domain", "reply_to_domain", "return_path_domain"):
+            candidates.append(str(forensics.get(key, "")))
+        candidates.extend(str(item.get("domain", "")) for item in urls)
+        for finding in (url_intelligence or {}).get("redirect_findings", []):
+            candidates.append(str(finding.get("final_domain", "")))
+            candidates.extend(
+                str(domain) for domain in finding.get("intermediate_domains", [])
+            )
+
+        seen: set[str] = set()
+        domains: list[str] = []
+        for candidate in candidates:
+            domain = candidate.lower().split(":", 1)[0].strip().rstrip(".")
+            if domain and domain not in seen:
+                seen.add(domain)
+                domains.append(domain)
+        return domains
+
+    @staticmethod
     def _extract_unique_hashes(attachments: list[dict]) -> list[str]:
         seen: set[str] = set()
         hashes: list[str] = []
@@ -552,10 +585,10 @@ class PhishingPipeline:
 
         # Auth status findings
         for check in ("spf", "dkim", "dmarc"):
-            result = auth_results.get(check, {}).get("result", "none")
+            result = auth_results.get(check, {}).get("result", "unknown")
             if result in ("fail", "softfail"):
                 findings.append(f"{check.upper()} {result}")
-            elif result == "none":
+            elif result in ("none", "unknown"):
                 findings.append(f"{check.upper()} unavailable")
 
         # Header forensics findings
@@ -592,6 +625,11 @@ class PhishingPipeline:
 
         # Brand impersonation (comprehensive)
         if brand_results:
+            for f in brand_results.get("sender_identity_mismatch", [])[:2]:
+                findings.append(
+                    "Sender identity mismatch: "
+                    f"{f.get('sender_domain', '?')} vs {f.get('expected_domain', '?')}"
+                )
             for f in brand_results.get("domain_impersonation", [])[:2]:
                 findings.append(f"Brand domain: {f['brand']} in {f['domain']}")
             for f in brand_results.get("display_name_spoofing", [])[:2]:
@@ -604,6 +642,12 @@ class PhishingPipeline:
 
         # ESP/tracking context (helps avoid classifying known marketing trackers as malicious by default)
         if url_intelligence:
+            for f in url_intelligence.get("deceptive_links", [])[:2]:
+                findings.append(
+                    "Deceptive hyperlink: "
+                    f"{f.get('displayed_domain', '?')} displayed, "
+                    f"{f.get('actual_domain', '?')} opened"
+                )
             for f in url_intelligence.get("esp_findings", [])[:3]:
                 provider = f.get("provider", "ESP")
                 if f.get("is_tracking"):

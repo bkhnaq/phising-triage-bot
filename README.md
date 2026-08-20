@@ -66,6 +66,8 @@ Network URL fetching rejects private/mixed DNS answers, pins validated public IP
 
 The optional local-first classifier uses a promoted `jhu-clsp/mmBERT-small` artifact. Weights are intentionally not stored in Git. When the artifact or ML dependencies are unavailable, the report exposes that AI is unavailable while deterministic evidence still runs.
 
+The model is cached once per Python process. Running the bot, API, and CLI at the same time loads a separate model copy in each process; on a memory-constrained demo machine, run one local-AI process at a time or disable local AI for secondary CLI runs.
+
 Latest verified local run (seed 42, 9 August 2026):
 
 | Test slice | Macro F1 | Phishing recall | False-positive rate |
@@ -87,7 +89,7 @@ python -m ml.train_mmbert --data-dir data/processed/phishing --output-dir artifa
 python -m ml.promote manifest --candidate artifacts/mmbert-candidate
 python -m ml.train_mmbert --data-dir data/processed/phishing --initial-model-dir artifacts/mmbert-candidate --output-dir artifacts/mmbert-candidate-v2 --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --train-augmentation data/processed/phishing/train.vi.jsonl --validation-augmentation data/processed/phishing/validation.vi.jsonl --test-augmentation data/processed/phishing/test.vi.jsonl --max-length 256 --epochs 1 --learning-rate 3e-6 --seed 42
 python -m ml.promote manifest --candidate artifacts/mmbert-candidate-v2
-python -m ml.promote promote --candidate artifacts/mmbert-candidate-v2 --target artifacts/models/phishing-mmbert --baseline-metrics artifacts/baseline-full/metrics.json
+python -m ml.promote promote --candidate artifacts/mmbert-candidate-v2 --target artifacts/models/phishing-mmbert-v2 --baseline-metrics artifacts/baseline-full/metrics.json
 ```
 
 Promotion is intentionally refused unless English performance beats the baseline and both language slices meet recall/FPR gates. A failed candidate remains available for an auditable low-learning-rate warm start rather than replacing the active model.
@@ -142,7 +144,7 @@ Build the optional CPU local-AI image and mount weights read-only:
 
 ```powershell
 docker build --build-arg INSTALL_LOCAL_AI=true -t phishing-triage-bot:ai .
-docker run --rm --env-file .env -v "${PWD}/artifacts/models/phishing-mmbert:/app/artifacts/models/phishing-mmbert:ro" phishing-triage-bot:ai
+docker run --rm --env-file .env -v "${PWD}/artifacts/models/phishing-mmbert-v2:/app/artifacts/models/phishing-mmbert-v2:ro" phishing-triage-bot:ai
 ```
 
 ## Testing and Security Controls
@@ -160,7 +162,7 @@ GitHub Actions runs this quality/security gate on Python 3.12 and 3.13, plus an 
 
 ## Model Results and Limitations
 
-The promoted evaluation measured English macro-F1 **0.9812**, phishing recall **0.9761**, and false-positive rate **0.0141**. Its synthetic Vietnamese evaluation measured macro-F1 **0.8789**, recall **0.94**, and false-positive rate **0.1818**.
+The promoted evaluation measured English macro-F1 **0.9888**, phishing recall **0.9847**, and false-positive rate **0.0076**. Its synthetic Vietnamese evaluation measured macro-F1 **0.8800**, recall **0.8600**, and false-positive rate **0.1000**.
 
 Synthetic Vietnamese results are useful for regression evaluation only; they do not establish production accuracy. Model output is one input to the deterministic, explainable SOC triage evidence and must be human-validated.
 

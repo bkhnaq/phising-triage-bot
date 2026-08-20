@@ -207,6 +207,24 @@ def test_offline_and_local_unavailable_returns_without_network(
     assert routed["error"] == "local model artifact not found"
 
 
+def test_local_memory_error_is_contained_in_offline_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ai, "OFFLINE_MODE", True)
+
+    def out_of_memory(*_args: object) -> dict[str, object]:
+        raise MemoryError("sensitive allocation details")
+
+    monkeypatch.setattr(ai, "classify_email_local", out_of_memory)
+
+    routed = ai.classify_email({})
+
+    assert routed["verdict"] == "unknown"
+    assert routed["provider"] == "local"
+    assert routed["error"] == "local model unavailable"
+    assert "sensitive allocation details" not in str(routed)
+
+
 def test_disabled_local_ai_keeps_groq_only_behavior(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

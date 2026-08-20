@@ -7,7 +7,7 @@ Refactored scoring that keeps three dimensions separate:
   - confidence        (0.0-1.0): confidence in classification
   - data_completeness (0-100): evidence availability/coverage
 
-Missing data (e.g. SPF/DKIM/DMARC="none" or missing Received chain)
+Missing data (e.g. SPF/DKIM/DMARC="unknown" or missing Received chain)
 is treated as incomplete evidence, not direct phishing evidence.
 """
 
@@ -25,6 +25,8 @@ _RULE_CATEGORIES = (
     "URL behavior",
     "brand impersonation",
     "content/language",
+    "threat intelligence",
+    "AI / ML",
     "attachment/malware",
     "correlation",
 )
@@ -32,16 +34,19 @@ _RULE_CATEGORIES = (
 _CATEGORY_CAPS = {
     "auth checks": 30,
     "URL behavior": 40,
-    "brand impersonation": 35,
-    "content/language": 20,
+    "brand impersonation": 25,
+    "content/language": 15,
+    "threat intelligence": 25,
+    "AI / ML": 15,
     "attachment/malware": 40,
-    "correlation": 30,
+    "correlation": 15,
 }
 
 _AUTH_STATUS_WEIGHTS = {
     "spf": {
         "pass": 0,
         "none": 0,
+        "unknown": 0,
         "softfail": 5,
         "neutral": 2,
         "temperror": 4,
@@ -51,6 +56,7 @@ _AUTH_STATUS_WEIGHTS = {
     "dkim": {
         "pass": 0,
         "none": 0,
+        "unknown": 0,
         "neutral": 1,
         "temperror": 3,
         "permerror": 4,
@@ -60,6 +66,7 @@ _AUTH_STATUS_WEIGHTS = {
     "dmarc": {
         "pass": 0,
         "none": 0,
+        "unknown": 0,
         "bestguesspass": 0,
         "softfail": 6,
         "temperror": 4,
@@ -100,6 +107,8 @@ def calculate_risk(
     domain_intelligence: dict | None = None,
     landing_pages: list[dict] | None = None,
     evidence_bundle: dict | None = None,
+    email_data: dict | None = None,
+    urls: list[dict] | None = None,
 ) -> dict:
     """Calculate risk score, confidence, and data completeness."""
     category_scores: dict[str, int] = {k: 0 for k in _RULE_CATEGORIES}
@@ -116,10 +125,11 @@ def calculate_risk(
         otx_reports,
         header_forensics,
         completeness_breakdown,
+        email_data=email_data,
+        urls=urls,
+        domain_intelligence=domain_intelligence,
     )
     category_scores["data completeness"] = data_completeness
-    suspicious_url_keyword_count = 0
-    high_confidence_ai_phishing = False
 
     # ── 1) Auth checks (none != fail) ────────────────────────
     for check in ("spf", "dkim", "dmarc"):
@@ -164,14 +174,14 @@ def calculate_risk(
     for report in url_reports:
         url = report.get("url", "")
         if report.get("malicious", 0) > 0:
-            category_scores["URL behavior"] += 20
+            category_scores["threat intelligence"] += 20
             suspicious_url_lookup.add(url)
             breakdown.append(
                 f"Malicious URL: {url or '?'} ({report.get('malicious', 0)} engines) (+20)"
             )
             strong_signals += 1
         elif report.get("suspicious", 0) > 0:
-            category_scores["URL behavior"] += 8
+            category_scores["threat intelligence"] += 8
             suspicious_url_lookup.add(url)
             breakdown.append(f"Suspicious URL: {url or '?'} (+8)")
             weak_signals += 1
@@ -217,6 +227,16 @@ def calculate_risk(
             breakdown.append(f"Suspicious endpoint keywords in URL (+{pts})")
             weak_signals += 1
 
+        for finding in url_intelligence.get("deceptive_links", []):
+            pts = min(30, int(finding.get("risk_score", 0)))
+            if pts <= 0:
+                continue
+            category_scores["URL behavior"] += pts
+            breakdown.append(
+                "Deceptive hyperlink: displayed domain differs from HREF " f"(+{pts})"
+            )
+            strong_signals += 1
+
     # ── 3) ESP detection and contradiction handling ──────────
     expected_roots = _expected_context_roots(auth_results, brand_impersonation)
     if url_intelligence:
@@ -257,6 +277,18 @@ def calculate_risk(
 
     # ── 4) Brand impersonation ───────────────────────────────
     if brand_impersonation:
+        for finding in brand_impersonation.get("sender_identity_mismatch", []):
+            pts = min(20, int(finding.get("risk_score", 0)))
+            if pts <= 0:
+                continue
+            category_scores["brand impersonation"] += pts
+            breakdown.append(
+                "Sender identity mismatch: "
+                f"{finding.get('sender_domain', '?')} vs "
+                f"{finding.get('expected_domain', '?')} (+{pts})"
+            )
+            strong_signals += 1
+
         for finding in brand_impersonation.get("domain_impersonation", []):
             pts = int(finding.get("risk_score", 0))
             if pts <= 0:
@@ -294,12 +326,10 @@ def calculate_risk(
             seen_suspicious_keywords.add(keyword)
 
             base_pts = int(finding.get("risk_score", 0))
-            # URL/domain keywords are noisy individually, but clustered account/login/verify
-            # wording is meaningful URL behavior.
-            pts = max(1, min(6, int(base_pts * 0.40))) if base_pts > 0 else 0
+            # A single URL token is weak context, not a phishing conclusion.
+            pts = 1 if base_pts > 0 else 0
             if pts <= 0:
                 continue
-            suspicious_url_keyword_count += 1
             category_scores["URL behavior"] += pts
             breakdown.append(
                 f"Keyword indicator '{finding.get('keyword', '?')}' (+{pts})"
@@ -312,13 +342,18 @@ def calculate_risk(
             cat_risk = int(cat_info.get("risk_score", 0))
             if cat_risk <= 0:
                 continue
-            if cat_name == "urgency":
-                # Urgency is explicitly weak signal.
-                pts = min(2, cat_risk)
-                weak_signals += 1
-            else:
-                pts = min(8, cat_risk)
-                weak_signals += 1
+            max_by_category = {
+                "urgency": 2,
+                "credential_harvesting": 8,
+                "authority": 5,
+                "threats": 5,
+                "financial": 8,
+                "account_verification": 5,
+                "password_expiration": 5,
+                "call_to_action": 3,
+            }
+            pts = min(max_by_category.get(cat_name, 3), cat_risk)
+            weak_signals += 1
             category_scores["content/language"] += pts
             breakdown.append(f"Language pattern: {cat_name} (+{pts})")
 
@@ -327,25 +362,30 @@ def calculate_risk(
         ai_conf = _clamp(float(ai_verdict.get("confidence", 0.0)), 0.0, 1.0)
 
         if ai_label == "phishing":
-            pts = int(round(10 + 10 * ai_conf))
-            category_scores["content/language"] += pts
+            if ai_conf >= 0.95:
+                pts = 15
+            elif ai_conf >= 0.80:
+                pts = 10
+            elif ai_conf >= 0.60:
+                pts = 5
+            else:
+                pts = 0
+            category_scores["AI / ML"] += pts
             breakdown.append(f"AI phishing verdict (confidence={ai_conf:.0%}) (+{pts})")
             if ai_conf >= 0.75:
-                high_confidence_ai_phishing = True
                 strong_signals += 1
             else:
                 weak_signals += 1
         elif ai_label == "suspicious":
-            pts = int(round(3 + 4 * ai_conf))
-            category_scores["content/language"] += pts
+            pts = 5 if ai_conf >= 0.80 else 3 if ai_conf >= 0.60 else 0
+            category_scores["AI / ML"] += pts
             breakdown.append(
                 f"AI suspicious verdict (confidence={ai_conf:.0%}) (+{pts})"
             )
             weak_signals += 1
         elif ai_label == "legitimate" and ai_conf >= 0.60:
-            category_scores["ESP detection"] -= 4
             breakdown.append(
-                f"AI legitimate verdict support (confidence={ai_conf:.0%}) (-4)"
+                f"AI legitimate verdict recorded (confidence={ai_conf:.0%}, no risk reduction)"
             )
 
     if credential_harvesting and credential_harvesting.get("detected"):
@@ -358,7 +398,7 @@ def calculate_risk(
     # ── 6) Attachment/malware ────────────────────────────────
     for report in hash_reports:
         if report.get("malicious", 0) > 0:
-            category_scores["attachment/malware"] += 25
+            category_scores["threat intelligence"] += 25
             breakdown.append(
                 f"Malicious attachment hash ({report.get('malicious', 0)} engines) (+25)"
             )
@@ -384,15 +424,15 @@ def calculate_risk(
             continue
         pts = 10
         if report.get("sha256"):
-            category_scores["attachment/malware"] += pts
+            category_scores["threat intelligence"] += pts
             breakdown.append(f"OTX pulse hit for attachment hash (+{pts})")
             strong_signals += 1
         elif report.get("url"):
-            category_scores["URL behavior"] += pts
+            category_scores["threat intelligence"] += pts
             breakdown.append(f"OTX pulse hit for URL (+{pts})")
             weak_signals += 1
         else:
-            category_scores["URL behavior"] += pts
+            category_scores["threat intelligence"] += pts
             breakdown.append(f"OTX pulse hit for domain (+{pts})")
             weak_signals += 1
 
@@ -402,7 +442,7 @@ def calculate_risk(
             pts = int(finding.get("risk_score", 0))
             if pts <= 0:
                 continue
-            category_scores["URL behavior"] += pts
+            category_scores["threat intelligence"] += pts
             breakdown.append(f"Blacklisted infrastructure IP (+{pts})")
             weak_signals += 1
 
@@ -411,7 +451,7 @@ def calculate_risk(
             pts = int(finding.get("risk_score", 0))
             if pts <= 0:
                 continue
-            category_scores["URL behavior"] += pts
+            category_scores["threat intelligence"] += pts
             breakdown.append(f"Suspicious shared hosting density (+{pts})")
             weak_signals += 1
 
@@ -464,30 +504,6 @@ def calculate_risk(
                 strong_signals += 1
             else:
                 weak_signals += 1
-
-    if high_confidence_ai_phishing and language_analysis:
-        categories = language_analysis.get("categories", {})
-        has_credential_language = "credential_harvesting" in categories
-        has_threat_language = "threats" in categories
-        if has_credential_language and (
-            has_threat_language or suspicious_url_keyword_count >= 2
-        ):
-            pts = 18
-            category_scores["correlation"] += pts
-            breakdown.append(
-                "Correlated evidence: AI phishing verdict aligns with credential/threat language (+18)"
-            )
-            strong_signals += 1
-
-    if suspicious_url_keyword_count >= 3 and language_analysis:
-        categories = language_analysis.get("categories", {})
-        if "credential_harvesting" in categories or "threats" in categories:
-            pts = 10
-            category_scores["correlation"] += pts
-            breakdown.append(
-                "Correlated evidence: suspicious URL wording matches phishing language (+10)"
-            )
-            strong_signals += 1
 
     if evidence_bundle:
         for evidence in evidence_bundle.get("evidence", []):
@@ -561,6 +577,8 @@ def calculate_risk(
         "URL behavior",
         "brand impersonation",
         "content/language",
+        "threat intelligence",
+        "AI / ML",
         "attachment/malware",
         "correlation",
     ):
@@ -571,18 +589,44 @@ def calculate_risk(
         _clamp(category_scores["ESP detection"], _ESP_MITIGATION_MIN, 10)
     )
 
+    category_details = {
+        category: {
+            "raw_subtotal": category_scores[category],
+            "category_maximum": _CATEGORY_CAPS[category],
+            "effective_contribution": capped_scores[category],
+            "suppressed_duplicate_weight": max(
+                0, category_scores[category] - capped_scores[category]
+            ),
+        }
+        for category in _CATEGORY_CAPS
+    }
+    category_details["ESP detection"] = {
+        "raw_subtotal": category_scores["ESP detection"],
+        "category_maximum": 10,
+        "category_minimum": _ESP_MITIGATION_MIN,
+        "effective_contribution": capped_scores["ESP detection"],
+        "suppressed_duplicate_weight": max(
+            0,
+            abs(category_scores["ESP detection"]) - abs(capped_scores["ESP detection"]),
+        ),
+    }
+
     risk_score = (
         capped_scores["auth checks"]
         + capped_scores["URL behavior"]
         + capped_scores["brand impersonation"]
         + capped_scores["content/language"]
+        + capped_scores["threat intelligence"]
+        + capped_scores["AI / ML"]
         + capped_scores["attachment/malware"]
         + capped_scores["correlation"]
         + capped_scores["ESP detection"]
     )
-    risk_score = int(_clamp(risk_score, 0, 100))
+    bounded_risk_score = int(_clamp(risk_score, 0, 100))
+    pre_limit_score = risk_score
+    risk_score = bounded_risk_score
 
-    confidence = _compute_confidence(
+    confidence, confidence_notes = _compute_confidence(
         risk_score,
         data_completeness,
         capped_scores,
@@ -608,8 +652,17 @@ def calculate_risk(
         "confidence": confidence,
         "data_completeness": data_completeness,
         "category_scores": capped_scores,
+        "raw_category_scores": category_scores,
+        "category_details": category_details,
+        "score_reconciliation": {
+            "raw_effective_total": pre_limit_score,
+            "score_maximum": 100,
+            "final_score": risk_score,
+            "suppressed_overall_weight": max(0, pre_limit_score - risk_score),
+        },
         "breakdown": breakdown,
         "completeness_breakdown": completeness_breakdown,
+        "confidence_notes": confidence_notes,
     }
 
 
@@ -620,13 +673,30 @@ def _compute_data_completeness(
     otx_reports: list[dict],
     header_forensics: dict | None,
     completeness_breakdown: list[str],
+    *,
+    email_data: dict | None = None,
+    urls: list[dict] | None = None,
+    domain_intelligence: dict | None = None,
 ) -> int:
     """Compute evidence completeness separately from risk."""
+    if email_data is not None:
+        return _compute_detailed_completeness(
+            auth_results,
+            url_reports,
+            hash_reports,
+            otx_reports,
+            header_forensics,
+            completeness_breakdown,
+            email_data,
+            urls or [],
+            domain_intelligence or {},
+        )
+
     score = 100
 
     for check in ("spf", "dkim", "dmarc"):
-        status = _status(auth_results.get(check, {}).get("result", "none"))
-        if status == "none":
+        status = _status(auth_results.get(check, {}).get("result", "unknown"))
+        if status in {"none", "unknown"}:
             score -= _DATA_COMPLETENESS_PENALTIES["auth_none"]
             completeness_breakdown.append(
                 f"{check.upper()} result unavailable (-{_DATA_COMPLETENESS_PENALTIES['auth_none']})"
@@ -665,6 +735,77 @@ def _compute_data_completeness(
     return int(_clamp(score, 0, 100))
 
 
+def _compute_detailed_completeness(
+    auth_results: dict,
+    url_reports: list[dict],
+    hash_reports: list[dict],
+    otx_reports: list[dict],
+    header_forensics: dict | None,
+    completeness_breakdown: list[str],
+    email_data: dict,
+    urls: list[dict],
+    domain_intelligence: dict,
+) -> int:
+    """Measure which evidence classes were actually available to the engine."""
+    score = 0
+
+    def record(label: str, available: bool, weight: int) -> None:
+        nonlocal score
+        if available:
+            score += weight
+        else:
+            completeness_breakdown.append(f"{label} unavailable (0/{weight})")
+
+    record("From header", bool(email_data.get("from")), 8)
+    record("To header", bool(email_data.get("to")), 6)
+    record("Subject header", bool(email_data.get("subject")), 6)
+    record("Date header", bool(email_data.get("date")), 5)
+
+    forensics = auth_results.get("forensics", {})
+    relay_available = bool(
+        forensics.get("received_hops") or (header_forensics or {}).get("relay_chain")
+    )
+    record("Received relay chain", relay_available, 15)
+
+    for check in ("spf", "dkim", "dmarc"):
+        status = _status(auth_results.get(check, {}).get("result", "unknown"))
+        record(f"{check.upper()} result", status not in {"none", "unknown"}, 5)
+
+    record("Return-Path header", bool(forensics.get("return_path")), 5)
+    record("Plain-text MIME", bool(email_data.get("body_text")), 7)
+    record("HTML MIME", bool(email_data.get("body_html")), 8)
+    record(
+        "URL extraction",
+        bool(email_data.get("body_text") or email_data.get("body_html") or not urls),
+        5,
+    )
+    record("Sender domain", bool(forensics.get("from_domain")), 5)
+
+    whois_results = domain_intelligence.get("whois_results", [])
+    record(
+        "WHOIS enrichment",
+        bool(whois_results) and any(not item.get("error") for item in whois_results),
+        5,
+    )
+    dns_results = domain_intelligence.get("dns_results", [])
+    dns_available = any(
+        any(
+            status in {"ok", "absent", "nxdomain"}
+            for status in item.get("record_status", {}).values()
+        )
+        for item in dns_results
+    )
+    record("DNS enrichment", dns_available, 5)
+
+    intel_reports = url_reports + hash_reports + otx_reports
+    intel_available = not intel_reports or any(
+        not report.get("error") for report in intel_reports
+    )
+    record("Threat-intelligence enrichment", intel_available, 5)
+
+    return int(_clamp(score, 0, 100))
+
+
 def _compute_confidence(
     risk_score: int,
     data_completeness: int,
@@ -672,46 +813,67 @@ def _compute_confidence(
     strong_signals: int,
     weak_signals: int,
     ai_verdict: dict | None,
-) -> float:
-    """Estimate confidence from evidence strength + completeness."""
-    evidence_points = (
-        category_scores.get("auth checks", 0)
-        + category_scores.get("URL behavior", 0)
-        + category_scores.get("brand impersonation", 0)
-        + category_scores.get("attachment/malware", 0)
-        + category_scores.get("correlation", 0)
-        + int(category_scores.get("content/language", 0) * 0.6)
+) -> tuple[float, list[str]]:
+    """Estimate verdict confidence independently from model confidence."""
+    notes: list[str] = []
+    structured_categories = (
+        "auth checks",
+        "URL behavior",
+        "brand impersonation",
+        "content/language",
+        "threat intelligence",
+        "attachment/malware",
+        "correlation",
     )
-    evidence_strength = _clamp(evidence_points / 90.0, 0.0, 1.0)
-
-    signal_mix = _clamp((strong_signals + 0.5 * weak_signals) / 8.0, 0.0, 1.0)
+    structured_score = sum(
+        category_scores.get(name, 0) for name in structured_categories
+    )
+    evidence_strength = _clamp(structured_score / 75.0, 0.0, 1.0)
+    independent_categories = sum(
+        1 for name in structured_categories if category_scores.get(name, 0) > 0
+    )
+    evidence_diversity = _clamp(independent_categories / 5.0, 0.0, 1.0)
+    signal_mix = _clamp((strong_signals + 0.4 * weak_signals) / 8.0, 0.0, 1.0)
     completeness_ratio = _clamp(data_completeness / 100.0, 0.0, 1.0)
+    correlation_strength = _clamp(
+        category_scores.get("correlation", 0) / _CATEGORY_CAPS["correlation"],
+        0.0,
+        1.0,
+    )
 
     ai_alignment = 0.0
     if ai_verdict:
         ai_label = str(ai_verdict.get("verdict", "")).lower()
         ai_conf = _clamp(float(ai_verdict.get("confidence", 0.0)), 0.0, 1.0)
-        if ai_label == "phishing" and risk_score >= 60:
-            ai_alignment += 0.08 * ai_conf
-        elif ai_label == "legitimate" and risk_score <= 35:
-            ai_alignment += 0.08 * ai_conf
-        elif ai_label == "suspicious" and 30 <= risk_score <= 75:
-            ai_alignment += 0.05 * ai_conf
+        if ai_label == "phishing" and structured_score >= 25:
+            ai_alignment += 0.06 * ai_conf
+        elif ai_label == "phishing" and structured_score < 15:
+            ai_alignment -= 0.08 * ai_conf
+            notes.append(
+                "AI phishing verdict has limited independent evidence support."
+            )
+        elif ai_label == "legitimate" and structured_score >= 40:
+            ai_alignment -= 0.12 * ai_conf
+            notes.append("AI verdict conflicts with structured suspicious evidence.")
+        elif ai_label == "legitimate" and risk_score <= 24:
+            ai_alignment += 0.04 * ai_conf
+        elif ai_label == "suspicious" and 25 <= structured_score <= 65:
+            ai_alignment += 0.04 * ai_conf
 
     confidence = (
-        0.10
-        + 0.42 * evidence_strength
-        + 0.23 * signal_mix
-        + 0.25 * completeness_ratio
+        0.12
+        + 0.32 * evidence_strength
+        + 0.20 * evidence_diversity
+        + 0.08 * signal_mix
+        + 0.20 * completeness_ratio
+        + 0.10 * correlation_strength
         + ai_alignment
     )
 
-    if data_completeness < 40:
-        confidence *= 0.78
-    elif data_completeness < 55:
-        confidence *= 0.88
+    if data_completeness < 50:
+        notes.append("Limited by incomplete SMTP, MIME, or enrichment evidence.")
 
-    return round(_clamp(confidence, 0.05, 0.99), 2)
+    return round(_clamp(confidence, 0.05, 0.99), 2), notes
 
 
 def _derive_verdict(risk_score: int, confidence: float, data_completeness: int) -> str:
@@ -730,8 +892,9 @@ def _derive_verdict(risk_score: int, confidence: float, data_completeness: int) 
     if risk_score < 20 and data_completeness < 55:
         return "INCONCLUSIVE"
 
-    # Low completeness + limited evidence should not be escalated to critical.
-    if data_completeness < 35 and risk_score < 60:
+    # Sparse metadata should make a weak case inconclusive, but it must not
+    # erase a suspicious score supported by strong deterministic evidence.
+    if data_completeness < 35 and risk_score < 45 and confidence < 0.35:
         return "INCONCLUSIVE"
 
     if verdict == "CRITICAL" and (confidence < 0.70 or data_completeness < 60):
@@ -766,6 +929,10 @@ def _expected_context_roots(
         return roots
 
     brand_names: set[str] = set()
+    for finding in brand_impersonation.get("sender_identity_mismatch", []):
+        expected_domain = finding.get("expected_domain")
+        if expected_domain:
+            roots.add(_root_domain(str(expected_domain)))
     for finding in brand_impersonation.get("domain_impersonation", []):
         brand = finding.get("brand")
         if brand:

@@ -25,6 +25,20 @@ class EvidenceItem:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["confidence"] = round(max(0.0, min(1.0, self.confidence)), 2)
+        data["id"] = f"{self.source}:{self.category}:{self.indicator}"[:240]
+        data["name"] = self.summary
+        data["risk_weight"] = self.risk_delta
+        data["status"] = {
+            "suspicious": "detected",
+            "malicious": "detected",
+            "clean": "not_detected",
+            "unknown": "unknown",
+            "none": "unknown",
+        }.get(self.state, self.state)
+        data["evidence"] = {
+            "indicator": self.indicator,
+            "details": self.details,
+        }
         return data
 
 
