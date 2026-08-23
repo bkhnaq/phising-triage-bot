@@ -129,7 +129,7 @@ class RiskScoringRefactorTests(unittest.TestCase):
         )
 
         self.assertLessEqual(result["risk_score"], 10)
-        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+        self.assertEqual(result["verdict"], "UNKNOWN")
         self.assertLess(result["data_completeness"], 60)
 
     def test_phishing_email_with_real_brand_spoofing(self) -> None:
@@ -228,7 +228,8 @@ class RiskScoringRefactorTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(result["risk_score"], 70)
-        self.assertIn(result["verdict"], {"HIGH", "CRITICAL"})
+        self.assertEqual(result["verdict"], "MALWARE")
+        self.assertIn(result["risk_severity"], {"HIGH", "CRITICAL"})
         self.assertGreaterEqual(result["confidence"], 0.70)
         self.assertGreaterEqual(result["data_completeness"], 80)
 
@@ -281,7 +282,8 @@ class RiskScoringRefactorTests(unittest.TestCase):
         )
 
         self.assertLessEqual(result["risk_score"], 20)
-        self.assertEqual(result["verdict"], "LOW")
+        self.assertEqual(result["verdict"], "LIKELY_BENIGN")
+        self.assertEqual(result["risk_severity"], "LOW")
         self.assertGreaterEqual(result["data_completeness"], 90)
         self.assertLess(result["category_scores"]["ESP detection"], 0)
 
@@ -350,9 +352,9 @@ class RiskScoringRefactorTests(unittest.TestCase):
             },
         )
 
-        self.assertGreaterEqual(result["risk_score"], 25)
-        self.assertIn(result["verdict"], {"MEDIUM", "SUSPICIOUS", "HIGH"})
-        self.assertNotEqual(result["verdict"], "LOW")
+        self.assertGreaterEqual(result["risk_score"], 20)
+        self.assertIn(result["risk_severity"], {"LOW", "MODERATE", "ELEVATED", "HIGH"})
+        self.assertEqual(result["verdict"], "SUSPICIOUS")
 
     def test_url_obfuscation_evidence_contributes_to_score(self) -> None:
         result = calculate_risk(
@@ -426,7 +428,7 @@ class RiskScoringRefactorTests(unittest.TestCase):
         self.assertEqual(result["category_scores"]["threat intelligence"], 0)
         self.assertEqual(result["category_scores"]["content/language"], 15)
         self.assertLess(result["risk_score"], 25)
-        self.assertNotIn(result["verdict"], {"HIGH", "CRITICAL"})
+        self.assertNotIn(result["risk_severity"], {"HIGH", "CRITICAL"})
 
     def test_ai_and_language_alone_cannot_escalate_to_high(self) -> None:
         result = calculate_risk(
@@ -462,9 +464,9 @@ class RiskScoringRefactorTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result["category_scores"]["AI / ML"], 10)
+        self.assertEqual(result["category_scores"]["AI / ML"], 8)
         self.assertLess(result["risk_score"], 45)
-        self.assertNotIn(result["verdict"], {"HIGH", "CRITICAL"})
+        self.assertNotIn(result["risk_severity"], {"HIGH", "CRITICAL"})
 
 
 class TestPhishingPipelineIntegration(unittest.TestCase):
@@ -573,14 +575,15 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         confidence_pct = float(risk.get("confidence", 0.0)) * 100
         score = int(risk.get("score", 0))
         verdict = str(risk.get("verdict", ""))
+        severity = str(risk.get("risk_severity", ""))
 
         providers = [
             str(f.get("provider", ""))
             for f in result.get("url_intelligence", {}).get("esp_findings", [])
         ]
 
-        self.assertNotEqual(verdict, "CRITICAL")
-        self.assertIn(verdict, ["LOW", "INCONCLUSIVE", "INFORMATIONAL"])
+        self.assertNotEqual(severity, "CRITICAL")
+        self.assertIn(verdict, ["LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"])
         self.assertTrue(any(p.lower() == "bluehornet" for p in providers))
         self.assertLess(confidence_pct, 60)
         self.assertLess(score, 80)
@@ -627,9 +630,10 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         if target_whois and target_whois.get("age_days") is not None:
             self.assertLess(int(target_whois["age_days"]), 30)
 
-        self.assertEqual(risk.get("verdict"), "CRITICAL")
+        self.assertEqual(risk.get("verdict"), "PHISHING")
+        self.assertIn(risk.get("risk_severity"), {"HIGH", "CRITICAL"})
         self.assertGreater(confidence_pct, 75)
-        self.assertGreaterEqual(score, 80)
+        self.assertGreaterEqual(score, 65)
 
     def test_ambiguous_unknown_esp(self) -> None:
         """
@@ -644,8 +648,8 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         risk = result["risk"]
         verdict = str(risk.get("verdict", ""))
 
-        self.assertIn(verdict, ["HIGH", "SUSPICIOUS"])
-        self.assertNotIn(verdict, ["INCONCLUSIVE", "LOW"])
+        self.assertIn(verdict, ["PHISHING", "SUSPICIOUS"])
+        self.assertIn(risk.get("risk_severity"), ["HIGH", "ELEVATED", "MODERATE"])
 
         providers = [
             str(f.get("provider", ""))

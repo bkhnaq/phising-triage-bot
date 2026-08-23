@@ -16,13 +16,15 @@ Usage:
 """
 
 import logging
-import math
 import importlib
 from datetime import datetime, timezone
 from typing import Any
 
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.domain_randomness import analyze_domain_randomness
 from email_analysis.domain_utils import base_label, registered_domain
+from email_analysis.special_use import classify_domain
+from scoring.config import SourceStatus, weight
 from threat_intel.cache import TTLCache
 
 try:
@@ -40,8 +42,6 @@ logger = logging.getLogger(__name__)
 _WHOIS_TIMEOUT = 10
 _DNS_TIMEOUT = 5
 
-# Entropy threshold for flagging suspicious domains
-_ENTROPY_THRESHOLD = 3.5
 _WHOIS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 _DNS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
@@ -88,13 +88,19 @@ def analyze_domain_intelligence(domains: list[str]) -> dict:
     whois_results = []
     dns_results = []
     entropy_results = []
+    randomness_results = []
     lookalike_results = []
+    special_use_results = []
     total_risk = 0
 
     for domain in unique:
         reg_domain = _registrable_domain(domain)
         if not reg_domain:
             continue
+
+        special = classify_domain(reg_domain)
+        if special.is_special_use:
+            special_use_results.append(special.to_dict())
 
         # WHOIS
         w = whois_lookup(reg_domain)
@@ -107,10 +113,13 @@ def analyze_domain_intelligence(domains: list[str]) -> dict:
         total_risk += d.get("risk_score", 0)
 
         # Entropy
-        ent = entropy_check(reg_domain)
-        if ent["risk_score"] > 0:
-            entropy_results.append(ent)
-            total_risk += ent["risk_score"]
+        randomness = entropy_check(reg_domain)
+        randomness_results.append(randomness)
+        if randomness["risk_score"] > 0:
+            # Kept as a compatibility alias. This now means a multi-feature
+            # randomized-domain finding, never entropy in isolation.
+            entropy_results.append(randomness)
+            total_risk += randomness["risk_score"]
 
         # Lookalike
         look = lookalike_check(reg_domain)
@@ -121,7 +130,9 @@ def analyze_domain_intelligence(domains: list[str]) -> dict:
         "whois_results": whois_results,
         "dns_results": dns_results,
         "entropy_results": entropy_results,
+        "randomness_results": randomness_results,
         "lookalike_results": lookalike_results,
+        "special_use_results": special_use_results,
         "risk_score": min(total_risk, 60),
     }
 
@@ -144,8 +155,20 @@ def whois_lookup(domain: str) -> dict:
         "expires": None,
         "updated": None,
         "risk_score": 0,
+        "status": SourceStatus.UNAVAILABLE.value,
         "error": None,
     }
+
+    special = classify_domain(domain)
+    if special.is_special_use:
+        result.update(
+            {
+                "status": SourceStatus.NOT_APPLICABLE.value,
+                "special_use": special.to_dict(),
+                "reason": "WHOIS is not applicable for special-use domains",
+            }
+        )
+        return result
 
     if whois_lib is None:
         result["error"] = "python-whois not installed"
@@ -216,14 +239,15 @@ def whois_lookup(domain: str) -> dict:
         age_days = (datetime.now(timezone.utc) - creation).days
         result["created"] = creation.strftime("%Y-%m-%d")
         result["age_days"] = age_days
+        result["status"] = SourceStatus.AVAILABLE.value
 
         # Risk scoring based on age
         if age_days < 7:
-            result["risk_score"] = 25
+            result["risk_score"] = weight("domain_age_under_7_days")
         elif age_days < 30:
-            result["risk_score"] = 20
+            result["risk_score"] = weight("domain_age_under_30_days")
         elif age_days < 90:
-            result["risk_score"] = 10
+            result["risk_score"] = weight("domain_age_under_90_days")
 
     except Exception as exc:
         err_msg = str(exc)
@@ -263,12 +287,28 @@ def dns_lookup(domain: str) -> dict:
         "dmarc_status": "not_checked",
         "dmarc_error": None,
         "risk_score": 0,
+        "status": SourceStatus.UNAVAILABLE.value,
         "error": None,
         "record_status": {
             rtype: "not_checked" for rtype in ("A", "AAAA", "MX", "NS", "TXT", "CNAME")
         },
         "record_errors": {},
     }
+
+    special = classify_domain(domain)
+    if special.is_special_use:
+        result.update(
+            {
+                "status": SourceStatus.NOT_APPLICABLE.value,
+                "special_use": special.to_dict(),
+                "reason": "DNS reputation enrichment is not applicable for special-use domains",
+                "record_status": {
+                    rtype: "not_applicable" for rtype in result["record_status"]
+                },
+                "dmarc_status": "not_applicable",
+            }
+        )
+        return result
 
     if dns_resolver is None:
         result["error"] = "dnspython not installed"
@@ -358,10 +398,10 @@ def dns_lookup(domain: str) -> dict:
     a_state = result["record_status"]["A"]
     mx_state = result["record_status"]["MX"]
     if a_state == "nxdomain" and mx_state == "nxdomain":
-        result["risk_score"] += 10
+        result["risk_score"] += weight("dns_no_a_or_mx")
         result["error"] = "Domain does not exist (NXDOMAIN)"
     elif a_state == "absent" and mx_state == "absent":
-        result["risk_score"] += 10
+        result["risk_score"] += weight("dns_no_a_or_mx")
         result["error"] = "No A or MX records published"
     elif (
         not result["a_records"]
@@ -372,39 +412,19 @@ def dns_lookup(domain: str) -> dict:
     ):
         result["error"] = "A/MX lookup unavailable"
 
+    if any(
+        status in {"ok", "absent", "nxdomain"}
+        for status in result["record_status"].values()
+    ):
+        result["status"] = SourceStatus.AVAILABLE.value
+
     _DNS_CACHE.set(domain, result)
     return result
 
 
 def entropy_check(domain: str) -> dict:
-    """
-    Calculate Shannon entropy of the domain name.
-
-    Returns:
-        Dict with: domain, entropy, risk_score.
-    """
-    label = domain.split(":")[0]
-    parts = label.rsplit(".", 1)
-    name = parts[0] if parts else label
-    name = name.replace(".", "").replace("-", "")
-
-    if not name:
-        return {"domain": domain, "entropy": 0.0, "risk_score": 0}
-
-    length = len(name)
-    freq: dict[str, int] = {}
-    for ch in name:
-        freq[ch] = freq.get(ch, 0) + 1
-
-    entropy = 0.0
-    for count in freq.values():
-        p = count / length
-        entropy -= p * math.log2(p)
-
-    entropy = round(entropy, 2)
-    risk = 15 if entropy > _ENTROPY_THRESHOLD else 0
-
-    return {"domain": domain, "entropy": entropy, "risk_score": risk}
+    """Compatibility wrapper for the feature-based randomness classifier."""
+    return analyze_domain_randomness(domain)
 
 
 def lookalike_check(domain: str) -> list[dict]:
@@ -434,7 +454,7 @@ def lookalike_check(domain: str) -> list[dict]:
                         "brand": brand,
                         "distance": dist,
                         "detail": f"'{segment}' vs '{brand}' (distance={dist})",
-                        "risk_score": 20,
+                        "risk_score": weight("brand_lookalike"),
                     }
                 )
                 break

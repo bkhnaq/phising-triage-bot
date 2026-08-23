@@ -14,7 +14,12 @@ except ImportError:
     tldextract = None
 
 _EXTRACTOR = (
-    tldextract.TLDExtract(suffix_list_urls=(), include_psl_private_domains=True)
+    tldextract.TLDExtract(
+        cache_dir=None,
+        suffix_list_urls=(),
+        fallback_to_snapshot=True,
+        include_psl_private_domains=True,
+    )
     if tldextract is not None
     else None
 )

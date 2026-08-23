@@ -89,6 +89,7 @@ RATE_LIMIT_MAX_CLIENTS = _get_int(
 )
 MAX_UPLOAD_SIZE_BYTES = _get_int("MAX_UPLOAD_SIZE_BYTES", 10 * 1024 * 1024, minimum=1)
 OFFLINE_MODE = _get_bool("OFFLINE_MODE", False)
+LAB_MODE = _get_bool("LAB_MODE", False)
 THREAT_INTEL_CACHE_TTL_SECONDS = _get_int(
     "THREAT_INTEL_CACHE_TTL_SECONDS", 900, minimum=1
 )

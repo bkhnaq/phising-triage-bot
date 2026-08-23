@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from email_analysis.domain_utils import any_domain_match, same_registered_domain
+from scoring.config import AuthState, weight
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,19 @@ def analyze_headers(headers: list[tuple[str, str]]) -> dict:
                 auth_results[check][
                     "details"
                 ] = f"{check.upper()} result absent from Authentication-Results"
+
+    for check in ("spf", "dkim", "dmarc"):
+        parsed_state = AuthState.parse(auth_results[check].get("result"))
+        # Preserve lowercase ``result`` for backward compatibility while exposing
+        # one canonical enum value to every new consumer.
+        auth_results[check]["result"] = parsed_state.value.lower()
+        auth_results[check]["state"] = parsed_state.value
+
+    testing_headers = []
+    for name, value in headers:
+        if name.lower() in {"x-phishing-test", "x-simulation", "x-security-test"}:
+            testing_headers.append({"name": name, "value": value})
+    auth_results["testing_headers"] = testing_headers
 
     auth_results["forensics"] = _run_header_forensics(headers)
     alignment = _analyze_auth_alignment(auth_results, auth_results["forensics"])
@@ -212,7 +226,7 @@ def _run_header_forensics(headers: list[tuple[str, str]]) -> dict:
                 "type": "return_path_mismatch",
                 "summary": "Return-Path domain differs from From domain",
                 "details": f"From={from_domain}, Return-Path={return_path_domain}",
-                "risk_score": 15,
+                "risk_score": weight("return_path_mismatch"),
             }
         )
 
@@ -222,7 +236,7 @@ def _run_header_forensics(headers: list[tuple[str, str]]) -> dict:
                 "type": "reply_to_mismatch",
                 "summary": "Reply-To domain differs from From domain",
                 "details": f"From={from_domain}, Reply-To={reply_to_domain}",
-                "risk_score": 10,
+                "risk_score": weight("reply_to_mismatch"),
             }
         )
 
@@ -232,7 +246,8 @@ def _run_header_forensics(headers: list[tuple[str, str]]) -> dict:
                 "type": "message_id_mismatch",
                 "summary": "Message-ID domain differs from From domain",
                 "details": f"From={from_domain}, Message-ID={message_id_domain}",
-                "risk_score": 5,
+                "risk_score": weight("message_id_mismatch"),
+                "evidence_state": "informational",
             }
         )
 
@@ -253,7 +268,7 @@ def _run_header_forensics(headers: list[tuple[str, str]]) -> dict:
                 "type": "excessive_hops",
                 "summary": "Unusually long Received chain",
                 "details": f"Received hop count={len(received_chain)}",
-                "risk_score": 5,
+                "risk_score": weight("excessive_hops"),
             }
         )
 
@@ -306,23 +321,33 @@ def _analyze_auth_alignment(auth_results: dict, forensics: dict) -> dict:
         else None
     )
 
-    if spf_result == "pass" and spf_aligned is False:
+    if (
+        spf_result == "pass"
+        and spf_aligned is False
+        and dmarc_result != "pass"
+        and dkim_aligned is not True
+    ):
         findings.append(
             {
                 "type": "spf_alignment_mismatch",
                 "summary": "SPF passed but does not align with From domain",
                 "details": f"From={from_domain}, SPF domain={spf_domain}",
-                "risk_score": 8,
+                "risk_score": weight("spf_alignment_mismatch"),
             }
         )
 
-    if dkim_result == "pass" and dkim_aligned is False:
+    if (
+        dkim_result == "pass"
+        and dkim_aligned is False
+        and dmarc_result != "pass"
+        and spf_aligned is not True
+    ):
         findings.append(
             {
                 "type": "dkim_alignment_mismatch",
                 "summary": "DKIM passed but signing domain does not align with From domain",
                 "details": f"From={from_domain}, DKIM d={dkim_domain}",
-                "risk_score": 8,
+                "risk_score": weight("dkim_alignment_mismatch"),
             }
         )
 
@@ -341,7 +366,7 @@ def _analyze_auth_alignment(auth_results: dict, forensics: dict) -> dict:
                     f"From={from_domain}, SPF domain={spf_domain or 'none'}, "
                     f"DKIM d={dkim_domain or 'none'}, DMARC={dmarc_result}"
                 ),
-                "risk_score": 12,
+                "risk_score": weight("no_aligned_authentication"),
             }
         )
 
@@ -411,7 +436,7 @@ def _detect_sender_brand_impersonation(from_raw: str, from_domain: str) -> dict 
                 "type": "sender_brand_impersonation",
                 "summary": "Brand appears in display name but sender domain is unofficial",
                 "details": f"Brand={brand}, sender_domain={from_domain}",
-                "risk_score": 20,
+                "risk_score": weight("sender_brand_impersonation"),
             }
 
     return None

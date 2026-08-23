@@ -132,7 +132,7 @@ _PATTERNS: dict[str, dict] = {
     },
     "authority": {
         "description": "Authority / impersonation language",
-        "risk_per_match": 3,
+        "risk_per_match": 5,
         "max_risk": 10,
         "patterns": [
             r"\bsecurity\s+(?:team|department|division)\b",

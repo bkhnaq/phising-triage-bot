@@ -116,7 +116,7 @@ def test_dns_timeout_is_not_reported_as_record_absence(monkeypatch) -> None:
     monkeypatch.setattr(domain_intelligence, "OFFLINE_MODE", False)
     monkeypatch.setattr(domain_intelligence, "dns_resolver", fake_resolver)
 
-    result = domain_intelligence.dns_lookup("example.test")
+    result = domain_intelligence.dns_lookup("example.com")
 
     assert result["record_status"]["MX"] == "unavailable"
     assert result["record_status"]["TXT"] == "absent"
@@ -148,14 +148,14 @@ def test_scoring_reconciles_category_caps_without_negative_adjustments() -> None
         ai_verdict={"verdict": "phishing", "confidence": 1.0},
     )
 
-    assert result["score"] == 28
-    assert result["category_details"]["content/language"] == {
-        "raw_subtotal": 12,
-        "category_maximum": 15,
-        "effective_contribution": 12,
-        "suppressed_duplicate_weight": 0,
-    }
-    assert result["category_details"]["AI / ML"]["effective_contribution"] == 15
+    assert result["score"] == 23
+    detail = result["category_details"]["content/language"]
+    assert detail["primitive_raw_subtotal"] == 12
+    assert detail["consumed_evidence_weight"] == 0
+    assert detail["finding_contribution"] == 0
+    assert detail["category_maximum"] == 15
+    assert detail["effective_contribution"] == 12
+    assert result["category_details"]["AI / ML"]["effective_contribution"] == 10
     assert (
         sum(
             detail["effective_contribution"]
@@ -208,9 +208,9 @@ def test_ai_is_supporting_evidence_and_cannot_create_high_risk_alone() -> None:
         ai_verdict={"verdict": "phishing", "confidence": 1.0},
     )
 
-    assert result["category_scores"]["AI / ML"] == 15
-    assert result["score"] == 15
-    assert result["verdict"] not in {"HIGH", "CRITICAL"}
+    assert result["category_scores"]["AI / ML"] == 10
+    assert result["score"] == 10
+    assert result["risk_severity"] not in {"HIGH", "CRITICAL"}
     assert any(
         "limited independent evidence" in note.lower()
         for note in result["confidence_notes"]

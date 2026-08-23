@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "initial_run": {
+    "accuracy": 0.9667,
+    "f1": 0.9677,
+    "false_negative_rate": 0.0,
+    "false_positive_rate": 0.0667,
+    "fn": 0,
+    "fp": 1,
+    "precision": 0.9375,
+    "recall": 1.0,
+    "tn": 14,
+    "tp": 15
+  },
+  "initial_errors": [
+    {
+      "sample_id": "benign_forwarded_spf_fail",
+      "cause": "SPF fail alone crossed the auth structured-suspicion threshold even though DKIM and DMARC both passed.",
+      "score": 12,
+      "severity": "LOW",
+      "verdict": "SUSPICIOUS"
+    }
+  ],
+  "generalized_changes": [
+    "Treat isolated SPF failure as non-positive only when both DKIM and DMARC pass, the score is at most 24, and no independent structured suspicion is present.",
+    "Use the packaged Public Suffix List snapshot without a writable or network-backed tldextract cache.",
+    "Correct evaluation arithmetic to exclude data completeness from score categories and use observable environment metadata for export-safety invariants."
+  ],
+  "final_run": {
+    "accuracy": 1.0,
+    "f1": 1.0,
+    "false_negative_rate": 0.0,
+    "false_positive_rate": 0.0,
+    "fn": 0,
+    "fp": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "tn": 15,
+    "tp": 15
+  }
+}

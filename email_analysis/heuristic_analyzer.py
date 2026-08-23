@@ -22,8 +22,10 @@ from urllib.parse import urlparse
 from urllib3.exceptions import HTTPError
 
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
+from email_analysis.domain_randomness import analyze_domain_randomness
 from email_analysis.domain_utils import any_domain_match, registered_domain
 from email_analysis.safe_http import SafeHTTPError, fetch_url
+from scoring.config import weight
 
 try:
     whois_lib: Any | None = importlib.import_module("whois")
@@ -192,7 +194,7 @@ def detect_brand_impersonation(
                         {
                             "brand": brand,
                             "domain": domain,
-                            "risk_score": 25,
+                            "risk_score": weight("brand_domain_keyword"),
                         }
                     )
                     logger.warning(
@@ -232,7 +234,7 @@ def detect_suspicious_keywords(
                         {
                             "keyword": kw,
                             "source": domain,
-                            "risk_score": 15,
+                            "risk_score": weight("suspicious_keyword"),
                         }
                     )
 
@@ -252,7 +254,7 @@ def detect_suspicious_keywords(
                         {
                             "keyword": kw,
                             "source": u["url"],
-                            "risk_score": 15,
+                            "risk_score": weight("suspicious_keyword"),
                         }
                     )
 
@@ -389,7 +391,7 @@ def check_domain_age(domains: list[str]) -> list[dict]:
         }
 
         if age_info["age_days"] is not None and age_info["age_days"] < 30:
-            finding["risk_score"] = 20
+            finding["risk_score"] = weight("domain_age_under_30_days")
             logger.warning(
                 "Young domain: %s registered %d day(s) ago (+20 risk)",
                 domain,
@@ -417,7 +419,7 @@ def detect_url_shorteners(urls: list[dict]) -> list[dict]:
                 {
                     "url": u["url"],
                     "domain": domain,
-                    "risk_score": 10,
+                    "risk_score": weight("url_shortener"),
                 }
             )
             logger.info("URL shortener detected: %s (%s)", u["url"], domain)
@@ -481,7 +483,7 @@ def detect_homograph(domains: list[str]) -> list[dict]:
                     "domain": raw_domain,
                     "decoded": decoded,
                     "details": "; ".join(detail_parts),
-                    "risk_score": 30,
+                    "risk_score": weight("homograph_domain"),
                 }
             )
             logger.warning("Homograph attack suspected: %s → %s", raw_domain, decoded)
@@ -534,15 +536,9 @@ def calculate_entropy(domain: str) -> float:
 
 
 def calculate_entropy_findings(domains: list[str]) -> list[dict]:
-    """
-    Flag domains with high Shannon entropy.
-
-    Returns:
-        List of dicts with keys: domain, entropy, risk_score.
-    """
+    """Flag multi-feature randomized patterns, never entropy in isolation."""
     findings: list[dict] = []
     checked: set[str] = set()
-    threshold = 3.5
 
     for raw_domain in domains:
         domain = raw_domain.lower().split(":")[0]
@@ -551,18 +547,15 @@ def calculate_entropy_findings(domains: list[str]) -> list[dict]:
             continue
         checked.add(reg)
 
-        ent = calculate_entropy(reg)
-        risk = 15 if ent > threshold else 0
-
-        if risk > 0:
-            findings.append(
-                {
-                    "domain": reg,
-                    "entropy": ent,
-                    "risk_score": risk,
-                }
+        analysis = analyze_domain_randomness(reg)
+        if int(analysis.get("risk_score", 0)) > 0:
+            findings.append(analysis)
+            logger.info(
+                "Randomized domain pattern: %s (%s, entropy=%.2f)",
+                reg,
+                analysis.get("classification"),
+                float(analysis.get("entropy", 0.0)),
             )
-            logger.info("High entropy domain: %s (%.2f)", reg, ent)
 
     return findings
 
@@ -606,7 +599,7 @@ def check_redirect_chain(url: str) -> dict:
         result["final_url"] = resp.url
 
         if result["hops"] > 1:
-            result["risk_score"] = 10
+            result["risk_score"] = weight("redirect_shortener_intermediate")
             logger.info(
                 "Redirect chain: %s → %d hop(s) → %s",
                 url,

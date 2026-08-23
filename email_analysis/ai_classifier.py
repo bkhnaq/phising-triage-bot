@@ -32,6 +32,7 @@ from config.settings import (
     OFFLINE_MODE,
 )
 from email_analysis.local_ai_classifier import classify_email_local
+from scoring.config import weight
 
 logger = logging.getLogger(__name__)
 
@@ -222,9 +223,9 @@ def _classify_with_groq(
 
         # Map verdict → risk score
         if result["verdict"] == "phishing":
-            result["risk_score"] = 25
+            result["risk_score"] = weight("ai_phishing")
         elif result["verdict"] == "suspicious":
-            result["risk_score"] = 10
+            result["risk_score"] = weight("ai_suspicious")
 
         logger.info(
             "AI classifier: %s (confidence=%.2f, score=%d)",

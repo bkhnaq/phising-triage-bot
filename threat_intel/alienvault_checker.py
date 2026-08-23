@@ -14,9 +14,12 @@ Usage:
 """
 
 import logging
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
+
+from email_analysis.special_use import classify_domain
+from scoring.config import ThreatIntelStatus
 
 from config.settings import (
     ALIENVAULT_OTX_API_KEY,
@@ -53,8 +56,15 @@ def check_domain(domain: str) -> dict:
         "pulse_count": 0,
         "pulses": [],
         "state": "not_checked",
+        "status": ThreatIntelStatus.UNAVAILABLE.value,
+        "data": None,
         "error": None,
     }
+
+    if classify_domain(domain).is_special_use:
+        result["state"] = "not_applicable"
+        result["status"] = ThreatIntelStatus.NOT_APPLICABLE.value
+        return result
 
     if not ALIENVAULT_OTX_API_KEY:
         result["error"] = "ALIENVAULT_OTX_API_KEY not configured"
@@ -84,10 +94,16 @@ def check_domain(domain: str) -> dict:
         pulses = data.get("pulse_info", {}).get("pulses", [])
         result["pulses"] = [p.get("name", "") for p in pulses[:5]]
         result["state"] = _otx_state(result)
+        result["status"] = str(result["state"]).upper()
+        result["data"] = {
+            "pulse_count": result["pulse_count"],
+            "pulses": result["pulses"],
+        }
 
     except (requests.RequestException, AttributeError, TypeError, ValueError) as exc:
         result["error"] = str(exc)
         result["state"] = "unavailable"
+        result["status"] = ThreatIntelStatus.ERROR.value
         logger.error("OTX domain check failed for %s: %s", domain, exc)
 
     _DOMAIN_CACHE.set(domain, result)
@@ -109,8 +125,15 @@ def check_url(url: str) -> dict:
         "pulse_count": 0,
         "pulses": [],
         "state": "not_checked",
+        "status": ThreatIntelStatus.UNAVAILABLE.value,
+        "data": None,
         "error": None,
     }
+
+    if classify_domain(urlparse(url).hostname or "").is_special_use:
+        result["state"] = "not_applicable"
+        result["status"] = ThreatIntelStatus.NOT_APPLICABLE.value
+        return result
 
     if not ALIENVAULT_OTX_API_KEY:
         result["error"] = "ALIENVAULT_OTX_API_KEY not configured"
@@ -140,10 +163,16 @@ def check_url(url: str) -> dict:
         pulses = data.get("pulse_info", {}).get("pulses", [])
         result["pulses"] = [p.get("name", "") for p in pulses[:5]]
         result["state"] = _otx_state(result)
+        result["status"] = str(result["state"]).upper()
+        result["data"] = {
+            "pulse_count": result["pulse_count"],
+            "pulses": result["pulses"],
+        }
 
     except (requests.RequestException, AttributeError, TypeError, ValueError) as exc:
         result["error"] = str(exc)
         result["state"] = "unavailable"
+        result["status"] = ThreatIntelStatus.ERROR.value
         logger.error("OTX URL check failed for %s: %s", url, exc)
 
     _URL_CACHE.set(url, result)
@@ -165,6 +194,8 @@ def check_file_hash(sha256: str) -> dict:
         "pulse_count": 0,
         "pulses": [],
         "state": "not_checked",
+        "status": ThreatIntelStatus.UNAVAILABLE.value,
+        "data": None,
         "error": None,
     }
 
@@ -195,10 +226,16 @@ def check_file_hash(sha256: str) -> dict:
         pulses = data.get("pulse_info", {}).get("pulses", [])
         result["pulses"] = [p.get("name", "") for p in pulses[:5]]
         result["state"] = _otx_state(result)
+        result["status"] = str(result["state"]).upper()
+        result["data"] = {
+            "pulse_count": result["pulse_count"],
+            "pulses": result["pulses"],
+        }
 
     except (requests.RequestException, AttributeError, TypeError, ValueError) as exc:
         result["error"] = str(exc)
         result["state"] = "unavailable"
+        result["status"] = ThreatIntelStatus.ERROR.value
         logger.error("OTX hash check failed for %s: %s", sha256, exc)
 
     _HASH_CACHE.set(sha256, result)

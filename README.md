@@ -16,10 +16,10 @@ python -m venv .venv
 pip install -r requirements.txt
 $env:OFFLINE_MODE='true'
 $env:LOCAL_AI_ENABLED='false'
-.\.venv\Scripts\python.exe main.py --analyze samples/phishing-en.eml --offline
+.\.venv\Scripts\python.exe main.py --analyze samples/phishing-en.eml --offline --lab-mode
 ```
 
-The four inert samples in [`samples/`](samples) use only reserved `.test` domains. Try the Vietnamese sample too:
+The five inert samples in [`samples/`](samples) use only reserved `.test` domains. Try the Vietnamese sample too:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py --analyze samples/phishing-vi.eml --offline --output artifacts\demo-phishing-vi.md
@@ -31,8 +31,9 @@ The report contains an analyst-friendly threat summary, authentication evidence,
 
 ```text
 RISK ASSESSMENT
-Score   : 100 / 100
-Verdict : CRITICAL
+Score   : 79 / 100
+Severity: HIGH
+Verdict : PHISHING
 
 RECOMMENDED SOC ACTIONS
 • Quarantine the message and block confirmed malicious IOCs.
@@ -58,7 +59,40 @@ RECOMMENDED SOC ACTIONS
 2. Check authentication, header anomalies, display-name spoofing, and language signals.
 3. Extract bounded URLs, QR URLs, attachments, and SHA-256 hashes.
 4. Perform bounded URL/domain/threat-intel analysis; `--offline` prevents network enrichment.
-5. Combine deterministic evidence and optional AI output into an explainable score and report.
+5. Normalize primitive evidence; correlation consumes exact primitive IDs and
+   emits final findings into their owning risk categories.
+6. Apply category caps once, then add at most 10 points for independent
+   cross-category confirmation. Correlation is a processing layer, not a score category.
+7. Classify the threat verdict independently from risk severity, confidence, and
+   weighted evidence completeness. Reserved `.test`/`.example` domains and TEST-NET addresses
+   are marked not applicable for reputation and do not add malicious weight.
+
+AI is supporting evidence only: its category is capped at 10 points and uses the
+same configured value in normalized evidence, category arithmetic, and the report.
+Scores at the Critical threshold require an explicit confirmed-malicious artifact,
+destination, payload behavior, or compromise signal; otherwise the configurable
+Critical Evidence Gate records the reason and caps severity at High. Below that
+threshold the gate is explicitly `NOT_REQUIRED` and is not evaluated.
+
+Credential-like URL words are normalized into one URL-keyword context stream. When
+the same URL already participates in a deceptive-link finding they are `SUPPORTING`
+with zero additional weight; standalone keywords share a two-point maximum. Cross-
+category confirmation requires at least two independent non-ML technical categories,
+is capped at 10, and suppresses overlapping lower-order combinations.
+
+The observable registry deduplicates each normalized URL, domain, IP, or hash across
+parsers and enrichment providers, then retains its strongest classification. Every
+record includes `environment`, `exportable`, `export_reason`, and `reputation` fields
+so reserved lab indicators cannot be silently exported to production automation.
+Coverage is calculated over applicable sources only; `NONE_PRESENT` means an analyzer
+completed successfully, while `NOT_APPLICABLE` is excluded from the denominator.
+The pipeline also emits one centralized `analysis_environment` (`PRODUCTION`, `TEST`,
+`LAB`, `MIXED`, or `UNKNOWN`). Mixed analysis never overrides the export policy of an
+individual observable. Lab reports label response steps as a simulated production
+response and include explicit operational-safety guidance.
+
+Use `--lab-mode` to make reserved test context prominent in the report. Custom
+testing headers are informational only and never reduce risk.
 
 Network URL fetching rejects private/mixed DNS answers, pins validated public IPs, revalidates redirects, bounds data/redirects/deadlines, and failure-contains malformed input.
 
@@ -67,6 +101,9 @@ Network URL fetching rejects private/mixed DNS answers, pins validated public IP
 The optional local-first classifier uses a promoted `jhu-clsp/mmBERT-small` artifact. Weights are intentionally not stored in Git. When the artifact or ML dependencies are unavailable, the report exposes that AI is unavailable while deterministic evidence still runs.
 
 The model is cached once per Python process. Running the bot, API, and CLI at the same time loads a separate model copy in each process; on a memory-constrained demo machine, run one local-AI process at a time or disable local AI for secondary CLI runs.
+
+Reports support `NORMAL` and `DEBUG`/`EXPLAIN` rendering. Telegram uses the compact
+normal view; pipeline, CLI, and API analysis retain the explain view by default.
 
 Latest verified local run (seed 42, 9 August 2026):
 

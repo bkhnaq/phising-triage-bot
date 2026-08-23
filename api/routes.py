@@ -89,7 +89,14 @@ class RiskResult(BaseModel):
 
     score: int = Field(..., ge=0, le=100, description="Risk score 0-100")
     verdict: str = Field(
-        ..., description="INCONCLUSIVE / LOW / MEDIUM / SUSPICIOUS / HIGH / CRITICAL"
+        ...,
+        description=(
+            "Threat classification: BENIGN / LIKELY_BENIGN / SUSPICIOUS / "
+            "PHISHING / BEC / MALWARE / SPAM / UNKNOWN"
+        ),
+    )
+    risk_severity: str = Field(
+        "LOW", description="Risk impact: LOW / MODERATE / ELEVATED / HIGH / CRITICAL"
     )
     confidence: float = Field(
         0.0, ge=0.0, le=1.0, description="Classification confidence 0.0-1.0"
@@ -112,6 +119,14 @@ class AnalysisResponse(BaseModel):
     email_metadata: dict = Field(default_factory=dict)
     auth_results: dict = Field(default_factory=dict)
     ai_verdict: dict = Field(default_factory=dict)
+    observables: list[dict] = Field(
+        default_factory=list,
+        description="Deduplicated observables with classification and export safety metadata",
+    )
+    analysis_environment: dict = Field(
+        default_factory=dict,
+        description="Normalized production/test/lab/mixed analysis context",
+    )
     analysis_limits: dict = Field(default_factory=dict)
     url_count: int = 0
     attachment_count: int = 0
@@ -480,7 +495,8 @@ def _build_response(result: dict, request_id: str) -> AnalysisResponse:
         analysis_id=result.get("analysis_id", request_id),
         risk=RiskResult(
             score=risk_data.get("score", 0),
-            verdict=risk_data.get("verdict", "LOW"),
+            verdict=risk_data.get("verdict", "UNKNOWN"),
+            risk_severity=risk_data.get("risk_severity", "LOW"),
             confidence=risk_data.get("confidence", 0.0),
             data_completeness=risk_data.get("data_completeness", 0),
             category_scores=risk_data.get("category_scores", {}),
@@ -494,6 +510,8 @@ def _build_response(result: dict, request_id: str) -> AnalysisResponse:
             "dmarc": result.get("auth_results", {}).get("dmarc", {}),
         },
         ai_verdict=ai_safe,
+        observables=result.get("observables", []),
+        analysis_environment=result.get("analysis_environment", {}),
         analysis_limits=result.get("analysis_limits", {}),
         url_count=len(result.get("urls", [])),
         attachment_count=len(result.get("attachments", [])),

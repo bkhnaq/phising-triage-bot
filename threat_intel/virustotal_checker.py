@@ -12,8 +12,12 @@ Usage:
 """
 
 import logging
+from urllib.parse import urlparse
 
 import requests
+
+from email_analysis.special_use import classify_domain
+from scoring.config import ThreatIntelStatus
 
 from config.settings import (
     OFFLINE_MODE,
@@ -51,8 +55,15 @@ def check_url(url: str) -> dict:
         "harmless": 0,
         "undetected": 0,
         "state": "not_checked",
+        "status": ThreatIntelStatus.UNAVAILABLE.value,
+        "data": None,
         "error": None,
     }
+
+    if classify_domain(urlparse(url).hostname or "").is_special_use:
+        result["state"] = "not_applicable"
+        result["status"] = ThreatIntelStatus.NOT_APPLICABLE.value
+        return result
 
     if not VIRUSTOTAL_API_KEY:
         result["error"] = "VIRUSTOTAL_API_KEY not configured"
@@ -90,6 +101,7 @@ def check_url(url: str) -> dict:
             )
             resp.raise_for_status()
             result["state"] = "submitted_for_analysis"
+            result["status"] = ThreatIntelStatus.NOT_FOUND.value
             result["error"] = "submitted_for_analysis"
             return result
 
@@ -100,6 +112,8 @@ def check_url(url: str) -> dict:
         result["harmless"] = stats.get("harmless", 0)
         result["undetected"] = stats.get("undetected", 0)
         result["state"] = _vt_state(result)
+        result["status"] = str(result["state"]).upper()
+        result["data"] = dict(stats)
 
     except (
         requests.RequestException,
@@ -110,6 +124,7 @@ def check_url(url: str) -> dict:
     ) as exc:
         result["error"] = str(exc)
         result["state"] = "unavailable"
+        result["status"] = ThreatIntelStatus.ERROR.value
         logger.error("VirusTotal URL check failed for %s: %s", url, exc)
 
     _URL_CACHE.set(url, result)
@@ -133,6 +148,8 @@ def check_file_hash(sha256: str) -> dict:
         "harmless": 0,
         "undetected": 0,
         "state": "not_checked",
+        "status": ThreatIntelStatus.UNAVAILABLE.value,
+        "data": None,
         "error": None,
     }
 
@@ -158,6 +175,7 @@ def check_file_hash(sha256: str) -> dict:
         )
         if resp.status_code == 404:
             result["state"] = "not_found"
+            result["status"] = ThreatIntelStatus.NOT_FOUND.value
             result["error"] = "not_found"
             return result
 
@@ -168,6 +186,8 @@ def check_file_hash(sha256: str) -> dict:
         result["harmless"] = stats.get("harmless", 0)
         result["undetected"] = stats.get("undetected", 0)
         result["state"] = _vt_state(result)
+        result["status"] = str(result["state"]).upper()
+        result["data"] = dict(stats)
 
     except (
         requests.RequestException,
@@ -178,6 +198,7 @@ def check_file_hash(sha256: str) -> dict:
     ) as exc:
         result["error"] = str(exc)
         result["state"] = "unavailable"
+        result["status"] = ThreatIntelStatus.ERROR.value
         logger.error("VirusTotal hash check failed for %s: %s", sha256, exc)
 
     _HASH_CACHE.set(sha256, result)

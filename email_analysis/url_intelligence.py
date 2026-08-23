@@ -22,6 +22,8 @@ from urllib3.exceptions import HTTPError
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_utils import domain_info, is_domain_or_subdomain
 from email_analysis.safe_http import SafeHTTPError, fetch_url
+from email_analysis.special_use import classify_domain
+from scoring.config import SourceStatus, weight
 from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -172,7 +174,7 @@ _KNOWN_ESP_RULES: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 
-def analyze_urls(urls: list[dict]) -> dict:
+def analyze_urls(urls: list[dict], *, skip_special_use: bool = True) -> dict:
     """
     Perform comprehensive URL intelligence analysis.
 
@@ -187,7 +189,7 @@ def analyze_urls(urls: list[dict]) -> dict:
             risk_score         – aggregate risk
     """
     shortener_findings = detect_shorteners(urls)
-    redirect_findings = analyze_redirect_chains(urls)
+    redirect_findings = analyze_redirect_chains(urls, skip_special_use=skip_special_use)
     suspicious_endpoints = detect_suspicious_endpoints(urls)
     deceptive_links = detect_deceptive_links(urls)
     esp_findings = detect_esp_patterns(urls)
@@ -229,7 +231,9 @@ def detect_deceptive_links(urls: list[dict]) -> list[dict]:
                 "state": "contextual" if known_tracking_intermediary else "suspicious",
                 "provider": esp_context.get("provider") if esp_context else "",
                 "requires_redirect_validation": known_tracking_intermediary,
-                "risk_score": 0 if known_tracking_intermediary else 30,
+                "risk_score": (
+                    0 if known_tracking_intermediary else weight("deceptive_hyperlink")
+                ),
             }
         )
     return findings
@@ -260,7 +264,7 @@ def detect_shorteners(urls: list[dict]) -> list[dict]:
             "domain": domain,
             "expanded_url": expanded_url,
             "expanded_domain": expanded_domain,
-            "risk_score": 10,
+            "risk_score": weight("url_shortener"),
         }
 
         # Extra risk if expanded URL has suspicious path
@@ -269,7 +273,7 @@ def detect_shorteners(urls: list[dict]) -> list[dict]:
             path_lower = parsed.path.lower()
             for kw in _SUSPICIOUS_PATH_KEYWORDS:
                 if kw in path_lower:
-                    finding["risk_score"] += 5
+                    finding["risk_score"] += weight("shortener_credential_path")
                     break
 
         findings.append(finding)
@@ -308,7 +312,9 @@ def expand_url(short_url: str) -> str:
     return expanded
 
 
-def analyze_redirect_chains(urls: list[dict]) -> list[dict]:
+def analyze_redirect_chains(
+    urls: list[dict], *, skip_special_use: bool = False
+) -> list[dict]:
     """
     Follow URL redirects and report full chain with intermediate domain analysis.
 
@@ -328,6 +334,31 @@ def analyze_redirect_chains(urls: list[dict]) -> list[dict]:
         checked.add(url)
 
         esp_info = classify_esp_url(source_url)
+
+        if (
+            skip_special_use
+            and classify_domain(_safe_normalized_domain(url)).is_special_use
+        ):
+            findings.append(
+                {
+                    "source_url": source_url,
+                    "url": url,
+                    "chain": [url],
+                    "redirect_chain": [
+                        {"url": url, "status_code": None, "final": True}
+                    ],
+                    "hops": 0,
+                    "final_url": url,
+                    "final_domain": _safe_normalized_domain(url),
+                    "intermediate_domains": [],
+                    "suspicious_intermediates": [],
+                    "risk_score": 0,
+                    "status": SourceStatus.NOT_APPLICABLE.value,
+                    "error": None,
+                    "reason": "reserved special-use domain",
+                }
+            )
+            continue
 
         chain_result = follow_redirect_chain(
             url,
@@ -362,6 +393,7 @@ def follow_redirect_chain(
         "source_url": source,
         "url": url,
         "chain": [url],
+        "redirect_chain": [{"url": url, "status_code": None, "final": True}],
         "hops": 0,
         "final_url": url,
         "final_domain": _safe_normalized_domain(url),
@@ -372,6 +404,7 @@ def follow_redirect_chain(
         "suspicious_landing": False,
         "landing_reason": "",
         "risk_score": 0,
+        "status": SourceStatus.UNAVAILABLE.value,
         "error": None,
     }
 
@@ -395,6 +428,27 @@ def follow_redirect_chain(
         result["hops"] = len(resp.history)
         result["final_url"] = resp.url
         result["final_domain"] = _normalize_domain(urlparse(resp.url).netloc)
+        history_statuses = list(getattr(resp, "history_statuses", ()))
+        result["redirect_chain"] = []
+        for index, chain_url in enumerate(resp.history):
+            result["redirect_chain"].append(
+                {
+                    "url": chain_url,
+                    "status_code": (
+                        history_statuses[index]
+                        if index < len(history_statuses)
+                        else None
+                    ),
+                    "final": False,
+                }
+            )
+        result["redirect_chain"].append(
+            {"url": resp.url, "status_code": None, "final": True}
+        )
+        result["status"] = SourceStatus.AVAILABLE.value
+        if result["hops"] > 0:
+            result["redirect_source"] = result["chain"][0]
+            result["redirect_destination"] = resp.url
 
         if resp.history:
             # Analyze intermediate domains
@@ -425,27 +479,29 @@ def follow_redirect_chain(
         # Increase risk only when landing evidence itself is suspicious.
         if result["is_esp_tracking"]:
             if suspicious_landing:
-                result["risk_score"] += 12
+                result["risk_score"] += weight("esp_suspicious_landing")
         else:
             if result["hops"] > 2:
-                result["risk_score"] = 15
+                result["risk_score"] = weight("redirect_many_hops")
             elif result["hops"] > 0:
-                result["risk_score"] = 5
+                result["risk_score"] = weight("redirect_observed")
 
             if result["suspicious_intermediates"]:
-                result["risk_score"] += 10
+                result["risk_score"] += weight("redirect_shortener_intermediate")
 
             if result["hops"] > 0 and origin_domain != result["final_domain"]:
-                result["risk_score"] += 5
+                result["risk_score"] += weight("redirect_cross_domain")
 
             if suspicious_landing:
-                result["risk_score"] += 8
+                result["risk_score"] += weight("redirect_suspicious_landing")
 
     except SafeHTTPError as exc:
         result["error"] = exc.code
+        result["status"] = SourceStatus.FAILED.value
         logger.debug("Redirect chain check failed for %s: %s", url, exc)
     except (HTTPError, OSError) as exc:
         result["error"] = _friendly_error(exc)
+        result["status"] = SourceStatus.FAILED.value
         logger.debug("Redirect chain check failed for %s: %s", url, exc)
 
     _REDIRECT_CACHE.set(cache_key, result)
@@ -487,7 +543,7 @@ def detect_suspicious_endpoints(urls: list[dict]) -> list[dict]:
                 {
                     "url": url,
                     "keywords": matched_keywords,
-                    "risk_score": 10,
+                    "risk_score": weight("suspicious_endpoint"),
                 }
             )
 

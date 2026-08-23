@@ -1,0 +1,25 @@
+From: Northbridge University IT Support <helpdesk@northbridge-university.test>
+To: student@example.com
+Reply-To: support@account-recovery.test
+Return-Path: <bounce@mailer-notification.test>
+Subject: Urgent: verify your university account today
+Date: Tue, 07 Jul 2026 09:30:00 +0700
+Message-ID: <account-77821@mailer-notification.test>
+Received: from mailer-notification.test (mailer-notification.test [203.0.113.55]) by mx.example.com with ESMTP id regression123; Tue, 07 Jul 2026 09:30:00 +0700
+Authentication-Results: mx.example.com; spf=fail smtp.mailfrom=mailer-notification.test; dkim=none; dmarc=fail header.from=northbridge-university.test
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<html>
+<body>
+  <p>Dear student,</p>
+  <p>IT Support detected a problem with your university account.</p>
+  <p>Please verify your account immediately to avoid losing access.</p>
+  <p>
+    <a href="http://account-recovery.test/secure/login/verify">
+      https://portal.northbridge-university.test/account
+    </a>
+  </p>
+  <p>Northbridge University IT Support</p>
+</body>
+</html>

@@ -19,6 +19,8 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
+from scoring.config import weight
+
 logger = logging.getLogger(__name__)
 
 
@@ -134,7 +136,7 @@ def detect_credential_harvesting(body_html: str) -> dict:
     # Check for forms
     if parser.forms:
         findings.append(f"HTML form(s) detected: {len(parser.forms)}")
-        result["risk_score"] += 10
+        result["risk_score"] += weight("credential_form")
 
         for form in parser.forms:
             action = form.get("action", "")
@@ -145,34 +147,34 @@ def detect_credential_harvesting(body_html: str) -> dict:
                 if parsed.scheme in ("http", "https") and parsed.netloc:
                     result["post_endpoints"].append(action)
                     findings.append(f"External POST endpoint: {action}")
-                    result["risk_score"] += 15
+                    result["risk_score"] += weight("credential_external_post")
 
     # Check for password fields
     if parser.password_inputs:
         findings.append(
             f"Password input field(s) detected: {len(parser.password_inputs)}"
         )
-        result["risk_score"] += 20
+        result["risk_score"] += weight("credential_password_field")
 
     # Check for excessive hidden inputs (common in phishing kits)
     if len(parser.hidden_inputs) > 3:
         findings.append(
             f"Suspicious number of hidden inputs: {len(parser.hidden_inputs)}"
         )
-        result["risk_score"] += 5
+        result["risk_score"] += weight("credential_hidden_fields")
 
     # Check for JavaScript form submission
     for pattern in _JS_SUBMIT_PATTERNS:
         if pattern.search(body_html):
             result["js_submission"] = True
             findings.append("JavaScript form submission detected")
-            result["risk_score"] += 10
+            result["risk_score"] += weight("credential_js_submit")
             break
 
     # Combined detection: form + password = likely credential harvesting
     if parser.forms and parser.password_inputs:
         findings.append("⚠️ Possible credential harvesting attempt")
-        result["risk_score"] += 10
+        result["risk_score"] += weight("credential_form_password_correlation")
 
     result["findings"] = findings
     result["detected"] = bool(findings)

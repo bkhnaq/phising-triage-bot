@@ -19,7 +19,7 @@ $env:LOCAL_AI_ENABLED='false'
 .\.venv\Scripts\python.exe main.py --analyze samples/phishing-en.eml --offline
 ```
 
-Bốn email trong [`samples/`](../samples) đều inert và chỉ dùng domain `.test` được dành riêng. Có thể demo tiếng Việt bằng lệnh sau:
+Năm email trong [`samples/`](../samples) đều inert và chỉ dùng domain `.test` được dành riêng. Có thể demo tiếng Việt bằng lệnh sau:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py --analyze samples/phishing-vi.eml --offline --output artifacts\demo-phishing-vi.md
@@ -31,8 +31,9 @@ Báo cáo hiển thị tóm tắt mối đe dọa, bằng chứng SPF/DKIM/DMARC
 
 ```text
 RISK ASSESSMENT
-Score   : 100 / 100
-Verdict : CRITICAL
+Score   : 79 / 100
+Severity: HIGH
+Verdict : PHISHING
 
 RECOMMENDED SOC ACTIONS
 • Quarantine the message and block confirmed malicious IOCs.
@@ -57,7 +58,33 @@ RECOMMENDED SOC ACTIONS
 2. Phân tích xác thực, bất thường header, giả mạo display name và ngôn ngữ.
 3. Trích xuất có giới hạn URL, QR URL, attachment và SHA-256.
 4. Phân tích URL/domain/threat intel có giới hạn; `--offline` tắt enrichment qua mạng.
-5. Kết hợp bằng chứng deterministic với AI tùy chọn để tạo score và report.
+5. Chuẩn hóa primitive evidence; correlation consume đúng evidence ID và đưa final
+   finding vào category rủi ro gốc, không tạo category `correlation` riêng.
+6. Áp category cap đúng một lần, sau đó thêm tối đa 10 điểm confirmation giữa các
+   category độc lập.
+7. Tính verdict mối đe dọa độc lập với risk severity, confidence và evidence completeness.
+
+AI chỉ là bằng chứng hỗ trợ: category AI được cap tối đa 10 điểm và dùng cùng một
+giá trị cấu hình ở normalized evidence, phép tính category và report. Điểm chạm
+ngưỡng Critical phải có artifact, destination, payload behavior hoặc compromise
+signal đã xác nhận; nếu chưa có, Critical Evidence Gate ghi rõ lý do và cap severity
+ở High. Khi điểm chưa tới ngưỡng Critical, gate có trạng thái `NOT_REQUIRED` và không
+chạy đánh giá critical evidence.
+
+Keyword kiểu credential trong URL được gom vào một URL-keyword context duy nhất. Nếu
+URL đó đã thuộc deceptive-link finding, keyword chuyển thành `SUPPORTING` với +0;
+keyword standalone dùng chung cap 2 điểm. Cross-category confirmation cần ít nhất hai
+category kỹ thuật non-ML độc lập, cap 10 điểm và suppress correlation con bị overlap.
+
+Observable registry dedup URL, domain, IP và hash đã normalize giữa mọi parser/provider,
+sau đó giữ classification mạnh nhất. Mỗi observable có metadata `environment`,
+`exportable`, `export_reason` và `reputation`, nên IOC lab không thể bị xuất nhầm vào
+automation production. Coverage chỉ tính nguồn applicable; `NONE_PRESENT` nghĩa là
+analyzer đã chạy thành công, còn `NOT_APPLICABLE` bị loại khỏi mẫu số.
+Pipeline phát thêm `analysis_environment` tập trung (`PRODUCTION`, `TEST`, `LAB`,
+`MIXED` hoặc `UNKNOWN`). Với môi trường mixed, policy export vẫn được quyết định riêng
+cho từng observable. Report lab ghi action dưới dạng simulated production response và
+thêm hướng dẫn operational safety rõ ràng.
 
 URL fetch chặn địa chỉ private/mixed DNS, pin public IP đã xác thực, xác thực lại redirect, giới hạn bytes/redirect/deadline và cô lập input lỗi.
 
@@ -66,6 +93,9 @@ URL fetch chặn địa chỉ private/mixed DNS, pin public IP đã xác thực,
 Classifier local-first tùy chọn dùng artifact `jhu-clsp/mmBERT-small` đã promote. Model weights được chủ động không lưu trong Git. Nếu artifact hoặc ML dependency chưa có, report hiển thị trạng thái AI unavailable nhưng bằng chứng deterministic vẫn chạy.
 
 Model được cache một lần trong mỗi Python process. Nếu chạy đồng thời bot, API và CLI thì mỗi process sẽ nạp một bản model riêng; trên máy demo ít RAM, chỉ nên chạy một process local-AI hoặc tắt local AI cho CLI phụ.
+
+Report hỗ trợ hai mức `NORMAL` và `DEBUG`/`EXPLAIN`. Telegram dùng bản normal gọn;
+pipeline, CLI và API giữ bản explain mặc định.
 
 Kết quả local đã kiểm chứng gần nhất (seed 42, ngày 09/08/2026):
 

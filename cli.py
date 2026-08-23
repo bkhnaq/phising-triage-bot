@@ -27,10 +27,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="disable network enrichment for local analysis",
     )
     parser.add_argument(
+        "--lab-mode",
+        action="store_true",
+        help="label reserved test infrastructure and skip inapplicable reputation lookups",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         metavar="REPORT.md",
         help="write an analysis report to this UTF-8 file",
+    )
+    parser.add_argument(
+        "--report-verbosity",
+        choices=("NORMAL", "DEBUG", "EXPLAIN"),
+        help="select compact or evidence-level report rendering",
     )
     return parser
 
@@ -52,7 +62,14 @@ def _write_report(report: str) -> None:
         buffer.flush()
 
 
-def _analyze_file(path: Path, *, offline: bool, output: Path | None) -> int:
+def _analyze_file(
+    path: Path,
+    *,
+    offline: bool,
+    lab_mode: bool,
+    output: Path | None,
+    report_verbosity: str | None,
+) -> int:
     try:
         resolved_path = path.expanduser().resolve(strict=True)
     except OSError:
@@ -70,7 +87,17 @@ def _analyze_file(path: Path, *, offline: bool, output: Path | None) -> int:
     try:
         from email_analysis.pipeline import PhishingPipeline
 
-        result = PhishingPipeline().analyze_file(str(resolved_path))
+        if lab_mode and report_verbosity:
+            pipeline = PhishingPipeline(
+                lab_mode=True, report_verbosity=report_verbosity
+            )
+        elif lab_mode:
+            pipeline = PhishingPipeline(lab_mode=True)
+        elif report_verbosity:
+            pipeline = PhishingPipeline(report_verbosity=report_verbosity)
+        else:
+            pipeline = PhishingPipeline()
+        result = pipeline.analyze_file(str(resolved_path))
         report = result["report"]
         if not isinstance(report, str):
             raise RuntimeError("analysis did not produce a text report")
@@ -145,9 +172,22 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.analyze is not None:
-        return _analyze_file(args.analyze, offline=args.offline, output=args.output)
-    if args.offline or args.output is not None:
-        return _usage_error("--offline and --output require --analyze")
+        return _analyze_file(
+            args.analyze,
+            offline=args.offline,
+            lab_mode=args.lab_mode,
+            output=args.output,
+            report_verbosity=args.report_verbosity,
+        )
+    if (
+        args.offline
+        or args.lab_mode
+        or args.output is not None
+        or args.report_verbosity is not None
+    ):
+        return _usage_error(
+            "--offline, --lab-mode, --output, and --report-verbosity require --analyze"
+        )
     if args.healthcheck:
         return _healthcheck()
     if args.api:

@@ -23,6 +23,7 @@ import logging
 import re
 
 from email_analysis.domain_utils import any_domain_match, base_label, registered_domain
+from scoring.config import weight
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ class BrandDetector:
                     f"domain {expected_root}"
                 ),
                 "risk": "impersonation / brand spoofing",
-                "risk_score": 20,
+                "risk_score": weight("sender_identity_mismatch"),
                 "source": "email_headers + message_body + url_extraction",
                 "evidence": {
                     "sender_domain": sender_domain,
@@ -364,7 +365,7 @@ class BrandDetector:
                                 "brand": brand_name,
                                 "domain": domain,
                                 "detail": f"Brand keyword '{keyword}' in domain",
-                                "risk_score": 25,
+                                "risk_score": weight("brand_domain_keyword"),
                             }
                         )
                         break
@@ -386,7 +387,7 @@ class BrandDetector:
                                     "domain": domain,
                                     "distance": dist,
                                     "detail": f"Lookalike: '{segment}' vs '{brand_name}' (distance={dist})",
-                                    "risk_score": 20,
+                                    "risk_score": weight("brand_lookalike"),
                                 }
                             )
                             break
@@ -422,7 +423,7 @@ class BrandDetector:
                                 "sender_domain": sender_domain,
                                 "display_name": display_name,
                                 "detail": f"Display name contains '{dn_keyword}' but sender is {sender_domain}",
-                                "risk_score": 20,
+                                "risk_score": weight("display_name_spoofing"),
                             }
                         )
                     break

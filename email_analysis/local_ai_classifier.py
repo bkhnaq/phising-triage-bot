@@ -15,6 +15,7 @@ from config import settings
 from ml.contracts import DecisionThresholds
 from ml.promote import validate_artifact
 from ml.text import format_email_text, prepare_model_input
+from scoring.config import weight
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,11 @@ def _success_result(probability: float, state: _LoadedState) -> dict[str, object
             else max(probability, 1.0 - probability)
         )
     )
-    risk_score = 25 if verdict == "phishing" else 10 if verdict == "suspicious" else 0
+    risk_score = (
+        weight("ai_phishing")
+        if verdict == "phishing"
+        else weight("ai_suspicious") if verdict == "suspicious" else 0
+    )
     return {
         "verdict": verdict,
         "confidence": confidence,

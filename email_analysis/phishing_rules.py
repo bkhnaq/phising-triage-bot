@@ -14,6 +14,7 @@ import logging
 import re
 
 from email_analysis.domain_utils import any_domain_match, base_label
+from scoring.config import weight
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def detect_display_name_spoofing(from_header: str) -> list[dict]:
             {
                 "brand": brand,
                 "sender_domain": sender_domain,
-                "risk_score": 20,
+                "risk_score": weight("display_name_spoofing"),
             }
         )
         logger.warning(
@@ -190,7 +191,7 @@ def detect_lookalike_domains(urls: list[dict]) -> list[dict]:
                             "domain": domain,
                             "brand": brand,
                             "distance": dist,
-                            "risk_score": 20,
+                            "risk_score": weight("brand_lookalike"),
                         }
                     )
                     logger.warning(

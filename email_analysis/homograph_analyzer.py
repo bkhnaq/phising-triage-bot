@@ -14,6 +14,8 @@ Usage:
 
 import logging
 
+from scoring.config import weight
+
 logger = logging.getLogger(__name__)
 
 # ── Look-alike character map ────────────────────────────────
@@ -100,7 +102,7 @@ def detect_homograph_brand(domain: str) -> dict | None:
                 "original_domain": domain,
                 "normalized_domain": normalized,
                 "brand": brand,
-                "risk_score": 25,
+                "risk_score": weight("homograph_brand"),
             }
 
     return None

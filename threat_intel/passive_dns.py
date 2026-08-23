@@ -14,6 +14,8 @@ import logging
 
 import requests
 
+from scoring.config import weight
+
 from config.settings import (
     OFFLINE_MODE,
     SECURITYTRAILS_API_KEY,
@@ -116,7 +118,7 @@ def check_passive_dns(ip_findings: list[dict]) -> list[dict]:
         st = _query_securitytrails(ip)
 
         suspicious = st["domain_count"] >= _DOMAIN_COUNT_THRESHOLD
-        risk_score = 20 if suspicious else 0
+        risk_score = weight("passive_dns_density") if suspicious else 0
 
         finding: dict = {
             "ip": ip,

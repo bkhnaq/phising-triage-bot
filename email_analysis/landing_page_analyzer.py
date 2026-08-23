@@ -17,6 +17,8 @@ from config.settings import (
 )
 from email_analysis.domain_utils import any_domain_match, registered_domain
 from email_analysis.safe_http import SafeHTTPError, fetch_url
+from email_analysis.special_use import classify_domain
+from scoring.config import SourceStatus, weight
 from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -71,7 +73,12 @@ class _LandingParser(HTMLParser):
             self.title_parts.append(data.strip())
 
 
-def analyze_landing_pages(urls: list[dict], max_pages: int = _MAX_PAGES) -> list[dict]:
+def analyze_landing_pages(
+    urls: list[dict],
+    max_pages: int = _MAX_PAGES,
+    *,
+    skip_special_use: bool = True,
+) -> list[dict]:
     """Fetch and inspect a small set of landing pages."""
     findings: list[dict] = []
     seen: set[str] = set()
@@ -83,6 +90,31 @@ def analyze_landing_pages(urls: list[dict], max_pages: int = _MAX_PAGES) -> list
         if not url or url in seen:
             continue
         seen.add(url)
+        if skip_special_use:
+            try:
+                domain = urlparse(url).hostname or ""
+            except (UnicodeError, ValueError):
+                domain = ""
+            if classify_domain(domain).is_special_use:
+                findings.append(
+                    {
+                        "url": url,
+                        "final_url": url,
+                        "domain": domain,
+                        "title": "",
+                        "forms": [],
+                        "password_fields": 0,
+                        "meta_refresh_urls": [],
+                        "brand_mentions": [],
+                        "findings": [],
+                        "risk_score": 0,
+                        "state": "not_applicable",
+                        "status": SourceStatus.NOT_APPLICABLE.value,
+                        "error": None,
+                        "reason": "reserved special-use domain",
+                    }
+                )
+                continue
         findings.append(analyze_landing_page(url))
 
     return findings
@@ -185,7 +217,7 @@ def _analyze_html(result: dict, html: str) -> None:
         findings.append(
             f"Landing page contains password field(s): {parser.password_fields}"
         )
-        risk += 20
+        risk += weight("landing_password_field")
 
     for form in parser.forms:
         action = form.get("action", "")
@@ -196,11 +228,11 @@ def _analyze_html(result: dict, html: str) -> None:
         action_domain = registered_domain(urlparse(action_url).hostname or "")
         if action_domain and action_domain != final_domain:
             findings.append(f"Landing form posts to external domain: {action_domain}")
-            risk += 15
+            risk += weight("landing_external_post")
 
     if parser.meta_refresh_urls:
         findings.append("Landing page uses meta refresh redirect")
-        risk += 8
+        risk += weight("landing_login_title")
 
     title_lower = title.lower()
     title_hits = [kw for kw in _TITLE_KEYWORDS if kw in title_lower]
@@ -208,13 +240,13 @@ def _analyze_html(result: dict, html: str) -> None:
         findings.append(
             f"Credential-themed landing title: {', '.join(sorted(title_hits))}"
         )
-        risk += 8
+        risk += weight("landing_brand_mismatch")
 
     brand_mentions = _detect_brand_mentions(html, final_domain)
     if brand_mentions:
         result["brand_mentions"] = brand_mentions
         findings.append(f"Landing page mentions brand(s): {', '.join(brand_mentions)}")
-        risk += 10
+        risk += weight("landing_meta_refresh")
 
     result["findings"] = findings
     result["risk_score"] = min(risk, 35)

@@ -37,6 +37,7 @@ class SafeHTTPResponse:
     headers: dict[str, str]
     body: bytes
     history: tuple[str, ...]
+    history_statuses: tuple[int, ...] = ()
 
 
 class SafeHTTPError(RuntimeError):
@@ -287,6 +288,7 @@ def fetch_url(
 
     current_url = url
     history: list[str] = []
+    history_statuses: list[int] = []
     deadline = _monotonic() + SAFE_HTTP_TIMEOUT_SECONDS
 
     while True:
@@ -311,11 +313,13 @@ def fetch_url(
                 headers=headers,
                 body=body,
                 history=tuple(history),
+                history_statuses=tuple(history_statuses),
             )
 
         if len(history) >= SAFE_HTTP_MAX_REDIRECTS:
             raise SafeHTTPError("too_many_redirects", "Too many redirects")
         history.append(current_url)
+        history_statuses.append(status_code)
         try:
             current_url = urljoin(current_url, location)
         except (TypeError, UnicodeError, ValueError) as exc:

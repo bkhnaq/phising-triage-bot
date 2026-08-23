@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from scoring.config import weight
+
 try:
     np: Any | None = importlib.import_module("numpy")
 except ImportError:
@@ -115,13 +117,13 @@ def scan_attachments_for_qr(attachments: list[dict]) -> list[dict]:
                 "qr_type": barcode_type,
                 "url": None,
                 "domain": None,
-                "risk_score": 10,  # base: QR code detected
+                "risk_score": weight("qr_detected"),
             }
 
             if _URL_PATTERN.match(data):
                 finding["url"] = data
                 finding["domain"] = urlparse(data).netloc or None
-                finding["risk_score"] = 15  # QR contains a URL
+                finding["risk_score"] = weight("qr_url")
 
             findings.append(finding)
             logger.warning(

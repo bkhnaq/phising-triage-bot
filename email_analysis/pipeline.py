@@ -50,9 +50,18 @@ T = TypeVar("T")
 class PhishingPipeline:
     """Modular phishing detection pipeline orchestrator."""
 
-    def __init__(self, upload_dir: str | None = None, analysis_id: str | None = None):
+    def __init__(
+        self,
+        upload_dir: str | None = None,
+        analysis_id: str | None = None,
+        *,
+        lab_mode: bool = False,
+        report_verbosity: str = "DEBUG",
+    ):
         self.upload_dir = upload_dir or UPLOAD_DIR
         self.analysis_id = analysis_id or uuid.uuid4().hex[:12]
+        self.lab_mode = lab_mode
+        self.report_verbosity = report_verbosity
         os.makedirs(self.upload_dir, exist_ok=True)
 
     def analyze_file(self, eml_path: str) -> dict:
@@ -138,6 +147,8 @@ class PhishingPipeline:
         from email_analysis.correlation import build_evidence_bundle
         from scoring.risk_scoring import calculate_risk
         from report.report_generator import generate_report
+        from email_analysis.observables import collect_observables
+        from email_analysis.analysis_environment import classify_analysis_environment
 
         attachments: list[dict] = []
         try:
@@ -242,7 +253,12 @@ class PhishingPipeline:
                     indicator, otx_check_url
                 ),
             )
-            otx_domain_reports = self._run_parallel(all_domains, otx_check_domain)
+            otx_domain_reports = self._run_parallel(
+                all_domains,
+                lambda domain: self._check_otx_domain_indicator(
+                    domain, otx_check_domain
+                ),
+            )
             otx_hash_reports = self._run_parallel(attachment_hashes, otx_check_hash)
             otx_reports = otx_domain_reports + otx_url_reports + otx_hash_reports
 
@@ -283,6 +299,11 @@ class PhishingPipeline:
                 domain_intelligence=domain_intel,
                 ai_verdict=ai_verdict,
                 url_intelligence=url_intel,
+                header_forensics=header_forensics,
+                heuristics=heuristics,
+                qr_findings=qr_findings,
+                ip_reputation=ip_reputation,
+                passive_dns=passive_dns,
             )
 
             # Stage 14: Risk scoring
@@ -309,6 +330,24 @@ class PhishingPipeline:
                 evidence_bundle=evidence_bundle,
                 email_data=email_data,
                 urls=all_urls,
+                attachments=attachments,
+            )
+
+            observables = collect_observables(
+                urls=urls,
+                attachments=attachments,
+                url_intelligence=url_intel,
+                sender_domain=auth_results.get("forensics", {}).get("from_domain", ""),
+                brand_impersonation=brand_results,
+                vt_url_reports=vt_url_reports,
+                vt_hash_reports=vt_hash_reports,
+                otx_reports=otx_reports,
+                attachment_risks=attachment_risks,
+                origin_ip=str(header_forensics.get("origin_ip") or ""),
+                ip_reputation=ip_reputation,
+            )
+            analysis_environment = classify_analysis_environment(
+                observables, lab_mode=self.lab_mode
             )
 
             # Stage 15: Report generation
@@ -338,6 +377,10 @@ class PhishingPipeline:
                 landing_pages=landing_pages,
                 evidence_bundle=evidence_bundle,
                 analysis_limits=analysis_limits,
+                lab_mode=self.lab_mode,
+                observables=observables,
+                analysis_environment=analysis_environment,
+                verbosity=self.report_verbosity,
             )
 
             logger.info(
@@ -378,6 +421,8 @@ class PhishingPipeline:
                 "lookalike_domains": lookalike_domains,
                 "ai_verdict": ai_verdict,
                 "evidence_bundle": evidence_bundle,
+                "observables": observables,
+                "analysis_environment": analysis_environment,
                 "risk": risk,
                 "analysis_limits": analysis_limits,
                 "report": report_text,
@@ -549,7 +594,28 @@ class PhishingPipeline:
     def _check_vt_url_indicator(
         indicator: dict, checker: Callable[[str], dict]
     ) -> dict:
-        report = checker(indicator["lookup_url"])
+        from urllib.parse import urlparse
+
+        from email_analysis.special_use import classify_domain
+        from scoring.config import ThreatIntelStatus
+
+        lookup_url = indicator["lookup_url"]
+        domain = urlparse(lookup_url).hostname or ""
+        if classify_domain(domain).is_special_use:
+            report = {
+                "url": lookup_url,
+                "malicious": 0,
+                "suspicious": 0,
+                "harmless": 0,
+                "undetected": 0,
+                "state": "not_applicable",
+                "status": ThreatIntelStatus.NOT_APPLICABLE.value,
+                "data": None,
+                "error": None,
+                "reason": "reserved special-use domain",
+            }
+        else:
+            report = checker(lookup_url)
         report["url"] = indicator["source_url"]
         if indicator["lookup_url"] != indicator["source_url"]:
             report["lookup_url"] = indicator["lookup_url"]
@@ -562,12 +628,53 @@ class PhishingPipeline:
         indicator: dict,
         checker: Callable[[str], dict],
     ) -> dict:
-        report = checker(indicator["lookup_url"])
+        from urllib.parse import urlparse
+
+        from email_analysis.special_use import classify_domain
+        from scoring.config import ThreatIntelStatus
+
+        lookup_url = indicator["lookup_url"]
+        domain = urlparse(lookup_url).hostname or ""
+        if classify_domain(domain).is_special_use:
+            report = {
+                "url": lookup_url,
+                "pulse_count": 0,
+                "pulses": [],
+                "state": "not_applicable",
+                "status": ThreatIntelStatus.NOT_APPLICABLE.value,
+                "data": None,
+                "error": None,
+                "reason": "reserved special-use domain",
+            }
+        else:
+            report = checker(lookup_url)
         report["url"] = indicator["source_url"]
         if indicator["lookup_url"] != indicator["source_url"]:
             report["lookup_url"] = indicator["lookup_url"]
         report["source"] = indicator["source"]
         return report
+
+    @staticmethod
+    def _check_otx_domain_indicator(
+        domain: str,
+        checker: Callable[[str], dict],
+    ) -> dict:
+        from email_analysis.special_use import classify_domain
+        from scoring.config import ThreatIntelStatus
+
+        special = classify_domain(domain)
+        if special.is_special_use:
+            return {
+                "domain": domain,
+                "pulse_count": 0,
+                "pulses": [],
+                "state": "not_applicable",
+                "status": ThreatIntelStatus.NOT_APPLICABLE.value,
+                "data": None,
+                "error": None,
+                "reason": "reserved special-use domain",
+            }
+        return checker(domain)
 
     @staticmethod
     def _build_rule_findings(

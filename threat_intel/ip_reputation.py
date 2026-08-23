@@ -27,6 +27,9 @@ from config.settings import (
     OFFLINE_MODE,
     THREAT_INTEL_CACHE_TTL_SECONDS,
 )
+from email_analysis.special_use import classify_domain, classify_ip
+from scoring.config import ThreatIntelStatus
+from scoring.config import weight
 from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -57,14 +60,8 @@ def resolve_domain_ip(domain: str) -> str | None:
     host = domain.split(":")[0].strip().lower()
     if not host:
         return None
-
-    if OFFLINE_MODE:
-        logger.info("DNS resolution skipped in offline mode for %s", host)
+    if classify_domain(host).is_special_use:
         return None
-
-    found, cached = _DNS_CACHE.get(host)
-    if found:
-        return cached
 
     # If it's already an IP, return it directly
     try:
@@ -73,6 +70,14 @@ def resolve_domain_ip(domain: str) -> str | None:
         return host
     except (AddressValueError, ValueError):
         pass
+
+    if OFFLINE_MODE:
+        logger.info("DNS resolution skipped in offline mode for %s", host)
+        return None
+
+    found, cached = _DNS_CACHE.get(host)
+    if found:
+        return cached
 
     try:
         answers = socket.getaddrinfo(host, None, socket.AF_INET)
@@ -244,6 +249,33 @@ def check_ip_reputation(domains: list[str]) -> list[dict]:
             continue
         checked_ips.add(ip)
 
+        classification = classify_ip(ip)
+        if classification.is_special_use:
+            findings.append(
+                {
+                    "domain": domain,
+                    "ip": ip,
+                    "classification": classification.classification,
+                    "geolocation": "Not applicable",
+                    "reputation": "Not applicable for real-world threat intelligence",
+                    "status": ThreatIntelStatus.NOT_APPLICABLE.value,
+                    "state": "not_applicable",
+                    "blacklisted": False,
+                    "risk_score": 0,
+                    "abuseipdb": {
+                        "status": ThreatIntelStatus.NOT_APPLICABLE.value,
+                        "state": "not_applicable",
+                        "error": None,
+                    },
+                    "spamhaus": {
+                        "status": ThreatIntelStatus.NOT_APPLICABLE.value,
+                        "state": "not_applicable",
+                        "error": None,
+                    },
+                }
+            )
+            continue
+
         abuse = _check_abuseipdb(ip)
         spamhaus = _check_spamhaus(ip)
 
@@ -257,7 +289,12 @@ def check_ip_reputation(domains: list[str]) -> list[dict]:
             "abuseipdb": abuse,
             "spamhaus": spamhaus,
             "blacklisted": blacklisted,
-            "risk_score": 20 if blacklisted else 0,
+            "risk_score": weight("ip_blacklisted") if blacklisted else 0,
+            "status": (
+                ThreatIntelStatus.SUSPICIOUS.value
+                if blacklisted
+                else ThreatIntelStatus.CLEAN.value
+            ),
         }
 
         if blacklisted:

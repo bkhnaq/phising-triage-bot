@@ -27,9 +27,47 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from email_analysis.domain_utils import registered_domain
+from email_analysis.analysis_environment import normalize_analysis_environment
+from email_analysis.observables import collect_observables, group_observables
+from scoring.config import AuthState, SourceStatus, ThreatIntelStatus
 
 logger = logging.getLogger(__name__)
+
+_FINDING_CATEGORY_LABELS = {
+    "authentication_relay": "Authentication / Relay",
+    "url_web": "URL / Web",
+    "identity_impersonation": "Identity / Impersonation",
+    "content_social": "Content / Social Engineering",
+    "threat_intelligence": "Threat Intelligence",
+    "attachment_malware": "Attachment / Malware",
+}
+
+_FINDING_TO_RISK_CATEGORY = {
+    "authentication_relay": "auth checks",
+    "url_web": "URL behavior",
+    "identity_impersonation": "brand impersonation",
+    "content_social": "content/language",
+    "threat_intelligence": "threat intelligence",
+    "attachment_malware": "attachment/malware",
+}
+
+_RISK_CATEGORY_LABELS = {
+    "auth checks": "Authentication / Relay",
+    "URL behavior": "URL / Web",
+    "brand impersonation": "Identity / Impersonation",
+    "content/language": "Content / Social Engineering",
+    "threat intelligence": "Threat Intelligence",
+    "attachment/malware": "Attachment / Malware",
+    "AI / ML": "AI / ML",
+    "Cross-category Confirmation": "Cross-category Confirmation",
+}
+
+
+def _display_category(value: object) -> str:
+    normalized = str(value or "Unknown")
+    return _FINDING_CATEGORY_LABELS.get(
+        normalized, _RISK_CATEGORY_LABELS.get(normalized, normalized)
+    )
 
 
 # ── Error message sanitiser ──────────────────────────────────
@@ -69,6 +107,7 @@ def _clean_error(raw: str | None) -> str:
 def _recommended_actions(
     verdict: str,
     *,
+    confidence: float = 0.0,
     email_data: dict | None = None,
     auth_results: dict | None = None,
     urls: list[dict] | None = None,
@@ -95,7 +134,11 @@ def _recommended_actions(
 
     auth = auth_results or {}
     auth_unknown = any(
-        str(auth.get(check, {}).get("result", "unknown")).lower() in {"unknown", "none"}
+        AuthState.parse(
+            auth.get(check, {}).get("state")
+            or auth.get(check, {}).get("result", "unknown")
+        )
+        is AuthState.UNKNOWN
         for check in ("spf", "dkim", "dmarc")
     )
     missing_received = not auth.get("forensics", {}).get("received_hops")
@@ -122,7 +165,10 @@ def _recommended_actions(
         credential_harvesting and credential_harvesting.get("detected")
     )
     if deceptive or credential_evidence:
-        actions.append("Search proxy/DNS logs for users who accessed the destination.")
+        actions.append(
+            "Search proxy/DNS logs for users who accessed the actual HREF destination."
+        )
+        actions.append("Determine whether any users submitted credentials.")
         actions.append(
             "If credentials may have been submitted, escalate for account containment and password reset."
         )
@@ -147,10 +193,15 @@ def _recommended_actions(
             f"Search the mail environment for messages matching {search_terms}."
         )
 
-    if normalized in {"CRITICAL", "HIGH"}:
+    if (
+        normalized in {"PHISHING", "BEC", "MALWARE"} and confidence >= 0.80
+    ) or normalized in {"HIGH", "CRITICAL"}:
         actions.insert(
-            0, "Quarantine the message and block only confirmed malicious IOCs."
+            0,
+            "Quarantine the message and search for matching copies across the mail environment.",
         )
+    elif normalized == "SUSPICIOUS" and confidence < 0.70:
+        actions.insert(0, "Escalate the message for human review before containment.")
     elif not actions:
         actions.append(
             "Retain normal monitoring and verify any unexpected request through a trusted channel."
@@ -168,83 +219,21 @@ def _collect_iocs(
     vt_hash_reports: list[dict] | None = None,
     otx_reports: list[dict] | None = None,
     attachment_risks: list[dict] | None = None,
-) -> dict[str, list[tuple[str, str]]]:
-    """Classify observables so trusted context is never exported as malicious."""
-    groups: dict[str, list[tuple[str, str]]] = {
-        "candidates": [],
-        "contextual": [],
-        "trusted": [],
-    }
-    seen: set[tuple[str, str, str]] = set()
-
-    def add(group: str, kind: str, value: object) -> None:
-        normalized = str(value or "").strip()
-        key = (group, kind, normalized)
-        if normalized and key not in seen and sum(map(len, groups.values())) < 30:
-            seen.add(key)
-            groups[group].append((kind, normalized))
-
-    identity_findings = (brand_impersonation or {}).get("sender_identity_mismatch", [])
-    suspicious_senders = {
-        str(finding.get("sender_domain", "")) for finding in identity_findings
-    }
-    trusted_roots = {
-        registered_domain(str(finding.get("expected_domain", "")))
-        for finding in identity_findings
-        if finding.get("expected_domain")
-    }
-    if sender_domain in suspicious_senders:
-        add("candidates", "Sender domain", sender_domain)
-    else:
-        add("contextual", "Sender domain", sender_domain)
-
-    for item in urls:
-        url = item.get("normalized_url") or item.get("expanded_url") or item.get("url")
-        domain = str(item.get("domain") or item.get("registered_domain") or "")
-        root = registered_domain(domain)
-        add(
-            "contextual",
-            "URL",
-            url,
+) -> dict[str, list[dict]]:
+    """Compatibility wrapper around the globally deduplicated IOC registry."""
+    return group_observables(
+        collect_observables(
+            urls=urls,
+            attachments=attachments,
+            url_intelligence=url_intelligence,
+            sender_domain=sender_domain,
+            brand_impersonation=brand_impersonation,
+            vt_url_reports=vt_url_reports,
+            vt_hash_reports=vt_hash_reports,
+            otx_reports=otx_reports,
+            attachment_risks=attachment_risks,
         )
-        add("contextual", "URL domain", domain)
-        if root in trusted_roots:
-            add("trusted", "Brand domain", root)
-
-    if url_intelligence:
-        for finding in url_intelligence.get("deceptive_links", []):
-            if int(finding.get("risk_score", 0)) > 0:
-                add("candidates", "Deceptive-link URL", finding.get("url"))
-                add("candidates", "Deceptive-link domain", finding.get("actual_domain"))
-        for finding in url_intelligence.get("redirect_findings", []):
-            add("contextual", "Redirect destination", finding.get("final_url"))
-            add("contextual", "Redirect domain", finding.get("final_domain"))
-        for finding in url_intelligence.get("shortener_findings", []):
-            add("contextual", "Expanded URL", finding.get("expanded_url"))
-            add("contextual", "Expanded domain", finding.get("expanded_domain"))
-
-    for report in vt_url_reports or []:
-        if int(report.get("malicious", 0)) > 0:
-            add("candidates", "Known-malicious URL", report.get("url"))
-    for report in vt_hash_reports or []:
-        if int(report.get("malicious", 0)) > 0:
-            add("candidates", "Known-malicious SHA-256", report.get("sha256"))
-    for report in otx_reports or []:
-        if int(report.get("pulse_count", 0)) > 0:
-            value = report.get("sha256") or report.get("url") or report.get("domain")
-            add("candidates", "OTX indicator", value)
-
-    risky_names = {
-        str(finding.get("filename", ""))
-        for finding in attachment_risks or []
-        if int(finding.get("risk_score", 0)) > 0
-    }
-    for attachment in attachments:
-        group = (
-            "candidates" if attachment.get("filename") in risky_names else "contextual"
-        )
-        add(group, "Attachment SHA-256", attachment.get("sha256"))
-    return groups
+    )
 
 
 # ── Threat summary builder ───────────────────────────────────
@@ -260,6 +249,9 @@ def _build_threat_summary(
     attachment_risks: list[dict] | None,
     domain_intelligence: dict | None,
     url_intelligence: dict | None = None,
+    email_data: dict | None = None,
+    auth_results: dict | None = None,
+    analysis_environment: dict | None = None,
 ) -> list[str]:
     """Produce a concise THREAT SUMMARY block."""
 
@@ -314,6 +306,8 @@ def _build_threat_summary(
     # Credential harvesting
     if credential_harvesting and credential_harvesting.get("detected"):
         goal = "Likely credential theft"
+        if not deceptive_links:
+            primary_indicator = "Credential-collection form in email HTML"
 
     # Attachment malware
     has_risky_attach = bool(
@@ -342,6 +336,35 @@ def _build_threat_summary(
     if has_risky_attach:
         goal = "Likely malware delivery" if goal == "Unknown" else goal
 
+    context_text = " ".join(
+        str((email_data or {}).get(key, ""))
+        for key in ("subject", "from", "body_text", "body_html")
+    ).lower()
+    account_context = bool(
+        {"credential_harvesting", "account_verification", "password_expiration"}
+        & set((language_analysis or {}).get("categories", {}))
+    )
+    if account_context and any(
+        token in context_text
+        for token in ("university", "college", "campus", "student", "faculty")
+    ):
+        theme = "University / IT account verification"
+    elif account_context and any(
+        token in context_text
+        for token in ("microsoft 365", "office 365", "outlook", "onedrive", "teams")
+    ):
+        theme = "Microsoft 365 / account verification"
+    elif "payroll" in context_text:
+        theme = "Payroll"
+    elif any(
+        token in context_text for token in ("dropbox", "google drive", "sharepoint")
+    ):
+        theme = "Cloud storage"
+    elif any(token in context_text for token in ("delivery", "shipment", "parcel")):
+        theme = "Delivery"
+    elif any(token in context_text for token in ("human resources", " hr ")):
+        theme = "HR"
+
     # Attack type label
     credential_context = goal == "Likely credential theft"
     if credential_context:
@@ -357,13 +380,29 @@ def _build_threat_summary(
     else:
         attack_type = "Unknown"
 
-    verdict = risk.get("verdict", "LOW")
+    if not primary_indicator:
+        if credential_harvesting and credential_harvesting.get("detected"):
+            primary_indicator = "Credential-collection form in email HTML"
+        elif has_risky_attach:
+            primary_indicator = "Suspicious attachment"
+        elif any(
+            AuthState.parse(
+                (auth_results or {}).get(check, {}).get("state")
+                or (auth_results or {}).get(check, {}).get("result")
+            )
+            is AuthState.FAIL
+            for check in ("spf", "dmarc")
+        ):
+            primary_indicator = "Sender authentication failure"
+
+    verdict = risk.get("verdict", "UNKNOWN")
+    risk_severity = risk.get("risk_severity", risk.get("risk_level", "LOW"))
     overall_confidence = float(risk.get("confidence", 0.0))
     completeness = int(risk.get("data_completeness", 0))
 
     lines: list[str] = [
         "━━━ THREAT SUMMARY ━━━",
-        f"Type                  : {attack_type}",
+        f"Classification        : {attack_type.title()}",
         f"Theme                 : {theme}",
     ]
     if target_brand:
@@ -374,10 +413,20 @@ def _build_threat_summary(
     if primary_indicator:
         lines.append(f"Primary indicator     : {primary_indicator}")
     lines.append("")
-    lines.append(f"Risk Level            : {verdict}")
-    lines.append(f"Risk Score            : {risk.get('score', 0)} / 100")
+    lines.append(f"Verdict               : {verdict}")
     lines.append(f"Verdict Confidence    : {overall_confidence:.0%}")
-    lines.append(f"Evidence Completeness : {completeness}%")
+    lines.append("")
+    lines.append(f"Risk Severity         : {risk_severity}")
+    lines.append(f"Risk Score            : {risk.get('score', 0)} / 100")
+    lines.append(f"Applicable Evidence Coverage : {completeness}%")
+    environment = normalize_analysis_environment(analysis_environment)
+    environment_type = str(environment["type"])
+    if environment_type in {"TEST", "LAB"}:
+        lines.append(f"Environment           : {environment_type}")
+        lines.append("Operational Use       : NON-PRODUCTION / SIMULATED RESPONSE ONLY")
+    elif environment_type == "MIXED":
+        lines.append("Environment           : MIXED")
+        lines.append("Operational Use       : PER-OBSERVABLE EXPORT CONTROL REQUIRED")
     for note in risk.get("confidence_notes", [])[:2]:
         lines.append(f"  ℹ️ {note}")
     lines.append("")
@@ -413,6 +462,10 @@ def generate_report(
     landing_pages: list[dict] | None = None,
     evidence_bundle: dict | None = None,
     analysis_limits: dict | None = None,
+    lab_mode: bool = False,
+    observables: list[dict] | None = None,
+    analysis_environment: dict | None = None,
+    verbosity: str = "DEBUG",
 ) -> str:
     """
     Generate a professional SOC-grade phishing triage report.
@@ -421,11 +474,23 @@ def generate_report(
         A multi-line string ready for display.
     """
     lines: list[str] = []
+    explain = str(verbosity or "DEBUG").strip().upper() in {"DEBUG", "EXPLAIN"}
+    environment = normalize_analysis_environment(analysis_environment)
+    environment_type = str(environment["type"])
 
     # ── Report header ────────────────────────────────────────
     lines.append("🔍 *PHISHING TRIAGE REPORT*")
     lines.append(f"Generated: {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S UTC}")
     lines.append("")
+
+    if environment_type in {"TEST", "LAB", "MIXED"}:
+        lines.append(f"━━━ {environment_type} ENVIRONMENT DETECTED ━━━")
+        for reason in environment.get("reasons", [])[:4]:
+            lines.append(f"• {reason}")
+        lines.append(
+            "The verdict evaluates phishing behavior; export safety is determined per observable."
+        )
+        lines.append("")
 
     # ── 1. THREAT SUMMARY ────────────────────────────────────
     lines.extend(
@@ -439,6 +504,9 @@ def generate_report(
             attachment_risks,
             domain_intelligence,
             url_intelligence,
+            email_data,
+            auth_results,
+            environment,
         )
     )
 
@@ -457,7 +525,9 @@ def generate_report(
         result = str(auth_item.get("result", "unknown")).lower()
         if result == "pass":
             icon = "✅"
-        elif result in {"none", "unknown"}:
+        elif result == "none":
+            icon = "ℹ️"
+        elif result == "unknown":
             icon = "➖"
         elif result == "softfail":
             icon = "⚠️"
@@ -466,6 +536,13 @@ def generate_report(
         detail = str(auth_item.get("details", "")).strip()
         suffix = f" — {detail}" if result == "unknown" and detail else ""
         lines.append(f"{icon} {check.upper()}: {result.upper()}{suffix}")
+
+    if auth_results.get("testing_headers"):
+        lines.append("")
+        lines.append("ℹ️ Security/testing-related custom header observed.")
+        lines.append(
+            "   This header is attacker-controlled and is not treated as proof of safety."
+        )
 
     # Inline header forensics
     forensics = auth_results.get("forensics", {})
@@ -488,6 +565,14 @@ def generate_report(
                 lines.append(f"{icon} {f.get('summary', 'Header finding')}")
                 if f.get("details"):
                     lines.append(f"   {f['details']}")
+                if (
+                    f.get("type") == "message_id_mismatch"
+                    and int(f.get("risk_score", 0)) == 0
+                ):
+                    lines.append(
+                        "   Informational only; contribution +0. "
+                        "Legitimate ESP/mailer infrastructure commonly uses a different domain."
+                    )
         else:
             lines.append("✅ No suspicious header anomalies detected")
     lines.append("")
@@ -505,6 +590,18 @@ def generate_report(
         else:
             origin_ip = header_forensics.get("origin_ip")
             lines.append(f"Origin IP  : {origin_ip or 'not detected'}")
+
+            ip_classification = header_forensics.get("origin_ip_classification", "")
+            if ip_classification:
+                lines.append(f"IP Classification: {ip_classification}")
+            if (
+                header_forensics.get("geolocation_status")
+                == SourceStatus.NOT_APPLICABLE.value
+            ):
+                lines.append("Geolocation: Not applicable")
+                lines.append(
+                    "Reputation : Not applicable for real-world threat intelligence"
+                )
 
             country = header_forensics.get("origin_country", "Unknown")
             cc = header_forensics.get("origin_country_code", "")
@@ -579,7 +676,7 @@ def generate_report(
             lines.append("🔴 Deceptive hyperlink detected")
             for finding in deceptive_links[:3]:
                 lines.append(f"  Displayed: {finding.get('displayed_url', '?')}")
-                lines.append(f"  Actual destination: {finding.get('url', '?')}")
+                lines.append(f"  Actual HREF destination: {finding.get('url', '?')}")
                 lines.append("  Displayed domain != actual HREF domain")
                 lines.append("  Risk: Credential phishing / deceptive link")
         elif tracking_mismatches:
@@ -615,16 +712,36 @@ def generate_report(
             lines.append("")
             lines.append("Redirect Chains:")
             for f in redirect_findings:
-                if f.get("error"):
+                if f.get("status") == SourceStatus.NOT_APPLICABLE.value:
+                    lines.append(f"  ℹ️ Redirect analysis not applicable: {f['url']}")
+                    lines.append(
+                        f"     Reason: {f.get('reason', 'special-use resource')}"
+                    )
+                elif f.get("error"):
                     lines.append(f"  ➖ Redirect analysis unavailable: {f['url']}")
                     lines.append(f"     Reason: {_clean_error(f['error'])}")
+                elif int(f.get("hops", 0)) <= 0:
+                    lines.append(f"  ℹ️ No HTTP redirect observed: {f['url']}")
                 else:
-                    lines.append(f"  ⚠️ {f['url']}")
                     lines.append(
-                        f"     Hops: {f['hops']} → Final: {f.get('final_domain', '?')}"
+                        f"  Redirect source: {f.get('redirect_source', f['url'])}"
                     )
-                    for i, step in enumerate(f.get("chain", [])):
-                        lines.append(f"     {i}. {step}")
+                    lines.append(
+                        "  Redirect destination: "
+                        f"{f.get('redirect_destination', f.get('final_url', '?'))}"
+                    )
+                    for i, step in enumerate(f.get("redirect_chain", []), 1):
+                        status_code = step.get("status_code")
+                        suffix = (
+                            "Final destination"
+                            if step.get("final")
+                            else (
+                                f"HTTP {status_code}"
+                                if status_code
+                                else "HTTP redirect observed"
+                            )
+                        )
+                        lines.append(f"     {i}. {step.get('url', '?')} — {suffix}")
                     if f.get("suspicious_intermediates"):
                         for si in f["suspicious_intermediates"]:
                             lines.append(
@@ -645,14 +762,25 @@ def generate_report(
         whois_results = domain_intelligence.get("whois_results", [])
         dns_results = domain_intelligence.get("dns_results", [])
         entropy_results = domain_intelligence.get("entropy_results", [])
+        randomness_results = domain_intelligence.get(
+            "randomness_results", entropy_results
+        )
 
-        if whois_results or dns_results or entropy_results:
+        if whois_results or dns_results or randomness_results:
             _has_domain_intel = True
             lines.append("━━━ DOMAIN INTELLIGENCE ━━━")
 
             for w in whois_results:
                 lines.append(f"Domain: {w['domain']}")
-                if w.get("error"):
+                if w.get("status") == SourceStatus.NOT_APPLICABLE.value:
+                    classification = w.get("special_use", {}).get(
+                        "classification", "Reserved special-use domain"
+                    )
+                    lines.append(f"  ℹ️ {classification}")
+                    lines.append(
+                        "  DNS/WHOIS enrichment is not applicable for reputation purposes."
+                    )
+                elif w.get("error"):
                     lines.append("  WHOIS: lookup unavailable")
                 else:
                     if w.get("created"):
@@ -677,6 +805,10 @@ def generate_report(
                 lines.append("DNS Analysis:")
                 for d in dns_results:
                     lines.append(f"  {d['domain']}:")
+                    if d.get("status") == SourceStatus.NOT_APPLICABLE.value:
+                        lines.append("    ℹ️ Reserved special-use domain")
+                        lines.append("    DNS reputation: Not applicable")
+                        continue
                     if d.get("a_records"):
                         lines.append(f"    A   : {', '.join(d['a_records'][:3])}")
                     elif d.get("record_status", {}).get("A") in {
@@ -715,10 +847,40 @@ def generate_report(
                         lines.append("    ➖ DMARC lookup unavailable")
                 lines.append("")
 
-            if entropy_results:
-                lines.append("Entropy Analysis:")
-                for e in entropy_results:
-                    lines.append(f"  ⚠️ {e['domain']} — entropy: {e['entropy']} (high)")
+            if randomness_results:
+                lines.append("Domain Randomness Analysis:")
+                compact_test_randomness = (
+                    not explain
+                    and all(
+                        str(item.get("domain", "")).lower().endswith(".test")
+                        for item in randomness_results
+                    )
+                    and all(
+                        int(item.get("risk_score", 0)) == 0
+                        for item in randomness_results
+                    )
+                )
+                if compact_test_randomness:
+                    lines.append(
+                        "  ℹ️ Reserved .test domains analyzed; "
+                        "no randomized-domain risk contribution (+0)."
+                    )
+                else:
+                    for e in randomness_results:
+                        icon = "⚠️" if int(e.get("risk_score", 0)) > 0 else "ℹ️"
+                        lines.append(
+                            f"  {icon} {e['domain']} — "
+                            f"{e.get('description', 'analyzed')}"
+                        )
+                        lines.append(
+                            f"     Entropy: {e.get('entropy', 0)} | "
+                            f"Contribution: +{e.get('risk_score', 0)}"
+                        )
+                        if e.get("meaningful_tokens"):
+                            lines.append(
+                                "     Meaningful tokens: "
+                                + ", ".join(e["meaningful_tokens"])
+                            )
                 lines.append("")
 
     # Suspicious keywords from heuristics (unique to this module)
@@ -784,10 +946,15 @@ def generate_report(
         unavailable_count = 0
         no_known_threat_count = 0
         for r in vt_url_reports:
-            if r.get("malicious", 0) > 0:
+            status = str(r.get("status") or r.get("state", "")).upper()
+            if status == ThreatIntelStatus.NOT_APPLICABLE.value:
+                lines.append(f"  ℹ️ {r.get('url', '?')} — reputation not applicable")
+            elif r.get("malicious", 0) > 0:
                 lines.append(
                     f"  🔴 {r.get('url', '?')} — {r['malicious']} engine(s) flagged malicious"
                 )
+            elif status == ThreatIntelStatus.NOT_FOUND.value:
+                lines.append(f"  ➖ {r.get('url', '?')} — no record found")
             elif r.get("error") and r["error"] != "submitted_for_analysis":
                 unavailable_count += 1
                 lines.append(f"  ➖ {r.get('url', '?')} — lookup unavailable")
@@ -820,6 +987,10 @@ def generate_report(
             lines.append(
                 "     A benign destination does not make the email trustworthy."
             )
+        if no_known_threat_count:
+            lines.append(
+                "  ℹ️ No known malicious reputation is not evidence of safety."
+            )
         lines.append("")
 
     # VirusTotal Hash results
@@ -829,10 +1000,17 @@ def generate_report(
             _ti_header_shown = True
         lines.append("VirusTotal – File Hashes:")
         for r in vt_hash_reports:
-            if r.get("malicious", 0) > 0:
+            status = str(r.get("status") or r.get("state", "")).upper()
+            if status == ThreatIntelStatus.NOT_APPLICABLE.value:
+                lines.append(
+                    f"  ℹ️ {r.get('sha256', '?')[:32]}… — reputation not applicable"
+                )
+            elif r.get("malicious", 0) > 0:
                 lines.append(
                     f"  🔴 {r.get('sha256', '?')[:32]}… — {r['malicious']} engine(s)"
                 )
+            elif status == ThreatIntelStatus.NOT_FOUND.value:
+                lines.append(f"  ➖ {r.get('sha256', '?')[:32]}… — no record found")
             elif r.get("error"):
                 lines.append(f"  ➖ {r.get('sha256', '?')[:32]}… — lookup unavailable")
             else:
@@ -851,6 +1029,13 @@ def generate_report(
             identifier = (
                 r.get("domain") or r.get("url") or (r.get("sha256", "?")[:32] + "…")
             )
+            status = str(r.get("status") or r.get("state", "")).upper()
+            if status == ThreatIntelStatus.NOT_APPLICABLE.value:
+                lines.append(f"  ℹ️ {identifier}: reputation not applicable")
+                continue
+            if status == ThreatIntelStatus.NOT_FOUND.value:
+                lines.append(f"  ➖ {identifier}: no record found")
+                continue
             if r.get("error"):
                 lines.append(f"  ➖ {identifier}: lookup unavailable")
                 continue
@@ -868,6 +1053,18 @@ def generate_report(
             _ti_header_shown = True
         lines.append("IP Reputation:")
         for f in ip_reputation:
+            if (
+                str(f.get("status", "")).upper()
+                == ThreatIntelStatus.NOT_APPLICABLE.value
+            ):
+                lines.append(
+                    f"  ℹ️ {f['ip']} — {f.get('classification', 'special-use IP')}"
+                )
+                lines.append("     Geolocation: Not applicable")
+                lines.append(
+                    "     Reputation: Not applicable for real-world threat intelligence"
+                )
+                continue
             abuse = f["abuseipdb"]
             spamhaus = f["spamhaus"]
             bl_icon = "🔴" if f["blacklisted"] else "➖"
@@ -945,37 +1142,80 @@ def generate_report(
 
     lines.append("━━━ OBSERVABLES / IOC SUMMARY ━━━")
     sender_domain = auth_results.get("forensics", {}).get("from_domain", "")
-    iocs = _collect_iocs(
-        urls,
-        attachments,
-        url_intelligence,
-        sender_domain,
-        brand_impersonation,
-        vt_url_reports,
-        vt_hash_reports,
-        otx_reports,
-        attachment_risks,
+    iocs = (
+        group_observables(observables)
+        if observables is not None
+        else _collect_iocs(
+            urls,
+            attachments,
+            url_intelligence,
+            sender_domain,
+            brand_impersonation,
+            vt_url_reports,
+            vt_hash_reports,
+            otx_reports,
+            attachment_risks,
+        )
     )
+    has_test_context = environment_type in {"TEST", "LAB", "MIXED"}
+    if environment_type in {"TEST", "LAB"}:
+        lines.append("IOC Environment: TEST / LAB")
+        lines.append("Operational usability: NON-PRODUCTION")
+        lines.append("")
+    elif environment_type == "MIXED":
+        lines.append("IOC Environment: MIXED")
+        lines.append("Operational usability: PER-OBSERVABLE EXPORT POLICY")
+        lines.append("")
+    elif environment_type == "PRODUCTION":
+        lines.append("IOC Environment: PRODUCTION")
+        lines.append("")
+
+    def render_observable(prefix: str, item: dict) -> None:
+        lines.append(f"{prefix} {item.get('label', 'Observable')}:")
+        lines.append(f"  {item.get('value', '')}")
+        if environment_type == "MIXED":
+            lines.append(
+                "  Environment: "
+                f"{str(item.get('environment', 'unknown')).upper()} | "
+                f"Exportable: {str(bool(item.get('exportable'))).lower()}"
+            )
+
+    if iocs["confirmed"]:
+        lines.append("Confirmed malicious IOCs:")
+        for item in iocs["confirmed"]:
+            render_observable("🔴", item)
+        lines.append("")
+    if iocs["suspicious"]:
+        lines.append("Suspicious Observables:")
+        for item in iocs["suspicious"]:
+            render_observable("⚠️", item)
+        lines.append("")
     if iocs["candidates"]:
-        lines.append("Suspicious IOC candidates:")
-        for kind, value in iocs["candidates"]:
-            lines.append(f"⚠️ {kind}: {value}")
+        lines.append("Suspicious IOC Candidates:")
+        for item in iocs["candidates"]:
+            render_observable("•", item)
     else:
-        lines.append("Suspicious IOC candidates: none confirmed")
-        if not iocs["contextual"] and not iocs["trusted"]:
+        lines.append("Suspicious IOC Candidates: none")
+        if not iocs["confirmed"] and not iocs["contextual"] and not iocs["trusted"]:
             lines.append("No IOCs extracted from the available evidence.")
     if iocs["contextual"]:
         lines.append("")
-        lines.append("Contextual / observed infrastructure:")
-        for kind, value in iocs["contextual"]:
-            lines.append(f"• {kind}: {value}")
+        lines.append("Contextual / Observed Infrastructure:")
+        for item in iocs["contextual"]:
+            render_observable("•", item)
     if iocs["trusted"]:
         lines.append("")
         lines.append(
             "Trusted / brand infrastructure (do not block from this sample alone):"
         )
-        for kind, value in iocs["trusted"]:
-            lines.append(f"ℹ️ {kind}: {value}")
+        for item in iocs["trusted"]:
+            render_observable("ℹ️", item)
+    if has_test_context:
+        lines.append("")
+        lines.append("Operational Note:")
+        lines.append(
+            "Reserved testing indicators are not exportable. Production observables, if present, retain their own independent export policy."
+        )
     lines.append("")
 
     if evidence_bundle:
@@ -983,30 +1223,93 @@ def generate_report(
         evidence = evidence_bundle.get("evidence", [])
         if correlations or evidence:
             lines.append("━━━ CORRELATED FINDINGS ━━━")
+            evidence_by_id = {str(item.get("id", "")): item for item in evidence}
             for c in correlations[:5]:
-                icon = "🔴" if c.get("severity") == "high" else "⚠️"
+                icon = "🔴" if str(c.get("severity", "")).upper() == "HIGH" else "⚠️"
                 lines.append(f"{icon} {c.get('summary', 'Correlated signal')}")
-                if c.get("evidence"):
-                    lines.append("Evidence:")
-                    for item in c["evidence"][:5]:
-                        lines.append(f"  • {item}")
+                finding_category = str(c.get("category", ""))
+                lines.append(
+                    "Category: "
+                    f"{_FINDING_CATEGORY_LABELS.get(finding_category, finding_category or 'Unknown')}"
+                )
+                lines.append(f"Severity: {str(c.get('severity', 'MEDIUM')).upper()}")
                 confidence_label = (
                     "HIGH" if float(c.get("confidence", 0.0)) >= 0.80 else "MEDIUM"
                 )
                 lines.append(f"Confidence: {confidence_label}")
+                lines.append(
+                    f"Score contribution: +{int(c.get('score_contribution', c.get('risk_score', 0)))}"
+                )
+                consumed = [
+                    evidence_by_id[evidence_id]
+                    for evidence_id in c.get("consumed_evidence", [])
+                    if evidence_id in evidence_by_id
+                ]
+                if consumed:
+                    lines.append("Consumed evidence:")
+                    for item in consumed[:8]:
+                        lines.append(f"  ✓ {item.get('summary', 'Evidence')}")
+                supporting_context = [
+                    item
+                    for item in evidence
+                    if item.get("scoring_state") == "SUPPORTING"
+                    and item.get("consumed_by") == c.get("type")
+                ]
+                if supporting_context:
+                    lines.append("Supporting URL context:")
+                    for item in supporting_context[:8]:
+                        lines.append(
+                            f"  ✓ {item.get('summary', 'Context')} (contribution +0)"
+                        )
+                category_detail = risk.get("category_details", {}).get(
+                    _FINDING_TO_RISK_CATEGORY.get(finding_category, finding_category),
+                    {},
+                )
+                independent = [
+                    item
+                    for item in category_detail.get("items", [])
+                    if item.get("kind") == "primitive"
+                    and int(item.get("contribution", 0)) > 0
+                    and item.get("state") != "SUPPORTING"
+                ]
+                if independent:
+                    lines.append("Independent related evidence:")
+                    for item in independent[:4]:
+                        lines.append(
+                            f"  ✓ {item.get('label', 'Evidence')} "
+                            f"(+{item.get('contribution', 0)})"
+                        )
                 lines.append("")
-            if evidence:
-                lines.append("Evidence provenance:")
-                top = sorted(
-                    evidence,
-                    key=lambda item: int(item.get("risk_delta", 0)),
-                    reverse=True,
-                )[:6]
-                for item in top:
+            for finding in risk.get("cross_category_findings", [])[:10]:
+                active = finding.get("status") == "ACTIVE"
+                lines.append(f"{'🔴' if active else '➖'} {finding.get('summary')}")
+                lines.append("Type: Cross-category confirmation")
+                if not active:
                     lines.append(
-                        f"  • [{item.get('source')}] {item.get('summary')} "
-                        f"({item.get('state')}, +{item.get('risk_delta', 0)})"
+                        "Status: SUPPRESSED → covered by "
+                        f"{finding.get('suppressed_by', 'higher-priority confirmation')}"
                     )
+                else:
+                    lines.append("Independent categories:")
+                    for category in finding.get("independent_categories", []):
+                        lines.append(f"  ✓ {_display_category(category)}")
+                    if finding.get("supporting_categories"):
+                        lines.append("Supporting categories:")
+                        for category in finding["supporting_categories"]:
+                            lines.append(f"  ✓ {_display_category(category)}")
+                    lines.append(
+                        f"Score contribution: +{finding.get('score_contribution', 0)}"
+                    )
+                ai_agreement = finding.get("ai_agreement")
+                if ai_agreement:
+                    lines.append("AI agreement:")
+                    lines.append(
+                        f"  ✓ {ai_agreement.get('verdict', 'UNKNOWN')} "
+                        f"{float(ai_agreement.get('confidence', 0.0)):.0%}"
+                    )
+                    lines.append("  Role: confidence support only")
+                    lines.append("  Score impact on correlation: +0")
+                lines.append("")
             lines.append("")
 
     # ── 12. ATTACHMENTS ──────────────────────────────────────
@@ -1023,7 +1326,7 @@ def generate_report(
             )
             lines.append(f"  SHA256: {a['sha256']}")
     else:
-        lines.append("  No attachments found.")
+        lines.append("  Analyzer result: NONE_PRESENT (no attachments found).")
 
     if attachment_risks:
         lines.append("")
@@ -1048,22 +1351,51 @@ def generate_report(
 
     # ── 13. RISK ASSESSMENT ──────────────────────────────────
     lines.append("━━━ RISK ASSESSMENT ━━━")
+    severity = str(risk.get("risk_severity", risk.get("risk_level", "LOW")))
+    reconciliation = risk.get("score_reconciliation", {})
+    pre_calibration = int(
+        reconciliation.get("pre_calibration_score", risk.get("score", 0))
+    )
+    critical_gate = reconciliation.get("critical_evidence_gate", {})
     verdict_icon = {
-        "INCONCLUSIVE": "⚪",
-        "LOW": "🟢",
-        "MEDIUM": "🟡",
+        "UNKNOWN": "⚪",
+        "BENIGN": "🟢",
+        "LIKELY_BENIGN": "🟢",
         "SUSPICIOUS": "🟠",
-        "HIGH": "🟠",
-        "CRITICAL": "🔴",
+        "PHISHING": "🔴",
+        "BEC": "🔴",
+        "MALWARE": "🔴",
+        "SPAM": "🟡",
     }.get(risk["verdict"], "⚪")
-    lines.append(f"Score   : {risk['score']} / 100")
-    lines.append(f"Verdict : {verdict_icon} {risk['verdict']}")
+    lines.append(f"Pre-calibration score : {pre_calibration} / 100")
+    if critical_gate:
+        lines.append("")
+        lines.append("Critical Evidence Gate:")
+        lines.append(f"Status : {critical_gate.get('status', 'NOT_EVALUATED')}")
+        lines.append("")
+        lines.append("Reason:")
+        lines.append(str(critical_gate.get("reason", "No reason available.")))
+        if critical_gate.get("status") == "MET" and critical_gate.get("confirmations"):
+            lines.append("Evidence:")
+            for confirmation in critical_gate["confirmations"]:
+                lines.append(f"  • {confirmation}")
+        if critical_gate.get("applied"):
+            lines.append(
+                f"Critical severity cap : {critical_gate.get('score_cap', 84)}"
+            )
+    lines.append("")
+    lines.append(f"Final score : {risk['score']} / 100")
+    lines.append(f"Severity    : {severity}")
+    lines.append(f"Verdict     : {verdict_icon} {risk['verdict']}")
     if "data_completeness" in risk:
-        lines.append(f"Evidence completeness : {risk['data_completeness']} / 100")
+        lines.append(
+            "Applicable Evidence Coverage : "
+            f"{risk['data_completeness']}% of applicable analysis sources"
+        )
     lines.append("")
     lines.append("Scoring legend:")
     lines.append(
-        "  0–24 Low | 25–44 Medium | 45–64 Suspicious | 65–84 High | 85–100 Critical"
+        "  0–24 Low | 25–44 Moderate | 45–64 Elevated | 65–84 High | 85–100 Critical"
     )
     lines.append("")
     if risk.get("category_details"):
@@ -1075,38 +1407,79 @@ def generate_report(
             "threat intelligence": "Threat intelligence",
             "AI / ML": "AI / ML",
             "attachment/malware": "Attachment / malware",
-            "correlation": "Correlated findings",
             "ESP detection": "Legitimate ESP context",
+            "Cross-category Confirmation": "Cross-category confirmation",
         }
         lines.append("Category Contributions:")
         for category, detail in risk["category_details"].items():
-            raw = int(detail.get("raw_subtotal", 0))
+            raw = int(detail.get("primitive_raw_subtotal", 0))
             effective = int(detail.get("effective_contribution", 0))
-            suppressed = int(detail.get("suppressed_duplicate_weight", 0))
+            cap_suppressed = int(detail.get("suppressed_by_category_cap", 0))
             if raw == 0 and effective == 0:
                 continue
-            lines.append(f"  {labels.get(category, category)}:")
-            lines.append(f"    Raw subtotal               : {raw}")
-            lines.append(
-                f"    Category maximum           : {detail.get('category_maximum', 0)}"
-            )
-            lines.append(f"    Effective contribution     : {effective}")
-            if suppressed:
-                lines.append(f"    Suppressed duplicate weight: {suppressed}")
-        reconciliation = risk.get("score_reconciliation", {})
+            if explain:
+                lines.append(f"  {labels.get(category, category)}:")
+                for item in detail.get("items", [])[:8]:
+                    item_state = str(item.get("state", "ACTIVE"))
+                    state_suffix = (
+                        f" [{item_state} → {item.get('suppressed_by')}]"
+                        if item_state == "SUPPRESSED"
+                        else (
+                            f" [SUPPORTING → {item.get('supporting_for', 'context')}]"
+                            if item_state == "SUPPORTING"
+                            else ""
+                        )
+                    )
+                    lines.append(
+                        f"    {item.get('label', 'Evidence'):<42} "
+                        f"+{int(item.get('contribution', 0))}{state_suffix}"
+                    )
+                lines.append("    " + "-" * 50)
+                lines.append(
+                    f"    Effective                                {effective} / "
+                    f"{detail.get('category_maximum', 0)}"
+                )
+                if cap_suppressed:
+                    lines.append(
+                        f"    Category-cap suppression                  {cap_suppressed}"
+                    )
+            else:
+                lines.append(
+                    f"  {labels.get(category, category)}: {effective} / "
+                    f"{detail.get('category_maximum', 0)}"
+                )
         if reconciliation:
             lines.append(
-                "  Effective total before overall limit: "
+                "  Effective categories + modifiers: "
                 f"{reconciliation.get('raw_effective_total', risk['score'])}"
             )
-            lines.append(f"  Final score                      : {risk['score']}")
+            lines.append(
+                "  Pre-calibration score          : "
+                f"{reconciliation.get('pre_calibration_score', risk['score'])}"
+            )
+            lines.append(f"  Final score                    : {risk['score']}")
         if int(reconciliation.get("suppressed_overall_weight", 0)) > 0:
             lines.append(
                 "  Overall 100-point limit suppressed: "
                 f"{reconciliation['suppressed_overall_weight']}"
             )
         lines.append("")
-    if risk.get("breakdown"):
+    if explain and evidence_bundle and evidence_bundle.get("evidence"):
+        lines.append("Raw Evidence Breakdown:")
+        for item in sorted(
+            evidence_bundle["evidence"],
+            key=lambda evidence: int(evidence.get("risk_delta", 0)),
+            reverse=True,
+        ):
+            score = int(item.get("risk_delta", 0))
+            state = str(item.get("scoring_state", "INFORMATIONAL"))
+            suffix = f"(+{score} raw)" if score else "(+0 raw)"
+            if state == "CONSUMED":
+                state = f"CONSUMED → {item.get('consumed_by', 'finding')}"
+            elif state == "SUPPORTING":
+                state = f"SUPPORTING → {item.get('consumed_by', 'context')}"
+            lines.append(f"  – {item.get('summary', 'Evidence')} {suffix} [{state}]")
+    elif explain and risk.get("breakdown"):
         lines.append("Raw Evidence Breakdown:")
         for reason in risk["breakdown"]:
             lines.append(f"  – {reason}")
@@ -1115,10 +1488,27 @@ def generate_report(
         lines.append("Evidence Gaps:")
         for gap in risk["completeness_breakdown"][:8]:
             lines.append(f"  ➖ {gap}")
+    if explain and risk.get("evidence_coverage"):
+        lines.append("")
+        lines.append("Applicable Evidence Coverage Sources:")
+        for source, details in risk["evidence_coverage"].items():
+            status = str(details.get("status"))
+            if source == "attachments" and status == SourceStatus.NONE_PRESENT.value:
+                status = "ANALYZED — NONE_PRESENT"
+            elif (
+                source == "html_analysis" and status == SourceStatus.NONE_PRESENT.value
+            ):
+                status = "ANALYZED — NONE_PRESENT"
+            lines.append(
+                f"  • {source.replace('_', ' ').title()}: {status} "
+                f"(weight {details.get('weight', 0)})"
+            )
+        lines.append("  ℹ️ NOT_APPLICABLE sources are excluded from coverage scoring.")
     lines.append("")
     lines.append("━━━ RECOMMENDED SOC ACTIONS ━━━")
-    for action in _recommended_actions(
+    actions = _recommended_actions(
         str(risk.get("verdict", "LOW")),
+        confidence=float(risk.get("confidence", 0.0)),
         email_data=email_data,
         auth_results=auth_results,
         urls=urls,
@@ -1126,8 +1516,34 @@ def generate_report(
         credential_harvesting=credential_harvesting,
         url_intelligence=url_intelligence,
         attachment_risks=attachment_risks,
-    ):
-        lines.append(f"• {action}")
+    )
+    if environment_type in {"TEST", "LAB"}:
+        lines.append("Lab/Test Context:")
+        lines.append(
+            "This sample uses reserved testing infrastructure. The IOC values below must not be deployed into production blocking or detection systems."
+        )
+        lines.append("")
+        lines.append("Simulated Production Response:")
+        for action in actions:
+            simulated = action.replace(
+                "Quarantine the message", "Quarantine the equivalent message"
+            )
+            lines.append(f"• {simulated}")
+        lines.append("")
+        lines.append("Operational Safety:")
+        lines.append("• Do not block reserved *.test domains.")
+        lines.append("• Do not block TEST-NET documentation addresses.")
+        lines.append(
+            "• Do not export test IOC values to production SIEM/SOAR/EDR/mail gateways."
+        )
+    else:
+        if environment_type == "MIXED":
+            lines.append("Mixed Environment Context:")
+            lines.append(
+                "Apply response actions to production-eligible observables only; reserved test values remain non-exportable."
+            )
+        for action in actions:
+            lines.append(f"• {action}")
     lines.append("Human validation and an approved sandbox may still be required.")
     lines.append("")
     lines.append("━━━ END OF REPORT ━━━")

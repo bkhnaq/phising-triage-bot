@@ -28,6 +28,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from email_analysis.html_form_detector import detect_credential_harvesting
+from scoring.config import weight
 
 logger = logging.getLogger(__name__)
 
@@ -416,7 +417,7 @@ def assess_attachment_risk(attachments: list[dict]) -> list[dict]:
         if "." in name_without_ext:
             inner_ext = Path(name_without_ext).suffix.lower()
             if inner_ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".jpg", ".png"):
-                finding["risk_score"] += 15
+                finding["risk_score"] += weight("attachment_double_extension")
                 finding["warnings"].append(
                     f"⚠️ Double extension detected: {filename} (social engineering)"
                 )
@@ -467,7 +468,7 @@ def _inspect_zip_container(path: str, ext: str, finding: dict) -> None:
         return
 
     if encrypted:
-        finding["risk_score"] += 12
+        finding["risk_score"] += weight("attachment_encrypted_archive")
         finding["warnings"].append("âš ï¸ Password-protected archive")
 
     executable_entries = [
@@ -476,7 +477,7 @@ def _inspect_zip_container(path: str, ext: str, finding: dict) -> None:
         if Path(name).suffix.lower() in _EXECUTABLE_IN_ARCHIVE_EXTENSIONS
     ]
     if executable_entries:
-        finding["risk_score"] += 20
+        finding["risk_score"] += weight("attachment_archive_executable")
         finding["warnings"].append(
             "âš ï¸ Archive contains executable/script payload(s): "
             + ", ".join(executable_entries[:3])
@@ -484,7 +485,7 @@ def _inspect_zip_container(path: str, ext: str, finding: dict) -> None:
 
     has_vba = any(name.endswith("vbaProject.bin") for name in names)
     if has_vba:
-        finding["risk_score"] += 25
+        finding["risk_score"] += weight("attachment_vba_macro")
         finding["category"] = "macro_document"
         finding["warnings"].append("âš ï¸ Office document contains VBA macro project")
     elif ext in {".docm", ".xlsm", ".pptm"}:
@@ -503,7 +504,10 @@ def _inspect_html_attachment(path: str, finding: dict) -> None:
     if not form_result.get("detected"):
         return
 
-    finding["risk_score"] += min(25, int(form_result.get("risk_score", 0)))
+    finding["risk_score"] += min(
+        weight("attachment_html_credential_cap"),
+        int(form_result.get("risk_score", 0)),
+    )
     finding["category"] = "html"
     finding["warnings"].append(
         "âš ï¸ HTML attachment contains credential-harvesting indicators"

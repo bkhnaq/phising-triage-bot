@@ -32,6 +32,8 @@ import requests
 
 from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_utils import registered_domain
+from email_analysis.special_use import classify_ip
+from scoring.config import SourceStatus, weight
 from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -131,7 +133,18 @@ def run_header_forensics(email_data: dict) -> dict:
         # ── Step 3: Geolocate origin IP ───────────────────────────────────
         geo: dict = {}
         if origin_ip:
-            geo = _geolocate_ip(origin_ip)
+            ip_classification = classify_ip(origin_ip)
+            result["origin_ip_classification"] = ip_classification.classification
+            if ip_classification.is_special_use:
+                result["geolocation_status"] = SourceStatus.NOT_APPLICABLE.value
+                result["reputation_status"] = SourceStatus.NOT_APPLICABLE.value
+            else:
+                geo = _geolocate_ip(origin_ip)
+                result["geolocation_status"] = (
+                    SourceStatus.AVAILABLE.value
+                    if geo
+                    else SourceStatus.UNAVAILABLE.value
+                )
             result["origin_country"] = geo.get("country", "Unknown")
             result["origin_country_code"] = geo.get("countryCode", "")
             result["origin_city"] = geo.get("city", "")
@@ -311,12 +324,12 @@ def _analyze_relay(
     if geo.get("hosting"):
         isp_label = geo.get("isp") or geo.get("org") or "unknown ISP"
         warnings.append(f"Origin IP is a hosting/datacenter address ({isp_label})")
-        risk += 10
+        risk += weight("hosting_origin")
 
     # ── 2. Proxy / VPN origin ─────────────────────────────────────────────
     if geo.get("proxy"):
         warnings.append("Origin IP is a known proxy or VPN exit node")
-        risk += 15
+        risk += weight("proxy_origin")
 
     # ── 3. Relay server domain mismatch ──────────────────────────────────
     if from_domain and relay_chain:
@@ -327,7 +340,7 @@ def _analyze_relay(
                 f"Sender domain ({from_domain}) does not match "
                 f"relay server(s): {', '.join(mismatches[:3])}"
             )
-            risk += 10
+            risk += weight("relay_mismatch")
 
     # ── 4. Country (informational only) ──────────────────────────────────
     country = geo.get("country", "")
@@ -387,6 +400,9 @@ def _empty_result() -> dict:
         "origin_asname": "",
         "origin_is_hosting": False,
         "origin_is_proxy": False,
+        "origin_ip_classification": "",
+        "geolocation_status": SourceStatus.UNAVAILABLE.value,
+        "reputation_status": SourceStatus.UNAVAILABLE.value,
         "relay_chain": [],
         "route_available": False,
         "from_domain": "",

@@ -158,7 +158,7 @@ def _run_analysis(eml_path: str, analysis_id: str | None = None) -> str:
     """
     from email_analysis.pipeline import PhishingPipeline
 
-    pipeline = PhishingPipeline(analysis_id=analysis_id)
+    pipeline = PhishingPipeline(analysis_id=analysis_id, report_verbosity="NORMAL")
     result = pipeline.analyze_file(eml_path)
     return result["report"]
 

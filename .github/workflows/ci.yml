@@ -33,13 +33,19 @@ jobs:
         run: ruff check .
 
       - name: Format check (black)
-        run: black --check api bot cli.py config email_analysis ml report scoring threat_intel main.py tests
+        run: black --check api bot cli.py config email_analysis evaluation ml report scoring threat_intel main.py tests
 
       - name: Type check (mypy)
-        run: mypy api bot cli.py config email_analysis ml report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
+        run: mypy api bot cli.py config email_analysis evaluation ml report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
 
       - name: Tests (pytest)
         run: pytest -q tests -W error
+
+      - name: Offline regression quality gate
+        env:
+          OFFLINE_MODE: "true"
+          LOCAL_AI_ENABLED: "false"
+        run: python -m evaluation.runner --quality-gate --output-json artifacts/evaluation/results.json --output-report artifacts/evaluation/report.md
 
       - name: Offline CLI smoke test
         env:
@@ -48,7 +54,7 @@ jobs:
         run: python main.py --analyze samples/phishing-en.eml --offline
 
       - name: Security scan (bandit)
-        run: bandit -r api bot config email_analysis ml report scoring threat_intel -lll
+        run: bandit -r api bot config email_analysis evaluation ml report scoring threat_intel -lll
 
       - name: Dependency scan (pip-audit)
         run: pip-audit

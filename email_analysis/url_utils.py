@@ -7,6 +7,7 @@ import re
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 
 from email_analysis.domain_utils import domain_info
+from scoring.config import weight
 
 _ENCODED_DELIMITER_RE = re.compile(r"%(?:2f|5c|40|2e|3a)", re.IGNORECASE)
 _SUSPICIOUS_KEYWORDS = {
@@ -59,16 +60,16 @@ def analyze_url(url: str) -> URLAnalysis:
 
     if has_userinfo:
         suspicious_reasons.append("userinfo in URL hides the real host")
-        risk += 18
+        risk += weight("url_userinfo")
     if domain_meta.is_ip:
         suspicious_reasons.append("IP address used as URL host")
-        risk += 10
+        risk += weight("url_ip_host")
     if domain_meta.is_punycode:
         suspicious_reasons.append("punycode/IDN host")
-        risk += 12
+        risk += weight("url_punycode")
     if encoded_delimiters:
         suspicious_reasons.append("encoded URL delimiter characters")
-        risk += 6
+        risk += weight("url_encoded_host")
 
     keyword_hits = [
         keyword for keyword in _SUSPICIOUS_KEYWORDS if keyword in decoded_path.lower()
@@ -77,7 +78,7 @@ def analyze_url(url: str) -> URLAnalysis:
         suspicious_reasons.append(
             f"credential-style path keywords: {', '.join(sorted(keyword_hits)[:4])}"
         )
-        risk += 6
+        risk += weight("url_credential_path")
 
     return URLAnalysis(
         original_url=raw,
