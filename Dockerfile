@@ -28,11 +28,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY . .
 
 # Create upload directory
-RUN mkdir -p /app/uploads
+RUN mkdir -p /app/uploads /var/log/phishing-bot
 
 # Run as non-root user for security
 RUN addgroup --system botuser && adduser --system --ingroup botuser botuser
-RUN chown -R botuser:botuser /app/uploads
+RUN chown -R botuser:botuser /app/uploads /var/log/phishing-bot
 USER botuser
 
 # Expose API port (used only in --api mode)

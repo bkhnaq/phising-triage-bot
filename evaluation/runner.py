@@ -89,6 +89,7 @@ def evaluate_dataset(
             with deterministic_fixtures(sample):
                 result = PhishingPipeline(
                     upload_dir=upload_dir,
+                    events_jsonl_path="",
                     analysis_id=f"eval-{sample['sample_id'][:24]}",
                     lab_mode=sample["environment"] == "LAB",
                     report_verbosity=report_verbosity,
@@ -192,6 +193,7 @@ def _evaluate_sample(sample: dict, result: dict) -> dict:
         "description": sample["description"],
         "notes": sample["notes"],
         "label": sample["label"],
+        "requires_external_enrichment": bool(sample.get("requires_external_enrichment")),
         "attack_class": sample["attack_class"],
         "predicted_class": predicted_class,
         "expected_classification": sample["expected_classification"],
@@ -280,35 +282,7 @@ def _observed_findings(result: dict) -> set[str]:
         findings.add("ai_phishing")
     elif ai.get("verdict") == "suspicious":
         findings.add("ai_suspicious")
-    ti_reports = (
-        result.get("vt_url_reports", [])
-        + result.get("vt_hash_reports", [])
-        + result.get("otx_reports", [])
-    )
-    applicable = [
-        item
-        for item in ti_reports
-        if str(item.get("status", "")).upper() != "NOT_APPLICABLE"
-    ]
-    if any(
-        str(item.get("status", "")).upper() == "MALICIOUS"
-        or int(item.get("malicious", 0)) > 0
-        or int(item.get("pulse_count", 0)) > 0
-        for item in applicable
-    ):
-        findings.add("threat_intel_malicious")
-    if any(
-        str(item.get("status", "")).upper() in {"UNAVAILABLE", "ERROR"}
-        for item in applicable
-    ):
-        findings.add("threat_intel_unavailable")
-    if applicable and all(
-        str(item.get("status", "")).upper() in {"CLEAN", "NOT_FOUND"}
-        and int(item.get("malicious", 0)) == 0
-        and int(item.get("pulse_count", 0)) == 0
-        for item in applicable
-    ):
-        findings.add("no_known_malicious_reputation")
+    findings.add("external_enrichment_pending")
     randomness = result.get("domain_intelligence", {}).get("randomness_results", [])
     if any(int(item.get("risk_score", 0)) > 0 for item in randomness):
         findings.add("domain_randomness")
@@ -321,13 +295,13 @@ def _observed_findings(result: dict) -> set[str]:
 
 def _predicted_class(result: dict, predicted_positive: bool) -> str:
     verdict = str(result["risk"]["verdict"]).upper()
-    if verdict == "MALWARE":
+    if result.get("attachment_risks") and predicted_positive:
         return "malware_delivery"
     if result.get("qr_findings") and predicted_positive:
         return "qr_phishing"
     categories = set(result.get("language_analysis", {}).get("categories", {}))
     subject = str(result.get("email_data", {}).get("subject", "")).lower()
-    if verdict == "BEC":
+    if any(item.get("type") == "reply_to_payment_fraud" for item in result["risk"].get("final_findings", [])):
         return (
             "invoice_payment"
             if any(token in subject for token in ("invoice", "billing", "payment"))
@@ -364,9 +338,9 @@ def _invariant_errors(sample: dict, result: dict, findings: set[str]) -> list[st
         errors.append(
             f"arithmetic mismatch: categories={category_sum}, pre_calibration={reconciliation['pre_calibration_score']}"
         )
-    if int(risk["score"]) != int(reconciliation["final_score"]):
+    if int(risk["score"]) != int(reconciliation["base_score"]):
         errors.append(
-            "arithmetic mismatch: risk score differs from reconciled final score"
+            "arithmetic mismatch: risk score differs from reconciled base score"
         )
     gate = reconciliation["critical_evidence_gate"]
     if (
@@ -376,7 +350,7 @@ def _invariant_errors(sample: dict, result: dict, findings: set[str]) -> list[st
         errors.append("critical gate applied below Critical threshold")
     for observable in result.get("observables", []):
         value = str(observable.get("value", "")).lower()
-        if observable.get("environment") == "test" and observable.get("exportable"):
+        if str(observable.get("environment", "")).upper() == "TEST" and observable.get("exportable"):
             errors.append(f"special-use observable is exportable: {value}")
     if sample["sample_id"] == "benign_ai_false_positive" and risk["risk_severity"] in {
         "HIGH",
@@ -441,7 +415,7 @@ def _quality_gate(evaluation: dict) -> dict:
             f"FPR {binary['false_positive_rate']:.3f} > {QUALITY_TARGETS['false_positive_rate_max']:.2f}"
         )
     for item in evaluation["samples"]:
-        if item["label"] == "phishing" and not item["predicted_positive"]:
+        if item["label"] == "phishing" and not item["predicted_positive"] and not item.get("requires_external_enrichment"):
             failures.append(
                 f"known phishing became non-positive: {item['sample_id']} ({item['verdict']})"
             )
@@ -499,6 +473,8 @@ def _compare_baseline(evaluation: dict, baseline_path: Path | None) -> dict:
             "sample_changes": [],
         }
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    if baseline.get("dataset", {}).get("schema_version") != evaluation["dataset"]["schema_version"]:
+        return {"available": False, "path": str(baseline_path), "reason": "Baseline belongs to the previous enriched scoring contract", "metric_deltas": {}, "sample_changes": []}
     current_binary = evaluation["metrics"]["binary"]
     old_binary = baseline.get("metrics", {}).get("binary", {})
     metric_deltas = {

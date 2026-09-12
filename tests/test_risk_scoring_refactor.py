@@ -129,7 +129,7 @@ class RiskScoringRefactorTests(unittest.TestCase):
         )
 
         self.assertLessEqual(result["risk_score"], 10)
-        self.assertEqual(result["verdict"], "UNKNOWN")
+        self.assertEqual(result["verdict"], "BENIGN")
         self.assertLess(result["data_completeness"], 60)
 
     def test_phishing_email_with_real_brand_spoofing(self) -> None:
@@ -228,7 +228,7 @@ class RiskScoringRefactorTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(result["risk_score"], 70)
-        self.assertEqual(result["verdict"], "MALWARE")
+        self.assertEqual(result["verdict"], "PHISHING")
         self.assertIn(result["risk_severity"], {"HIGH", "CRITICAL"})
         self.assertGreaterEqual(result["confidence"], 0.70)
         self.assertGreaterEqual(result["data_completeness"], 80)
@@ -282,12 +282,12 @@ class RiskScoringRefactorTests(unittest.TestCase):
         )
 
         self.assertLessEqual(result["risk_score"], 20)
-        self.assertEqual(result["verdict"], "LIKELY_BENIGN")
+        self.assertEqual(result["verdict"], "BENIGN")
         self.assertEqual(result["risk_severity"], "LOW")
         self.assertGreaterEqual(result["data_completeness"], 90)
         self.assertLess(result["category_scores"]["ESP detection"], 0)
 
-    def test_suspicious_redirect_mismatch_from_esp_tracking(self) -> None:
+    def test_external_redirect_context_cannot_affect_base_risk(self) -> None:
         auth_results = self._auth(
             spf="pass",
             dkim="pass",
@@ -352,9 +352,9 @@ class RiskScoringRefactorTests(unittest.TestCase):
             },
         )
 
-        self.assertGreaterEqual(result["risk_score"], 20)
-        self.assertIn(result["risk_severity"], {"LOW", "MODERATE", "ELEVATED", "HIGH"})
-        self.assertEqual(result["verdict"], "SUSPICIOUS")
+        self.assertEqual(result["base_score"], 0)
+        self.assertEqual(result["initial_severity"], "LOW")
+        self.assertEqual(result["initial_verdict"], "BENIGN")
 
     def test_url_obfuscation_evidence_contributes_to_score(self) -> None:
         result = calculate_risk(
@@ -425,7 +425,7 @@ class RiskScoringRefactorTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result["category_scores"]["threat intelligence"], 0)
+        self.assertNotIn("threat intelligence", result["category_scores"])
         self.assertEqual(result["category_scores"]["content/language"], 15)
         self.assertLess(result["risk_score"], 25)
         self.assertNotIn(result["risk_severity"], {"HIGH", "CRITICAL"})
@@ -477,88 +477,18 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        """Initialize one shared pipeline and force deterministic no-key intel behavior."""
         from email_analysis.pipeline import PhishingPipeline
-        from email_analysis import (
-            ai_classifier,
-            domain_intelligence,
-            header_forensics,
-            heuristic_analyzer,
-            landing_page_analyzer,
-            url_extractor,
-            url_intelligence,
-        )
-        from threat_intel import (
-            alienvault_checker,
-            ip_reputation,
-            passive_dns,
-            virustotal_checker,
-        )
-
-        cls._orig_keys = {
-            "vt": virustotal_checker.VIRUSTOTAL_API_KEY,
-            "otx": alienvault_checker.ALIENVAULT_OTX_API_KEY,
-            "abuse": ip_reputation.ABUSEIPDB_API_KEY,
-            "st": passive_dns.SECURITYTRAILS_API_KEY,
-            "offline": {
-                "ai": ai_classifier.OFFLINE_MODE,
-                "domain": domain_intelligence.OFFLINE_MODE,
-                "header": header_forensics.OFFLINE_MODE,
-                "heuristic": heuristic_analyzer.OFFLINE_MODE,
-                "landing": landing_page_analyzer.OFFLINE_MODE,
-                "url_extractor": url_extractor.OFFLINE_MODE,
-                "url_intel": url_intelligence.OFFLINE_MODE,
-            },
-            "local_ai_enabled": ai_classifier.LOCAL_AI_ENABLED,
-        }
-
-        # Keep integration tests deterministic and offline-friendly.
-        virustotal_checker.VIRUSTOTAL_API_KEY = ""
-        alienvault_checker.ALIENVAULT_OTX_API_KEY = ""
-        ip_reputation.ABUSEIPDB_API_KEY = ""
-        passive_dns.SECURITYTRAILS_API_KEY = ""
+        from email_analysis import ai_classifier
+        cls._orig_keys = {"offline": ai_classifier.OFFLINE_MODE, "local_ai_enabled": ai_classifier.LOCAL_AI_ENABLED}
         ai_classifier.OFFLINE_MODE = True
         ai_classifier.LOCAL_AI_ENABLED = False
-        domain_intelligence.OFFLINE_MODE = True
-        header_forensics.OFFLINE_MODE = True
-        heuristic_analyzer.OFFLINE_MODE = True
-        landing_page_analyzer.OFFLINE_MODE = True
-        url_extractor.OFFLINE_MODE = True
-        url_intelligence.OFFLINE_MODE = True
-
-        cls.pipeline = PhishingPipeline()
+        cls.pipeline = PhishingPipeline(events_jsonl_path="")
 
     @classmethod
     def tearDownClass(cls) -> None:
-        """Restore API key module constants after integration tests complete."""
-        from email_analysis import (
-            ai_classifier,
-            domain_intelligence,
-            header_forensics,
-            heuristic_analyzer,
-            landing_page_analyzer,
-            url_extractor,
-            url_intelligence,
-        )
-        from threat_intel import (
-            alienvault_checker,
-            ip_reputation,
-            passive_dns,
-            virustotal_checker,
-        )
-
-        virustotal_checker.VIRUSTOTAL_API_KEY = cls._orig_keys["vt"]
-        alienvault_checker.ALIENVAULT_OTX_API_KEY = cls._orig_keys["otx"]
-        ip_reputation.ABUSEIPDB_API_KEY = cls._orig_keys["abuse"]
-        passive_dns.SECURITYTRAILS_API_KEY = cls._orig_keys["st"]
-        ai_classifier.OFFLINE_MODE = cls._orig_keys["offline"]["ai"]
+        from email_analysis import ai_classifier
+        ai_classifier.OFFLINE_MODE = cls._orig_keys["offline"]
         ai_classifier.LOCAL_AI_ENABLED = cls._orig_keys["local_ai_enabled"]
-        domain_intelligence.OFFLINE_MODE = cls._orig_keys["offline"]["domain"]
-        header_forensics.OFFLINE_MODE = cls._orig_keys["offline"]["header"]
-        heuristic_analyzer.OFFLINE_MODE = cls._orig_keys["offline"]["heuristic"]
-        landing_page_analyzer.OFFLINE_MODE = cls._orig_keys["offline"]["landing"]
-        url_extractor.OFFLINE_MODE = cls._orig_keys["offline"]["url_extractor"]
-        url_intelligence.OFFLINE_MODE = cls._orig_keys["offline"]["url_intel"]
 
     def test_bluehornet_chase_false_positive(self) -> None:
         """
@@ -583,7 +513,7 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         ]
 
         self.assertNotEqual(severity, "CRITICAL")
-        self.assertIn(verdict, ["LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"])
+        self.assertIn(verdict, ["BENIGN", "UNKNOWN", "SUSPICIOUS"])
         self.assertTrue(any(p.lower() == "bluehornet" for p in providers))
         self.assertLess(confidence_pct, 60)
         self.assertLess(score, 80)
@@ -610,25 +540,8 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         confidence_pct = float(risk.get("confidence", 0.0)) * 100
         score = int(risk.get("score", 0))
 
-        redirect_findings = result.get("url_intelligence", {}).get(
-            "redirect_findings", []
-        )
-        self.assertTrue(
-            any(
-                "secure-notice-paypal-login-verify.com"
-                in (str(f.get("final_domain", "")) or str(f.get("url", "")))
-                for f in redirect_findings
-            )
-        )
-
-        # If WHOIS age is available in this environment, enforce the expected young-domain signal.
-        whois_results = result.get("domain_intelligence", {}).get("whois_results", [])
-        target_domain = "secure-notice-paypal-login-verify.com"
-        target_whois = next(
-            (w for w in whois_results if w.get("domain") == target_domain), None
-        )
-        if target_whois and target_whois.get("age_days") is not None:
-            self.assertLess(int(target_whois["age_days"]), 30)
+        self.assertIn("secure-notice-paypal-login-verify.com", result["siem_event"]["observables"]["domains"])
+        self.assertNotIn("redirect_findings", result["url_intelligence"])
 
         self.assertEqual(risk.get("verdict"), "PHISHING")
         self.assertIn(risk.get("risk_severity"), {"HIGH", "CRITICAL"})

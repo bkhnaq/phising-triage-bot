@@ -1,71 +1,18 @@
-"""
-URL Intelligence Module
-------------------------
-Advanced URL analysis including:
-
-  - URL shortener detection and expansion
-  - Full redirect chain analysis with intermediate domain inspection
-  - Suspicious endpoint detection
-  - Final landing domain analysis
-
-Usage:
-    from email_analysis.url_intelligence import analyze_urls
-    findings = analyze_urls(urls)
-"""
+"""Static URL detection: shorteners, deceptive anchors, keywords, ESP context."""
 
 import logging
-import re
 from urllib.parse import urlparse
 
-from urllib3.exceptions import HTTPError
 
-from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_utils import domain_info, is_domain_or_subdomain
-from email_analysis.safe_http import SafeHTTPError, fetch_url
-from email_analysis.special_use import classify_domain
-from scoring.config import SourceStatus, weight
-from threat_intel.cache import TTLCache
+from scoring.config import weight
 
 logger = logging.getLogger(__name__)
 
-_EXPAND_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
-_REDIRECT_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 
-def _friendly_error(exc: Exception) -> str:
-    """Convert a requests exception into a human-readable message."""
-    raw = str(exc)
-    if (
-        "NameResolutionError" in raw
-        or "getaddrinfo failed" in raw
-        or "Name or service not known" in raw
-    ):
-        return "Domain could not be resolved"
-    if "Max retries exceeded" in raw:
-        return "Domain could not be resolved"
-    if "ConnectTimeout" in raw or "connect timed out" in raw.lower():
-        return "Connection timed out"
-    if "ReadTimeout" in raw or "read timed out" in raw.lower():
-        return "Request timed out"
-    if "TooManyRedirects" in raw:
-        return "Too many redirects"
-    if "SSLError" in raw or "CERTIFICATE_VERIFY_FAILED" in raw:
-        return "SSL certificate error"
-    if (
-        "ConnectionError" in raw
-        or "HTTPConnectionPool" in raw
-        or "HTTPSConnectionPool" in raw
-    ):
-        return "Connection failed"
-    return "Redirect analysis failed"
 
 
-def _safe_normalized_domain(url: str) -> str:
-    """Return a URL domain without letting malformed attacker input escape."""
-    try:
-        return _normalize_domain(urlparse(url).netloc)
-    except (UnicodeError, ValueError):
-        return ""
 
 
 # ── Extended URL shortener list ──────────────────────────────
@@ -126,21 +73,6 @@ _SUSPICIOUS_PATH_KEYWORDS = frozenset(
     }
 )
 
-_SUSPICIOUS_DOMAIN_KEYWORDS = frozenset(
-    {
-        "login",
-        "verify",
-        "secure",
-        "account",
-        "auth",
-        "wallet",
-        "billing",
-        "password",
-        "update",
-        "signin",
-    }
-)
-
 # Known legitimate email service providers (ESP) and common tracking endpoints.
 _KNOWN_ESP_RULES: dict[str, dict[str, tuple[str, ...]]] = {
     "BlueHornet": {
@@ -174,37 +106,21 @@ _KNOWN_ESP_RULES: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 
-def analyze_urls(urls: list[dict], *, skip_special_use: bool = True) -> dict:
-    """
-    Perform comprehensive URL intelligence analysis.
-
-    Args:
-        urls: List of URL dicts from url_extractor.
-
-    Returns:
-        Dict with keys:
-            shortener_findings – list of shortener detection dicts
-            redirect_findings  – list of redirect chain dicts
-            suspicious_endpoints – list of suspicious endpoint dicts
-            risk_score         – aggregate risk
-    """
+def analyze_urls(urls: list[dict]) -> dict:
+    """Analyze extracted URLs locally; network enrichment belongs to Shuffle."""
     shortener_findings = detect_shorteners(urls)
-    redirect_findings = analyze_redirect_chains(urls, skip_special_use=skip_special_use)
     suspicious_endpoints = detect_suspicious_endpoints(urls)
     deceptive_links = detect_deceptive_links(urls)
     esp_findings = detect_esp_patterns(urls)
-    _merge_redirect_context_into_esp(esp_findings, redirect_findings)
 
     total_risk = (
         sum(f["risk_score"] for f in shortener_findings)
-        + sum(f["risk_score"] for f in redirect_findings)
         + sum(f["risk_score"] for f in suspicious_endpoints)
         + sum(f["risk_score"] for f in deceptive_links)
     )
 
     return {
         "shortener_findings": shortener_findings,
-        "redirect_findings": redirect_findings,
         "suspicious_endpoints": suspicious_endpoints,
         "deceptive_links": deceptive_links,
         "esp_findings": esp_findings,
@@ -225,6 +141,7 @@ def detect_deceptive_links(urls: list[dict]) -> list[dict]:
         findings.append(
             {
                 "url": item.get("url", ""),
+                "deceptive_link": True,
                 "displayed_url": item.get("displayed_url", ""),
                 "displayed_domain": item.get("displayed_domain", ""),
                 "actual_domain": item.get("actual_domain", item.get("domain", "")),
@@ -240,272 +157,12 @@ def detect_deceptive_links(urls: list[dict]) -> list[dict]:
 
 
 def detect_shorteners(urls: list[dict]) -> list[dict]:
-    """
-    Detect shortened URLs and expand them to reveal final destination.
-
-    Returns:
-        List of dicts with: url, domain, expanded_url, expanded_domain, risk_score.
-    """
-    findings: list[dict] = []
-
-    for u in urls:
-        domain = u.get("domain", "").lower()
-        if domain not in SHORTENER_DOMAINS:
-            continue
-
-        original_url = u["url"]
-        expanded_url = expand_url(original_url)
-        expanded_domain = (
-            urlparse(expanded_url).netloc if expanded_url != original_url else ""
-        )
-
-        finding = {
-            "url": original_url,
-            "domain": domain,
-            "expanded_url": expanded_url,
-            "expanded_domain": expanded_domain,
-            "risk_score": weight("url_shortener"),
-        }
-
-        # Extra risk if expanded URL has suspicious path
-        if expanded_url != original_url:
-            parsed = urlparse(expanded_url)
-            path_lower = parsed.path.lower()
-            for kw in _SUSPICIOUS_PATH_KEYWORDS:
-                if kw in path_lower:
-                    finding["risk_score"] += weight("shortener_credential_path")
-                    break
-
-        findings.append(finding)
-        logger.info(
-            "URL shortener: %s → %s",
-            original_url,
-            expanded_url if expanded_url != original_url else "(expansion failed)",
-        )
-
-    return findings
-
-
-def expand_url(short_url: str) -> str:
-    """
-    Follow redirects on a shortened URL and return the final destination.
-    """
-    if OFFLINE_MODE:
-        return short_url
-
-    found, cached = _EXPAND_CACHE.get(short_url)
-    if found:
-        return cached
-
-    try:
-        resp = fetch_url(
-            short_url,
-            method="HEAD",
-            max_bytes=0,
-        )
-        expanded = resp.url
-    except (SafeHTTPError, HTTPError, OSError) as exc:
-        logger.debug("Could not expand URL %s: %s", short_url, exc)
-        expanded = short_url
-
-    _EXPAND_CACHE.set(short_url, expanded)
-    return expanded
-
-
-def analyze_redirect_chains(
-    urls: list[dict], *, skip_special_use: bool = False
-) -> list[dict]:
-    """
-    Follow URL redirects and report full chain with intermediate domain analysis.
-
-    Returns:
-        List of dicts with: url, chain, hops, final_url, final_domain,
-                           intermediate_domains, suspicious_intermediates,
-                           risk_score, error.
-    """
-    findings: list[dict] = []
-    checked: set[str] = set()
-
-    for u in urls:
-        source_url = u["url"]
-        url = u.get("expanded_url", source_url)
-        if url in checked:
-            continue
-        checked.add(url)
-
-        esp_info = classify_esp_url(source_url)
-
-        if (
-            skip_special_use
-            and classify_domain(_safe_normalized_domain(url)).is_special_use
-        ):
-            findings.append(
-                {
-                    "source_url": source_url,
-                    "url": url,
-                    "chain": [url],
-                    "redirect_chain": [
-                        {"url": url, "status_code": None, "final": True}
-                    ],
-                    "hops": 0,
-                    "final_url": url,
-                    "final_domain": _safe_normalized_domain(url),
-                    "intermediate_domains": [],
-                    "suspicious_intermediates": [],
-                    "risk_score": 0,
-                    "status": SourceStatus.NOT_APPLICABLE.value,
-                    "error": None,
-                    "reason": "reserved special-use domain",
-                }
-            )
-            continue
-
-        chain_result = follow_redirect_chain(
-            url,
-            source_url=source_url,
-            esp_info=esp_info,
-        )
-        if (
-            chain_result["hops"] > 0
-            or chain_result.get("error")
-            or chain_result.get("suspicious_landing")
-        ):
-            findings.append(chain_result)
-
-    return findings
-
-
-def follow_redirect_chain(
-    url: str,
-    source_url: str | None = None,
-    esp_info: dict | None = None,
-) -> dict:
-    """
-    Follow redirects for a single URL and return the full chain.
-
-    Returns:
-        Dict with chain details and suspicious intermediate domain analysis.
-    """
-    source = source_url or url
-    origin_domain = _safe_normalized_domain(source)
-
-    result: dict = {
-        "source_url": source,
-        "url": url,
-        "chain": [url],
-        "redirect_chain": [{"url": url, "status_code": None, "final": True}],
-        "hops": 0,
-        "final_url": url,
-        "final_domain": _safe_normalized_domain(url),
-        "intermediate_domains": [],
-        "suspicious_intermediates": [],
-        "is_esp_tracking": bool(esp_info and esp_info.get("is_tracking")),
-        "esp_provider": esp_info.get("provider") if esp_info else "",
-        "suspicious_landing": False,
-        "landing_reason": "",
-        "risk_score": 0,
-        "status": SourceStatus.UNAVAILABLE.value,
-        "error": None,
-    }
-
-    if OFFLINE_MODE:
-        result["error"] = "offline mode enabled"
-        return result
-
-    cache_key = f"{source}\n{url}"
-    found, cached = _REDIRECT_CACHE.get(cache_key)
-    if found:
-        return cached
-
-    try:
-        resp = fetch_url(
-            url,
-            method="HEAD",
-            max_bytes=0,
-        )
-
-        result["chain"] = list(resp.history) + [resp.url]
-        result["hops"] = len(resp.history)
-        result["final_url"] = resp.url
-        result["final_domain"] = _normalize_domain(urlparse(resp.url).netloc)
-        history_statuses = list(getattr(resp, "history_statuses", ()))
-        result["redirect_chain"] = []
-        for index, chain_url in enumerate(resp.history):
-            result["redirect_chain"].append(
-                {
-                    "url": chain_url,
-                    "status_code": (
-                        history_statuses[index]
-                        if index < len(history_statuses)
-                        else None
-                    ),
-                    "final": False,
-                }
-            )
-        result["redirect_chain"].append(
-            {"url": resp.url, "status_code": None, "final": True}
-        )
-        result["status"] = SourceStatus.AVAILABLE.value
-        if result["hops"] > 0:
-            result["redirect_source"] = result["chain"][0]
-            result["redirect_destination"] = resp.url
-
-        if resp.history:
-            # Analyze intermediate domains
-            final_domain = _normalize_domain(urlparse(resp.url).netloc)
-
-            for redirect_url in resp.history:
-                intermediate_domain = _normalize_domain(urlparse(redirect_url).netloc)
-                if intermediate_domain not in (origin_domain, final_domain):
-                    result["intermediate_domains"].append(intermediate_domain)
-                    # Check if intermediate is a shortener
-                    if intermediate_domain in SHORTENER_DOMAINS:
-                        result["suspicious_intermediates"].append(
-                            {
-                                "domain": intermediate_domain,
-                                "reason": "URL shortener in redirect chain",
-                            }
-                        )
-
-        suspicious_landing, landing_reason = _is_suspicious_landing(
-            result["final_url"],
-            result["final_domain"],
-        )
-        result["suspicious_landing"] = suspicious_landing
-        result["landing_reason"] = landing_reason
-
-        # Rule update:
-        # For known ESP tracking URLs, redirects are expected and not risky by default.
-        # Increase risk only when landing evidence itself is suspicious.
-        if result["is_esp_tracking"]:
-            if suspicious_landing:
-                result["risk_score"] += weight("esp_suspicious_landing")
-        else:
-            if result["hops"] > 2:
-                result["risk_score"] = weight("redirect_many_hops")
-            elif result["hops"] > 0:
-                result["risk_score"] = weight("redirect_observed")
-
-            if result["suspicious_intermediates"]:
-                result["risk_score"] += weight("redirect_shortener_intermediate")
-
-            if result["hops"] > 0 and origin_domain != result["final_domain"]:
-                result["risk_score"] += weight("redirect_cross_domain")
-
-            if suspicious_landing:
-                result["risk_score"] += weight("redirect_suspicious_landing")
-
-    except SafeHTTPError as exc:
-        result["error"] = exc.code
-        result["status"] = SourceStatus.FAILED.value
-        logger.debug("Redirect chain check failed for %s: %s", url, exc)
-    except (HTTPError, OSError) as exc:
-        result["error"] = _friendly_error(exc)
-        result["status"] = SourceStatus.FAILED.value
-        logger.debug("Redirect chain check failed for %s: %s", url, exc)
-
-    _REDIRECT_CACHE.set(cache_key, result)
-    return result
+    """Identify shortener infrastructure without opening the URL."""
+    return [
+        {"url": item["url"], "domain": item["domain"],
+         "risk_score": weight("url_shortener"), "resolution_status": "PENDING_SOAR"}
+        for item in urls if item.get("domain", "").lower() in SHORTENER_DOMAINS
+    ]
 
 
 def detect_suspicious_endpoints(urls: list[dict]) -> list[dict]:
@@ -520,7 +177,7 @@ def detect_suspicious_endpoints(urls: list[dict]) -> list[dict]:
 
     for u in urls:
         source_url = u["url"]
-        url = u.get("expanded_url", source_url)
+        url = source_url
         if url in seen:
             continue
         seen.add(url)
@@ -537,7 +194,7 @@ def detect_suspicious_endpoints(urls: list[dict]) -> list[dict]:
             else parsed.path.lower()
         )
 
-        matched_keywords = [kw for kw in _SUSPICIOUS_PATH_KEYWORDS if kw in path_lower]
+        matched_keywords = sorted(kw for kw in _SUSPICIOUS_PATH_KEYWORDS if kw in path_lower)
         if len(matched_keywords) >= 2:
             findings.append(
                 {
@@ -577,8 +234,6 @@ def detect_esp_patterns(urls: list[dict]) -> list[dict]:
                 "provider": esp_info["provider"],
                 "is_tracking": esp_info["is_tracking"],
                 "reason": esp_info["reason"],
-                "final_domain": "",
-                "suspicious_landing": False,
                 # Applied in risk scoring when there is no contradictory evidence.
                 "risk_adjustment": -8 if esp_info["is_tracking"] else -4,
             }
@@ -617,49 +272,8 @@ def classify_esp_url(url: str) -> dict | None:
     return None
 
 
-def _merge_redirect_context_into_esp(
-    esp_findings: list[dict], redirect_findings: list[dict]
-) -> None:
-    """Enrich ESP findings with redirect context (final landing domain and landing risk)."""
-    redirect_by_source = {
-        r.get("source_url", r.get("url", "")): r for r in redirect_findings
-    }
-
-    for finding in esp_findings:
-        redirect = redirect_by_source.get(finding.get("url", ""))
-        if not redirect:
-            continue
-        finding["final_domain"] = redirect.get("final_domain", "")
-        finding["suspicious_landing"] = bool(redirect.get("suspicious_landing"))
 
 
-def _is_suspicious_landing(url: str, domain: str) -> tuple[bool, str]:
-    """Return whether a landing URL/domain appears suspicious and why."""
-    dom = _normalize_domain(domain)
-    if not dom:
-        return False, ""
-
-    if dom.startswith("xn--") or ".xn--" in dom:
-        return True, "Punycode domain"
-
-    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", dom):
-        return True, "IP-address landing domain"
-
-    base = dom.split(".")[0]
-    if any(kw in base for kw in _SUSPICIOUS_DOMAIN_KEYWORDS):
-        return True, "Suspicious landing domain keyword"
-
-    parsed = urlparse(url)
-    path_and_query = (
-        (parsed.path + "?" + parsed.query).lower()
-        if parsed.query
-        else parsed.path.lower()
-    )
-    path_hits = [kw for kw in _SUSPICIOUS_PATH_KEYWORDS if kw in path_and_query]
-    if len(path_hits) >= 2:
-        return True, "Credential-style landing endpoint"
-
-    return False, ""
 
 
 def _normalize_domain(netloc: str) -> str:

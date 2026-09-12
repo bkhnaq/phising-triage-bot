@@ -39,7 +39,6 @@ def test_sender_identity_mismatch_requires_url_and_contact_domain() -> None:
 
 
 def test_deceptive_html_anchor_compares_displayed_url_with_href(monkeypatch) -> None:
-    monkeypatch.setattr(url_intelligence, "OFFLINE_MODE", True)
     urls = extract_urls(
         body_html=(
             '<a href="https://collector.evil.test/login">'
@@ -81,46 +80,6 @@ def test_report_does_not_mark_missing_relay_data_clean() -> None:
     assert "Displayed URL vs HREF: unavailable" in report
 
 
-def test_dns_timeout_is_not_reported_as_record_absence(monkeypatch) -> None:
-    class NoAnswer(Exception):
-        pass
-
-    class NXDOMAIN(Exception):
-        pass
-
-    class NoNameservers(Exception):
-        pass
-
-    class Timeout(Exception):
-        pass
-
-    class Resolver:
-        timeout = 0
-        lifetime = 0
-
-        def resolve(self, _domain: str, record_type: str):
-            if record_type == "MX":
-                raise Timeout
-            if record_type == "TXT":
-                raise NoAnswer
-            return ["192.0.2.10"] if record_type == "A" else []
-
-    fake_resolver = SimpleNamespace(
-        Resolver=Resolver,
-        NoAnswer=NoAnswer,
-        NXDOMAIN=NXDOMAIN,
-        NoNameservers=NoNameservers,
-        Timeout=Timeout,
-    )
-    domain_intelligence._DNS_CACHE.clear()
-    monkeypatch.setattr(domain_intelligence, "OFFLINE_MODE", False)
-    monkeypatch.setattr(domain_intelligence, "dns_resolver", fake_resolver)
-
-    result = domain_intelligence.dns_lookup("example.com")
-
-    assert result["record_status"]["MX"] == "unavailable"
-    assert result["record_status"]["TXT"] == "absent"
-    assert result["error"] is None
 
 
 def test_scoring_reconciles_category_caps_without_negative_adjustments() -> None:
@@ -163,7 +122,7 @@ def test_scoring_reconciles_category_caps_without_negative_adjustments() -> None
         )
         == result["score_reconciliation"]["raw_effective_total"]
     )
-    assert result["score_reconciliation"]["final_score"] == result["score"]
+    assert result["score_reconciliation"]["base_score"] == result["score"]
     assert not any("Category cap applied" in item for item in result["breakdown"])
 
 
@@ -180,7 +139,6 @@ def test_legitimate_sender_does_not_trigger_identity_mismatch() -> None:
 
 
 def test_known_tracking_href_is_context_not_deceptive_risk(monkeypatch) -> None:
-    monkeypatch.setattr(url_intelligence, "OFFLINE_MODE", True)
     urls = extract_urls(
         body_html=(
             '<a href="https://click.mailchimp.com/track/campaign">'

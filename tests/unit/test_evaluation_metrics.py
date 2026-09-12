@@ -46,7 +46,7 @@ def test_spf_forwarding_failure_with_surviving_dkim_dmarc_is_not_positive() -> N
     )
 
     assert result["score"] == 12
-    assert result["verdict"] == "LIKELY_BENIGN"
+    assert result["verdict"] == "BENIGN"
     assert result["risk_severity"] == "LOW"
 
 

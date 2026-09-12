@@ -6,7 +6,6 @@ from email_analysis.evidence import EvidenceItem, evidence_to_dicts, make_eviden
 from email_analysis.url_keyword_context import (
     build_url_keyword_context,
     is_credential_keyword_only_url_signal,
-    url_is_deceptive_context,
 )
 from scoring.config import (
     FINDING_CONFIG,
@@ -22,14 +21,14 @@ def build_evidence_bundle(
     *,
     auth_results: dict,
     urls: list[dict],
-    vt_url_reports: list[dict],
-    vt_hash_reports: list[dict],
-    otx_reports: list[dict],
+    vt_url_reports: list[dict] | None = None,
+    vt_hash_reports: list[dict] | None = None,
+    otx_reports: list[dict] | None = None,
     credential_harvesting: dict | None,
     brand_impersonation: dict | None,
     language_analysis: dict | None,
     attachment_risks: list[dict] | None,
-    landing_pages: list[dict] | None,
+    landing_pages: list[dict] | None = None,
     domain_intelligence: dict | None,
     ai_verdict: dict | None = None,
     url_intelligence: dict | None = None,
@@ -39,6 +38,7 @@ def build_evidence_bundle(
     ip_reputation: list[dict] | None = None,
     passive_dns: list[dict] | None = None,
 ) -> dict:
+    """Correlate intrinsic evidence; legacy enrichment parameters are ignored."""
     evidence = []
     suspicious_deceptive_urls = {
         str(finding.get("url", ""))
@@ -190,9 +190,7 @@ def build_evidence_bundle(
             )
         if int(url.get("url_risk_score", 0)) <= 0:
             continue
-        supporting_keyword_context = is_credential_keyword_only_url_signal(
-            url
-        ) and url_is_deceptive_context(url.get("url"), urls, url_intelligence)
+        supporting_keyword_context = is_credential_keyword_only_url_signal(url)
         evidence.append(
             make_evidence(
                 category="url",
@@ -238,28 +236,6 @@ def build_evidence_bundle(
                     tags=["url_shortener"],
                 )
             )
-    for finding in (url_intelligence or {}).get("redirect_findings", []):
-        points = int(finding.get("risk_score", 0))
-        if finding.get("is_esp_tracking") and not finding.get("suspicious_landing"):
-            points = 0
-        if points > 0:
-            evidence.append(
-                make_evidence(
-                    category="url",
-                    source="redirect_analyzer",
-                    entity_type="url",
-                    indicator=f"redirect:{finding.get('source_url', '')}",
-                    severity="high" if points >= 10 else "medium",
-                    confidence=0.85,
-                    risk_delta=points,
-                    state="suspicious",
-                    summary=(
-                        "Suspicious redirect behavior to "
-                        f"{finding.get('final_domain', 'unknown destination')}"
-                    ),
-                    tags=["redirect", "landing_page"],
-                )
-            )
     for context in build_url_keyword_context(
         urls=urls,
         heuristics=heuristics,
@@ -298,58 +274,6 @@ def build_evidence_bundle(
                     tags=["brand", "homograph"],
                 )
             )
-
-    for report in vt_url_reports + vt_hash_reports:
-        state = report.get("state")
-        if state not in {"malicious", "suspicious"}:
-            continue
-        evidence.append(
-            make_evidence(
-                category="threat_intel",
-                source="virustotal",
-                entity_type="hash" if report.get("sha256") else "url",
-                indicator=report.get("sha256") or report.get("url", ""),
-                severity="high" if state == "malicious" else "medium",
-                confidence=0.90,
-                risk_delta=(
-                    weight(
-                        "vt_malicious_hash"
-                        if report.get("sha256")
-                        else "vt_malicious_url"
-                    )
-                    if state == "malicious"
-                    else weight("vt_suspicious_url")
-                ),
-                state=state,
-                summary=f"VirusTotal {state} detection",
-                details=(
-                    f"malicious={report.get('malicious', 0)}, "
-                    f"suspicious={report.get('suspicious', 0)}"
-                ),
-                tags=["threat_intel"],
-            )
-        )
-
-    for report in otx_reports:
-        if report.get("state") != "suspicious":
-            continue
-        evidence.append(
-            make_evidence(
-                category="threat_intel",
-                source="alienvault_otx",
-                entity_type="hash" if report.get("sha256") else "url_or_domain",
-                indicator=report.get("sha256")
-                or report.get("url")
-                or report.get("domain", ""),
-                severity="medium",
-                confidence=0.75,
-                risk_delta=weight("otx_pulse"),
-                state="suspicious",
-                summary="AlienVault OTX pulse hit",
-                details=", ".join(report.get("pulses", [])),
-                tags=["threat_intel"],
-            )
-        )
 
     if credential_harvesting and credential_harvesting.get("detected"):
         evidence.append(
@@ -501,44 +425,6 @@ def build_evidence_bundle(
             )
         )
 
-    for page in landing_pages or []:
-        if int(page.get("risk_score", 0)) <= 0:
-            continue
-        evidence.append(
-            make_evidence(
-                category="landing_page",
-                source="landing_page_analyzer",
-                entity_type="url",
-                indicator=page.get("final_url", page.get("url", "")),
-                severity="high" if page.get("password_fields") else "medium",
-                confidence=0.80,
-                risk_delta=min(weight("landing_page"), int(page.get("risk_score", 0))),
-                state=page.get("state", "suspicious"),
-                summary="Suspicious landing page indicators",
-                details="; ".join(page.get("findings", [])[:4]),
-                tags=["landing_page"],
-            )
-        )
-
-    for whois in (domain_intelligence or {}).get("whois_results", []):
-        if int(whois.get("risk_score", 0)) <= 0:
-            continue
-        evidence.append(
-            make_evidence(
-                category="domain",
-                source="domain_intelligence",
-                entity_type="domain",
-                indicator=whois.get("domain", ""),
-                severity="medium",
-                confidence=0.70,
-                risk_delta=min(weight("young_domain"), int(whois.get("risk_score", 0))),
-                state="suspicious",
-                summary="Newly registered or young domain",
-                details=f"age_days={whois.get('age_days')}",
-                tags=["domain_age"],
-            )
-        )
-
     for result in (domain_intelligence or {}).get("entropy_results", []):
         classification = str(result.get("classification", ""))
         points = weight(classification, int(result.get("risk_score", 0)))
@@ -592,41 +478,6 @@ def build_evidence_bundle(
                     tags=["qr_url"],
                 )
             )
-    for finding in ip_reputation or []:
-        points = int(finding.get("risk_score", 0))
-        if points > 0:
-            evidence.append(
-                make_evidence(
-                    category="threat_intel",
-                    source="ip_reputation",
-                    entity_type="ip",
-                    indicator=str(finding.get("ip", "")),
-                    severity="medium",
-                    confidence=0.75,
-                    risk_delta=points,
-                    state="suspicious",
-                    summary="Blacklisted infrastructure IP",
-                    tags=["threat_intel", "ip_reputation"],
-                )
-            )
-    for finding in passive_dns or []:
-        points = int(finding.get("risk_score", 0))
-        if points > 0:
-            evidence.append(
-                make_evidence(
-                    category="threat_intel",
-                    source="passive_dns",
-                    entity_type="ip",
-                    indicator=str(finding.get("ip", "")),
-                    severity="medium",
-                    confidence=0.70,
-                    risk_delta=points,
-                    state="suspicious",
-                    summary="Suspicious shared-hosting density",
-                    tags=["threat_intel", "passive_dns"],
-                )
-            )
-
     serialized_evidence = evidence_to_dicts(evidence)
     correlations = _correlate(evidence, language_analysis)
     consumed_by = {
@@ -816,29 +667,9 @@ def _correlate(evidence: list, language_analysis: dict | None) -> list[dict]:
             brand_items + collection_items + remaining_credential_language,
         )
 
-    brand_items = select(categories={"brand_impersonation"})
-    landing_items = select(categories={"landing_page"})
-    if landing_items and brand_items:
-        add(
-            "brand_landing_page",
-            "Brand impersonation is reinforced by suspicious landing-page evidence",
-            0.90,
-            brand_items + landing_items,
-        )
-
-    domain_items = select(categories={"domain"})
-    url_or_landing_items = select(categories={"url", "landing_page"})
-    if domain_items and url_or_landing_items:
-        add(
-            "young_obfuscated_landing",
-            "Young domain combined with URL or landing-page suspicious indicators",
-            0.80,
-            domain_items + url_or_landing_items,
-        )
-
     if language_analysis and language_analysis.get("total_matches", 0) >= 3:
         language_items = select(categories={"content"})
-        collection_items = select(categories={"credential_harvesting", "landing_page"})
+        collection_items = select(categories={"credential_harvesting"})
         if language_items and collection_items:
             add(
                 "language_plus_credential_collection",

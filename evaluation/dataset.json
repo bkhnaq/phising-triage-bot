@@ -1,519 +1,1163 @@
 {
-  "schema_version": 1,
-  "description": "Deterministic phishing triage regression corpus. All domains are documentation or RFC 2606 special-use names and all provider responses are fixtures.",
+  "schema_version": 2,
+  "description": "Intrinsic-only regression corpus. External reputation fixtures are removed; the compromised legitimate-domain case documents a detection limit before SOAR enrichment.",
   "samples": [
     {
       "sample_id": "benign_clean_corporate",
       "description": "Clean internal corporate status update with aligned authentication.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN"],
+      "expected_classification": [
+        "BENIGN"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["spf_pass", "dkim_pass", "dmarc_pass"],
-      "forbidden_findings": ["deceptive_href", "threat_intel_malicious"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "spf_pass",
+        "dkim_pass",
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href",
+        "threat_intel_malicious"
+      ],
+      "environment": "MIXED",
       "notes": "Control sample for ordinary internal mail.",
-      "email": {"from": "Operations <ops@corp.example.org>", "subject": "Weekly service status", "body_text": "All scheduled maintenance completed successfully. Thank you.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "Operations <ops@corp.example.org>",
+        "subject": "Weekly service status",
+        "body_text": "All scheduled maintenance completed successfully. Thank you.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "benign_newsletter",
       "description": "Legitimate newsletter with several tracked-looking but non-deceptive links.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN"],
+      "expected_classification": [
+        "BENIGN"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["dmarc_pass"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "Guards against newsletter URL-count false positives.",
-      "email": {"from": "Engineering Digest <digest@news.example.org>", "subject": "Engineering digest - August", "body_html": "<p>This month in engineering.</p><a href='https://news.example.org/articles/observability'>Observability article</a> <a href='https://news.example.org/preferences'>Preferences</a>", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "Engineering Digest <digest@news.example.org>",
+        "subject": "Engineering digest - August",
+        "body_html": "<p>This month in engineering.</p><a href='https://news.example.org/articles/observability'>Observability article</a> <a href='https://news.example.org/preferences'>Preferences</a>",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "benign_third_party_sender",
       "description": "Authorized third-party ticketing provider sends on behalf of a company.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["dmarc_pass", "return_path_mismatch"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "dmarc_pass",
+        "return_path_mismatch",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "A mismatch with aligned authentication is weak context, not proof of spoofing.",
-      "email": {"from": "Corp Support <support@corp.example.org>", "return_path": "bounce@tickets.example.org", "subject": "Ticket 4812 resolved", "body_text": "Your support request was resolved. Reply if you need more help.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass", "mailfrom": "tickets.example.org", "header_from": "corp.example.org"}}
+      "email": {
+        "from": "Corp Support <support@corp.example.org>",
+        "return_path": "bounce@tickets.example.org",
+        "subject": "Ticket 4812 resolved",
+        "body_text": "Your support request was resolved. Reply if you need more help.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass",
+          "mailfrom": "tickets.example.org",
+          "header_from": "corp.example.org"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "benign_forwarded_spf_fail",
       "description": "Forwarded legitimate message where SPF fails but DKIM and DMARC survive.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["spf_fail", "dkim_pass", "dmarc_pass"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "spf_fail",
+        "dkim_pass",
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "Forwarding commonly breaks SPF alone.",
-      "email": {"from": "Project Office <projects@partner.example.org>", "subject": "Fwd: approved project minutes", "body_text": "Forwarded meeting minutes are attached in the approved document system.", "auth": {"spf": "fail", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "Project Office <projects@partner.example.org>",
+        "subject": "Fwd: approved project minutes",
+        "body_text": "Forwarded meeting minutes are attached in the approved document system.",
+        "auth": {
+          "spf": "fail",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "phish_basic_credential_form",
       "description": "Basic credential phishing email containing an inline password form.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING"],
+      "expected_classification": [
+        "PHISHING"
+      ],
       "expected_min_severity": "ELEVATED",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["credential_collection", "credential_lure"],
+      "expected_findings": [
+        "credential_collection",
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "TEST",
       "notes": "Synthetic HTML form; it does not submit anywhere real.",
-      "email": {"from": "Account Team <security@account-alert.test>", "subject": "Verify your account now", "body_html": "<p>Your password expires today. Verify your account immediately.</p><form action='https://account-alert.test/session'><input name='user'><input type='password' name='password'><button>Sign in</button></form>", "auth": {"spf": "fail", "dkim": "fail", "dmarc": "fail"}},
-      "fixtures": {"ai": "phishing_high"}
+      "email": {
+        "from": "Account Team <security@account-alert.test>",
+        "subject": "Verify your account now",
+        "body_html": "<p>Your password expires today. Verify your account immediately.</p><form action='https://account-alert.test/session'><input name='user'><input type='password' name='password'><button>Sign in</button></form>",
+        "auth": {
+          "spf": "fail",
+          "dkim": "fail",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "phish_deceptive_href",
       "description": "Displayed trusted URL opens a different credential collection host.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING"],
+      "expected_classification": [
+        "PHISHING"
+      ],
       "expected_min_severity": "HIGH",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["deceptive_href", "credential_lure"],
+      "expected_findings": [
+        "deceptive_href",
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "MIXED",
       "notes": "Critical deceptive-link regression anchor.",
-      "email": {"from": "University IT <helpdesk@university-help.test>", "subject": "Mailbox validation required", "body_html": "<p>Your account will be disabled. Confirm your password now.</p><a href='https://credential-check.test/login'>https://portal.university.example.org/login</a>", "auth": {"spf": "fail", "dkim": "fail", "dmarc": "fail"}},
-      "fixtures": {"ai": "phishing_high"}
+      "email": {
+        "from": "University IT <helpdesk@university-help.test>",
+        "subject": "Mailbox validation required",
+        "body_html": "<p>Your account will be disabled. Confirm your password now.</p><a href='https://credential-check.test/login'>https://portal.university.example.org/login</a>",
+        "auth": {
+          "spf": "fail",
+          "dkim": "fail",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "phish_bec_no_url",
       "description": "Business email compromise payment request without a URL.",
       "label": "phishing",
       "attack_class": "bec",
-      "expected_classification": ["BEC", "PHISHING", "SUSPICIOUS"],
+      "expected_classification": [
+        "PHISHING",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "ELEVATED",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["reply_to_mismatch", "financial_pressure"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "reply_to_mismatch",
+        "financial_pressure",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "No URL is intentional; reply-to plus financial language must remain visible.",
-      "email": {"from": "Chief Executive <ceo@corp.example.org>", "reply_to": "payments@executive-approval.test", "subject": "Urgent confidential wire", "body_text": "I need an urgent wire transfer today. Keep this confidential and send payment confirmation immediately.", "auth": {"spf": "fail", "dkim": "none", "dmarc": "fail"}},
-      "fixtures": {"ai": "phishing_high"}
+      "email": {
+        "from": "Chief Executive <ceo@corp.example.org>",
+        "reply_to": "payments@executive-approval.test",
+        "subject": "Urgent confidential wire",
+        "body_text": "I need an urgent wire transfer today. Keep this confidential and send payment confirmation immediately.",
+        "auth": {
+          "spf": "fail",
+          "dkim": "none",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "phish_invoice_scam",
       "description": "Invoice redirection scam with changed bank details.",
       "label": "phishing",
       "attack_class": "invoice_payment",
-      "expected_classification": ["BEC", "PHISHING", "SUSPICIOUS"],
+      "expected_classification": [
+        "PHISHING",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "MODERATE",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["financial_pressure", "reply_to_mismatch"],
+      "expected_findings": [
+        "financial_pressure",
+        "reply_to_mismatch",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
-      "environment": "PRODUCTION",
+      "environment": "MIXED",
       "notes": "Payment fraud without malware.",
-      "email": {"from": "Vendor Billing <billing@vendor.example.org>", "reply_to": "settlement@invoice-update.test", "subject": "Overdue invoice - new banking details", "body_text": "The invoice is overdue. Use our new bank account and make payment today to avoid a penalty.", "auth": {"spf": "softfail", "dkim": "none", "dmarc": "fail"}},
-      "fixtures": {"ai": "suspicious"}
+      "email": {
+        "from": "Vendor Billing <billing@vendor.example.org>",
+        "reply_to": "settlement@invoice-update.test",
+        "subject": "Overdue invoice - new banking details",
+        "body_text": "The invoice is overdue. Use our new bank account and make payment today to avoid a penalty.",
+        "auth": {
+          "spf": "softfail",
+          "dkim": "none",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "suspicious"
+      }
     },
     {
       "sample_id": "phish_dummy_attachment",
       "description": "Harmless dummy executable attachment with a malicious hash fixture.",
       "label": "phishing",
       "attack_class": "malware_delivery",
-      "expected_classification": ["MALWARE", "SUSPICIOUS"],
+      "expected_classification": [
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "ELEVATED",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["attachment_suspicious", "threat_intel_malicious"],
+      "expected_findings": [
+        "attachment_suspicious",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
-      "environment": "PRODUCTION",
+      "environment": "MIXED",
       "notes": "Attachment bytes are inert text; only its fixture hash is marked malicious.",
-      "email": {"from": "Shipping Notice <dispatch@shipping.example.org>", "subject": "Delivery document", "body_text": "Open the attached delivery document.", "auth": {"spf": "fail", "dkim": "none", "dmarc": "fail"}, "attachments": [{"filename": "delivery_note.pdf.scr", "content_type": "application/octet-stream", "content": "INERT REGRESSION FIXTURE - NOT EXECUTABLE"}]},
-      "fixtures": {"vt_hash": "malicious", "ai": "suspicious"}
+      "email": {
+        "from": "Shipping Notice <dispatch@shipping.example.org>",
+        "subject": "Delivery document",
+        "body_text": "Open the attached delivery document.",
+        "auth": {
+          "spf": "fail",
+          "dkim": "none",
+          "dmarc": "fail"
+        },
+        "attachments": [
+          {
+            "filename": "delivery_note.pdf.scr",
+            "content_type": "application/octet-stream",
+            "content": "INERT REGRESSION FIXTURE - NOT EXECUTABLE"
+          }
+        ]
+      },
+      "fixtures": {
+        "ai": "suspicious"
+      }
     },
     {
       "sample_id": "phish_qr_mock",
       "description": "QR phishing lure using a mocked QR decoder result.",
       "label": "phishing",
       "attack_class": "qr_phishing",
-      "expected_classification": ["PHISHING", "SUSPICIOUS"],
+      "expected_classification": [
+        "PHISHING",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "ELEVATED",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["qr_url", "credential_lure"],
+      "expected_findings": [
+        "qr_url",
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "MIXED",
       "notes": "Image is a harmless text fixture; QR output is injected deterministically.",
-      "email": {"from": "MFA Service <mfa@identity-alert.test>", "subject": "Scan to prevent account suspension", "body_text": "Scan the QR code and confirm your password immediately or your account will be disabled.", "auth": {"spf": "fail", "dkim": "fail", "dmarc": "fail"}, "attachments": [{"filename": "security-qr.png", "content_type": "image/png", "content": "NOT A REAL IMAGE"}]},
-      "fixtures": {"qr_url": "https://qr-login.test/verify", "ai": "phishing_high"}
+      "email": {
+        "from": "MFA Service <mfa@identity-alert.test>",
+        "subject": "Scan to prevent account suspension",
+        "body_text": "Scan the QR code and confirm your password immediately or your account will be disabled.",
+        "auth": {
+          "spf": "fail",
+          "dkim": "fail",
+          "dmarc": "fail"
+        },
+        "attachments": [
+          {
+            "filename": "security-qr.png",
+            "content_type": "image/png",
+            "content": "NOT A REAL IMAGE"
+          }
+        ]
+      },
+      "fixtures": {
+        "qr_url": "https://qr-login.test/verify",
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "phish_url_shortener",
       "description": "Credential lure delivered through a URL shortener fixture.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING", "SUSPICIOUS"],
+      "expected_classification": [
+        "PHISHING",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "MODERATE",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["url_shortener", "credential_lure"],
+      "expected_findings": [
+        "url_shortener",
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
-      "environment": "PRODUCTION",
+      "environment": "MIXED",
       "notes": "No redirect is followed in evaluation mode.",
-      "email": {"from": "Document Share <share@files.example.org>", "subject": "Review protected document", "body_text": "Confirm your password to access the protected file: https://bit.ly/example-regression", "auth": {"spf": "fail", "dkim": "none", "dmarc": "fail"}},
-      "fixtures": {"ai": "phishing_high"}
+      "email": {
+        "from": "Document Share <share@files.example.org>",
+        "subject": "Review protected document",
+        "body_text": "Confirm your password to access the protected file: https://bit.ly/example-regression",
+        "auth": {
+          "spf": "fail",
+          "dkim": "none",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "phish_compromised_legit_domain",
       "description": "Legitimate-looking documentation domain is confirmed malicious by mock TI.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING", "SUSPICIOUS"],
-      "expected_min_severity": "MODERATE",
-      "expected_max_severity": "CRITICAL",
-      "expected_findings": ["threat_intel_malicious", "credential_lure"],
+      "expected_classification": [
+        "BENIGN"
+      ],
+      "expected_min_severity": "LOW",
+      "expected_max_severity": "LOW",
+      "expected_findings": [
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
-      "environment": "PRODUCTION",
-      "notes": "Models a compromised reputable-looking host without making a live request.",
-      "email": {"from": "Benefits <benefits@corp.example.org>", "subject": "Benefits portal authentication", "body_html": "<p>Confirm your account password to view the update.</p><a href='https://portal.example.org/benefits/session'>Open benefits portal</a>", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}},
-      "fixtures": {"vt_url": "malicious", "ai": "phishing_high"}
+      "environment": "MIXED",
+      "notes": "Known detection limit: the email has no sufficient intrinsic phishing evidence. The old positive verdict depended entirely on a malicious VirusTotal fixture. Keep its phishing ground truth and include the miss in recall; SOAR enrichment must resolve it.",
+      "email": {
+        "from": "Benefits <benefits@corp.example.org>",
+        "subject": "Benefits portal authentication",
+        "body_html": "<p>Confirm your account password to view the update.</p><a href='https://portal.example.org/benefits/session'>Open benefits portal</a>",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      },
+      "requires_external_enrichment": true
     },
     {
       "sample_id": "benign_password_reset",
       "description": "Expected password reset notification from an authenticated service.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["credential_lure", "dmarc_pass"],
-      "forbidden_findings": ["deceptive_href", "threat_intel_malicious"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "credential_lure",
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href",
+        "threat_intel_malicious"
+      ],
+      "environment": "MIXED",
       "notes": "Credential vocabulary alone must not produce HIGH or CRITICAL.",
-      "email": {"from": "Identity Service <identity@corp.example.org>", "subject": "Your requested password reset", "body_html": "<p>You requested a password reset. If this was you, continue within 30 minutes.</p><a href='https://identity.example.org/reset/requested-token'>Reset password</a><p>If you did not request it, ignore this message.</p>", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}},
-      "fixtures": {"ai": "legitimate"}
+      "email": {
+        "from": "Identity Service <identity@corp.example.org>",
+        "subject": "Your requested password reset",
+        "body_html": "<p>You requested a password reset. If this was you, continue within 30 minutes.</p><a href='https://identity.example.org/reset/requested-token'>Reset password</a><p>If you did not request it, ignore this message.</p>",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {
+        "ai": "legitimate"
+      }
     },
     {
       "sample_id": "benign_mfa_enrollment",
       "description": "Authenticated MFA enrollment notice with security terminology.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["dmarc_pass"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "Security language is expected in legitimate MFA mail.",
-      "email": {"from": "Security Team <security@corp.example.org>", "subject": "MFA enrollment completed", "body_text": "Multi-factor authentication was enrolled for your account. Contact the service desk if this was unexpected.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}},
-      "fixtures": {"ai": "legitimate"}
+      "email": {
+        "from": "Security Team <security@corp.example.org>",
+        "subject": "MFA enrollment completed",
+        "body_text": "Multi-factor authentication was enrolled for your account. Contact the service desk if this was unexpected.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {
+        "ai": "legitimate"
+      }
     },
     {
       "sample_id": "benign_ai_false_positive",
       "description": "AI fixture incorrectly calls a clean notification phishing.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["ai_phishing", "dmarc_pass"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "ai_phishing",
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "AI-only evidence is capped and cannot cause HIGH severity.",
-      "email": {"from": "Calendar <calendar@corp.example.org>", "subject": "Room booking confirmed", "body_text": "Your meeting room booking is confirmed for Tuesday at 10:00.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}},
-      "fixtures": {"ai": "phishing_high"}
+      "email": {
+        "from": "Calendar <calendar@corp.example.org>",
+        "subject": "Room booking confirmed",
+        "body_text": "Your meeting room booking is confirmed for Tuesday at 10:00.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "phish_ai_false_negative",
       "description": "AI fixture says legitimate despite deterministic deceptive-link evidence.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING"],
+      "expected_classification": [
+        "PHISHING"
+      ],
       "expected_min_severity": "HIGH",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["deceptive_href", "credential_lure"],
+      "expected_findings": [
+        "deceptive_href",
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "MIXED",
       "notes": "Rules and correlation must override an AI false negative.",
-      "email": {"from": "Payroll <payroll@corp-support.test>", "subject": "Payroll account locked", "body_html": "<p>Verify your account password now to restore payroll access.</p><a href='https://payroll-auth.test/login'>https://payroll.example.org/login</a>", "auth": {"spf": "fail", "dkim": "fail", "dmarc": "fail"}},
-      "fixtures": {"ai": "legitimate"}
+      "email": {
+        "from": "Payroll <payroll@corp-support.test>",
+        "subject": "Payroll account locked",
+        "body_html": "<p>Verify your account password now to restore payroll access.</p><a href='https://payroll-auth.test/login'>https://payroll.example.org/login</a>",
+        "auth": {
+          "spf": "fail",
+          "dkim": "fail",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "legitimate"
+      }
     },
     {
       "sample_id": "benign_reply_to_mismatch",
       "description": "Legitimate reply-to differs for an authenticated survey provider.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["reply_to_mismatch", "dmarc_pass"],
-      "forbidden_findings": ["financial_pressure", "deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "reply_to_mismatch",
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "financial_pressure",
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "Reply-to mismatch is not malicious without correlated intent.",
-      "email": {"from": "People Team <people@corp.example.org>", "reply_to": "responses@survey.example.org", "subject": "Annual engagement survey", "body_text": "Please share optional feedback in the annual employee survey.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "People Team <people@corp.example.org>",
+        "reply_to": "responses@survey.example.org",
+        "subject": "Annual engagement survey",
+        "body_text": "Please share optional feedback in the annual employee survey.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "benign_message_id_mismatch",
       "description": "Legitimate ESP uses a different Message-ID domain.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN"],
+      "expected_classification": [
+        "BENIGN"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["message_id_mismatch", "message_id_informational"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "message_id_mismatch",
+        "message_id_informational",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "Message-ID mismatch must explicitly render as informational +0.",
-      "email": {"from": "Events <events@corp.example.org>", "message_id_domain": "mailer.example.org", "subject": "Town hall registration", "body_text": "Registration for the quarterly town hall is open.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "Events <events@corp.example.org>",
+        "message_id_domain": "mailer.example.org",
+        "subject": "Town hall registration",
+        "body_text": "Registration for the quarterly town hall is open.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "ambiguous_auth_fail_benign_body",
       "description": "Benign-looking message with total authentication failure.",
       "label": "ambiguous",
       "attack_class": "suspicious",
-      "expected_classification": ["SUSPICIOUS", "UNKNOWN", "LIKELY_BENIGN"],
+      "expected_classification": [
+        "SUSPICIOUS",
+        "BENIGN"
+      ],
       "expected_min_severity": "MODERATE",
       "expected_max_severity": "HIGH",
-      "expected_findings": ["spf_fail", "dmarc_fail"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "spf_fail",
+        "dmarc_fail",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "Excluded from binary metrics because intent cannot be established from this evidence.",
-      "email": {"from": "Printer <printer@office.example.org>", "subject": "Scan completed", "body_text": "Your document scan completed successfully.", "auth": {"spf": "fail", "dkim": "fail", "dmarc": "fail"}}
+      "email": {
+        "from": "Printer <printer@office.example.org>",
+        "subject": "Scan completed",
+        "body_text": "Your document scan completed successfully.",
+        "auth": {
+          "spf": "fail",
+          "dkim": "fail",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "benign_many_urls",
       "description": "Release digest with many distinct legitimate documentation links.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN"],
+      "expected_classification": [
+        "BENIGN"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["dmarc_pass"],
-      "forbidden_findings": ["deceptive_href", "threat_intel_malicious"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href",
+        "threat_intel_malicious"
+      ],
+      "environment": "MIXED",
       "notes": "URL volume alone is not risk evidence.",
-      "email": {"from": "Release Bot <releases@docs.example.org>", "subject": "Release notes index", "body_text": "Release references: https://docs.example.org/r/1 https://docs.example.org/r/2 https://docs.example.org/r/3 https://docs.example.org/r/4 https://docs.example.org/r/5 https://docs.example.org/r/6 https://docs.example.org/r/7 https://docs.example.org/r/8 https://docs.example.org/r/9 https://docs.example.org/r/10 https://docs.example.org/r/11 https://docs.example.org/r/12", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "Release Bot <releases@docs.example.org>",
+        "subject": "Release notes index",
+        "body_text": "Release references: https://docs.example.org/r/1 https://docs.example.org/r/2 https://docs.example.org/r/3 https://docs.example.org/r/4 https://docs.example.org/r/5 https://docs.example.org/r/6 https://docs.example.org/r/7 https://docs.example.org/r/8 https://docs.example.org/r/9 https://docs.example.org/r/10 https://docs.example.org/r/11 https://docs.example.org/r/12",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "benign_high_entropy_domain",
       "description": "Authenticated CDN link has a high-entropy subdomain but benign context.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["dmarc_pass"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "Random-looking infrastructure is supporting evidence only.",
-      "email": {"from": "Build System <builds@ci.example.org>", "subject": "Build artifact ready", "body_text": "Artifact: https://a8f3c91e7b2d4f6a.cdn.example.org/build/42", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "Build System <builds@ci.example.org>",
+        "subject": "Build artifact ready",
+        "body_text": "Artifact: https://a8f3c91e7b2d4f6a.cdn.example.org/build/42",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "phish_randomized_domain",
       "description": "Randomized special-use domain combined with credential deception.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING"],
+      "expected_classification": [
+        "PHISHING"
+      ],
       "expected_min_severity": "HIGH",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["domain_randomness", "deceptive_href", "credential_lure"],
+      "expected_findings": [
+        "domain_randomness",
+        "deceptive_href",
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "MIXED",
       "notes": "Randomness supports stronger independent evidence; it does not drive classification alone.",
-      "email": {"from": "Storage <notice@xj3kq9mz2p.test>", "subject": "Storage password expired", "body_html": "<p>Validate your account immediately.</p><a href='https://xj3kq9mz2p.test/auth'>https://storage.example.org/login</a>", "auth": {"spf": "fail", "dkim": "none", "dmarc": "fail"}},
-      "fixtures": {"ai": "suspicious"}
+      "email": {
+        "from": "Storage <notice@xj3kq9mz2p.test>",
+        "subject": "Storage password expired",
+        "body_html": "<p>Validate your account immediately.</p><a href='https://xj3kq9mz2p.test/auth'>https://storage.example.org/login</a>",
+        "auth": {
+          "spf": "fail",
+          "dkim": "none",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "suspicious"
+      }
     },
     {
       "sample_id": "phish_plain_text",
       "description": "Plain-text phishing with authentication failure and credential language.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING", "SUSPICIOUS"],
+      "expected_classification": [
+        "PHISHING",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "ELEVATED",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["credential_lure", "spf_fail", "dmarc_fail"],
+      "expected_findings": [
+        "credential_lure",
+        "spf_fail",
+        "dmarc_fail",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "TEST",
       "notes": "Ensures HTML is not required for binary detection.",
-      "email": {"from": "Mail Admin <admin@mailbox-restore.test>", "subject": "Account termination warning", "body_text": "Your mailbox will be terminated today. Confirm your account and enter your username and password immediately at https://mailbox-restore.test/verify", "auth": {"spf": "fail", "dkim": "fail", "dmarc": "fail"}},
-      "fixtures": {"ai": "phishing_high"}
+      "email": {
+        "from": "Mail Admin <admin@mailbox-restore.test>",
+        "subject": "Account termination warning",
+        "body_text": "Your mailbox will be terminated today. Confirm your account and enter your username and password immediately at https://mailbox-restore.test/verify",
+        "auth": {
+          "spf": "fail",
+          "dkim": "fail",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "benign_html_no_url",
       "description": "Styled HTML announcement with no URL.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN"],
+      "expected_classification": [
+        "BENIGN"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["dmarc_pass", "no_url_analyzed"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "dmarc_pass",
+        "no_url_analyzed",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "HTML presence alone is not suspicious.",
-      "email": {"from": "Facilities <facilities@corp.example.org>", "subject": "Office maintenance complete", "body_html": "<html><body><h2>Maintenance complete</h2><p>The office is open as normal.</p></body></html>", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "Facilities <facilities@corp.example.org>",
+        "subject": "Office maintenance complete",
+        "body_html": "<html><body><h2>Maintenance complete</h2><p>The office is open as normal.</p></body></html>",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "benign_no_attachment",
       "description": "Simple authenticated mail with no attachment.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN"],
+      "expected_classification": [
+        "BENIGN"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["no_attachment_analyzed"],
-      "forbidden_findings": ["attachment_suspicious"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "no_attachment_analyzed",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "attachment_suspicious"
+      ],
+      "environment": "MIXED",
       "notes": "Absence of attachments is represented explicitly in evaluation.",
-      "email": {"from": "Reception <reception@corp.example.org>", "subject": "Visitor arrival", "body_text": "Your visitor arrived at reception.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}}
+      "email": {
+        "from": "Reception <reception@corp.example.org>",
+        "subject": "Visitor arrival",
+        "body_text": "Your visitor arrived at reception.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "ambiguous_missing_headers",
       "description": "Body-only message missing authentication and relay headers.",
       "label": "ambiguous",
       "attack_class": "unknown",
-      "expected_classification": ["UNKNOWN", "LIKELY_BENIGN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["missing_authentication", "missing_received"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "missing_authentication",
+        "missing_received",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "TEST",
       "notes": "Missing evidence reduces confidence; it is not evidence of safety or malice.",
-      "email": {"from": "Unknown Sender <sender@example.org>", "subject": "Question", "body_text": "Can you review this request when convenient?", "omit_authentication": true, "omit_received": true}
+      "email": {
+        "from": "Unknown Sender <sender@example.org>",
+        "subject": "Question",
+        "body_text": "Can you review this request when convenient?",
+        "omit_authentication": true,
+        "omit_received": true
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "ambiguous_ti_unavailable",
       "description": "Neutral message whose TI providers are deterministically unavailable.",
       "label": "ambiguous",
       "attack_class": "unknown",
-      "expected_classification": ["UNKNOWN", "LIKELY_BENIGN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["threat_intel_unavailable"],
-      "forbidden_findings": ["threat_intel_malicious"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "threat_intel_malicious"
+      ],
+      "environment": "MIXED",
       "notes": "Unavailable must never be interpreted as clean.",
-      "email": {"from": "External Contact <contact@example.org>", "subject": "Shared reference", "body_text": "Reference material: https://reference.example.org/item/7", "auth": {"spf": "none", "dkim": "none", "dmarc": "none"}},
-      "fixtures": {"vt_url": "unavailable", "otx": "unavailable"}
+      "email": {
+        "from": "External Contact <contact@example.org>",
+        "subject": "Shared reference",
+        "body_text": "Reference material: https://reference.example.org/item/7",
+        "auth": {
+          "spf": "none",
+          "dkim": "none",
+          "dmarc": "none"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "benign_ti_zero_detections",
       "description": "Clean provider fixture with zero detections.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN"],
+      "expected_classification": [
+        "BENIGN"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["no_known_malicious_reputation", "dmarc_pass"],
-      "forbidden_findings": ["threat_intel_malicious"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "threat_intel_malicious"
+      ],
+      "environment": "MIXED",
       "notes": "Report wording is deliberately weaker than proof of safety.",
-      "email": {"from": "Documentation <docs@docs.example.org>", "subject": "API documentation", "body_text": "The updated guide is at https://docs.example.org/api/v2", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}},
-      "fixtures": {"vt_url": "clean", "otx": "clean"}
+      "email": {
+        "from": "Documentation <docs@docs.example.org>",
+        "subject": "API documentation",
+        "body_text": "The updated guide is at https://docs.example.org/api/v2",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {}
     },
     {
       "sample_id": "phish_confirmed_malicious_ti",
       "description": "Independent provider fixtures confirm a phishing URL.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING", "SUSPICIOUS"],
-      "expected_min_severity": "ELEVATED",
+      "expected_classification": [
+        "PHISHING",
+        "SUSPICIOUS"
+      ],
+      "expected_min_severity": "MODERATE",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["threat_intel_malicious", "credential_lure"],
+      "expected_findings": [
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
-      "environment": "PRODUCTION",
-      "notes": "No provider network access occurs.",
-      "email": {"from": "Cloud Notice <notice@cloud.example.org>", "subject": "Cloud account verification", "body_text": "Your cloud account is suspended. Confirm your password now: https://login.example.org/cloud/session", "auth": {"spf": "softfail", "dkim": "none", "dmarc": "fail"}},
-      "fixtures": {"vt_url": "malicious", "otx": "malicious", "ai": "suspicious"}
+      "environment": "MIXED",
+      "notes": "Base risk uses only the email evidence. The former reputation confirmation is deferred to Shuffle.",
+      "email": {
+        "from": "Cloud Notice <notice@cloud.example.org>",
+        "subject": "Cloud account verification",
+        "body_text": "Your cloud account is suspended. Confirm your password now: https://login.example.org/cloud/session",
+        "auth": {
+          "spf": "softfail",
+          "dkim": "none",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "suspicious"
+      }
     },
     {
       "sample_id": "phish_lab_raw_fixture",
       "description": "Repository credential-phishing sample analyzed in explicit lab mode.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING"],
+      "expected_classification": [
+        "PHISHING"
+      ],
       "expected_min_severity": "HIGH",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["deceptive_href", "critical_gate_not_required"],
+      "expected_findings": [
+        "deceptive_href",
+        "critical_gate_not_required",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "LAB",
       "notes": "Uses the checked-in raw EML fixture rather than the synthetic builder.",
       "raw_fixture": "samples/phishing_test_sample.eml",
-      "fixtures": {"ai": "phishing_high"}
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "phish_mixed_environment",
       "description": "Mixed test and documentation-domain observables with phishing behavior.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING"],
+      "expected_classification": [
+        "PHISHING"
+      ],
       "expected_min_severity": "HIGH",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["deceptive_href", "mixed_environment"],
+      "expected_findings": [
+        "deceptive_href",
+        "mixed_environment",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "MIXED",
       "notes": "Only special-use observables may be export-safe.",
-      "email": {"from": "Service Desk <desk@support.test>", "subject": "Account action required", "body_html": "<p>Confirm your password now.</p><a href='https://capture.test/login'>https://portal.example.org/login</a><p>Policy: https://docs.example.org/security</p>", "auth": {"spf": "fail", "dkim": "fail", "dmarc": "fail"}},
-      "fixtures": {"ai": "phishing_high"}
+      "email": {
+        "from": "Service Desk <desk@support.test>",
+        "subject": "Account action required",
+        "body_html": "<p>Confirm your password now.</p><a href='https://capture.test/login'>https://portal.example.org/login</a><p>Policy: https://docs.example.org/security</p>",
+        "auth": {
+          "spf": "fail",
+          "dkim": "fail",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "ambiguous_ai_suspicious_only",
       "description": "AI flags an otherwise uneventful message as suspicious.",
       "label": "ambiguous",
       "attack_class": "unknown",
-      "expected_classification": ["UNKNOWN", "LIKELY_BENIGN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "MODERATE",
-      "expected_findings": ["ai_suspicious"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "ai_suspicious",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "AI-only ambiguity is intentionally not assigned binary ground truth.",
-      "email": {"from": "Colleague <colleague@partner.example.org>", "subject": "Follow-up", "body_text": "Following up on our discussion yesterday.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}},
-      "fixtures": {"ai": "suspicious"}
+      "email": {
+        "from": "Colleague <colleague@partner.example.org>",
+        "subject": "Follow-up",
+        "body_text": "Following up on our discussion yesterday.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {
+        "ai": "suspicious"
+      }
     },
     {
       "sample_id": "benign_invoice_receipt",
       "description": "Authenticated invoice receipt containing ordinary financial vocabulary.",
       "label": "benign",
       "attack_class": "benign",
-      "expected_classification": ["BENIGN", "LIKELY_BENIGN", "UNKNOWN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["dmarc_pass"],
-      "forbidden_findings": ["reply_to_mismatch", "deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "dmarc_pass",
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "reply_to_mismatch",
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "Financial language alone cannot establish payment fraud.",
-      "email": {"from": "Accounts <accounts@vendor.example.org>", "subject": "Payment receipt for invoice 1042", "body_text": "Thank you. Payment for invoice 1042 was received and no action is required.", "auth": {"spf": "pass", "dkim": "pass", "dmarc": "pass"}},
-      "fixtures": {"ai": "legitimate"}
+      "email": {
+        "from": "Accounts <accounts@vendor.example.org>",
+        "subject": "Payment receipt for invoice 1042",
+        "body_text": "Thank you. Payment for invoice 1042 was received and no action is required.",
+        "auth": {
+          "spf": "pass",
+          "dkim": "pass",
+          "dmarc": "pass"
+        }
+      },
+      "fixtures": {
+        "ai": "legitimate"
+      }
     },
     {
       "sample_id": "phish_display_name_spoof",
       "description": "Display-name brand spoof plus credential lure.",
       "label": "phishing",
       "attack_class": "credential_phishing",
-      "expected_classification": ["PHISHING", "SUSPICIOUS"],
+      "expected_classification": [
+        "PHISHING",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "ELEVATED",
       "expected_max_severity": "CRITICAL",
-      "expected_findings": ["display_name_spoofing", "credential_lure"],
+      "expected_findings": [
+        "display_name_spoofing",
+        "credential_lure",
+        "external_enrichment_pending"
+      ],
       "forbidden_findings": [],
       "environment": "TEST",
       "notes": "Organization identity evidence combines with credential intent.",
-      "email": {"from": "Microsoft Security <notice@unrelated-sender.test>", "subject": "Microsoft 365 password validation", "body_text": "Validate your account and enter your Microsoft 365 username and password immediately at https://unrelated-sender.test/m365/login", "auth": {"spf": "fail", "dkim": "none", "dmarc": "fail"}},
-      "fixtures": {"ai": "phishing_high"}
+      "email": {
+        "from": "Microsoft Security <notice@unrelated-sender.test>",
+        "subject": "Microsoft 365 password validation",
+        "body_text": "Validate your account and enter your Microsoft 365 username and password immediately at https://unrelated-sender.test/m365/login",
+        "auth": {
+          "spf": "fail",
+          "dkim": "none",
+          "dmarc": "fail"
+        }
+      },
+      "fixtures": {
+        "ai": "phishing_high"
+      }
     },
     {
       "sample_id": "ambiguous_url_only",
       "description": "Unauthenticated message contains a bare URL but no malicious intent signal.",
       "label": "ambiguous",
       "attack_class": "unknown",
-      "expected_classification": ["UNKNOWN", "LIKELY_BENIGN", "SUSPICIOUS"],
+      "expected_classification": [
+        "BENIGN",
+        "SUSPICIOUS"
+      ],
       "expected_min_severity": "LOW",
       "expected_max_severity": "ELEVATED",
-      "expected_findings": ["no_known_malicious_reputation"],
-      "forbidden_findings": ["deceptive_href"],
-      "environment": "PRODUCTION",
+      "expected_findings": [
+        "external_enrichment_pending"
+      ],
+      "forbidden_findings": [
+        "deceptive_href"
+      ],
+      "environment": "MIXED",
       "notes": "URL existence alone is not a positive label.",
-      "email": {"from": "External <external@example.org>", "subject": "Reference", "body_text": "For context: https://reference.example.org/public/notice", "auth": {"spf": "none", "dkim": "none", "dmarc": "none"}},
-      "fixtures": {"vt_url": "clean", "otx": "clean"}
+      "email": {
+        "from": "External <external@example.org>",
+        "subject": "Reference",
+        "body_text": "For context: https://reference.example.org/public/notice",
+        "auth": {
+          "spf": "none",
+          "dkim": "none",
+          "dmarc": "none"
+        }
+      },
+      "fixtures": {}
     }
   ]
 }

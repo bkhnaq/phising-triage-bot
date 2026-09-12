@@ -43,7 +43,7 @@ def test_critical_regression_contracts_hold() -> None:
     assert all(
         item["predicted_positive"]
         for item in samples.values()
-        if item["label"] == "phishing"
+        if item["label"] == "phishing" and not item.get("requires_external_enrichment")
     )
     assert all(
         item["severity"] not in {"HIGH", "CRITICAL"}
@@ -57,3 +57,12 @@ def test_critical_regression_contracts_hold() -> None:
     )
     assert all(not item["invariant_errors"] for item in samples.values())
     assert samples["benign_ai_false_positive"]["severity"] == "LOW"
+
+
+def test_compromised_legitimate_domain_remains_an_explicit_recall_miss() -> None:
+    result = _evaluation()
+    missed = next(item for item in result["samples"] if item["sample_id"] == "phish_compromised_legit_domain")
+    assert missed["label"] == "phishing"
+    assert missed["requires_external_enrichment"] is True
+    assert missed["predicted_positive"] is False
+    assert result["metrics"]["binary"]["recall"] < 1.0

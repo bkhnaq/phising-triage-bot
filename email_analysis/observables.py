@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import ipaddress
-from urllib.parse import urlsplit, urlunsplit
+import re
+from email.utils import getaddresses
+from urllib.parse import urlsplit
 
-from email_analysis.domain_utils import registered_domain
+from email_analysis.domain_utils import domain_info, registered_domain
+from email_analysis.url_utils import analyze_url
+from email_analysis.ip_utils import extract_ip_literals
 from email_analysis.special_use import (
     classify_domain,
     classify_ip,
@@ -37,27 +41,21 @@ def normalize_observable(value: object, observable_type: str) -> str:
     if not raw:
         return ""
     if kind == "url":
-        parsed = urlsplit(raw)
-        if not parsed.scheme or not parsed.hostname:
-            return raw
-        hostname = parsed.hostname.lower().rstrip(".")
         try:
-            port = parsed.port
-        except ValueError:
-            return raw
-        default_port = (parsed.scheme.lower(), port) in {("http", 80), ("https", 443)}
-        netloc = hostname if port is None or default_port else f"{hostname}:{port}"
-        return urlunsplit(
-            (parsed.scheme.lower(), netloc, parsed.path or "", parsed.query, "")
-        )
+            return analyze_url(raw).normalized_url
+        except (UnicodeError, ValueError):
+            return ""
     if kind == "domain":
-        return raw.lower().rstrip(".")
+        return domain_info(raw).ascii_host
     if kind == "ip":
         try:
             return str(ipaddress.ip_address(raw))
         except ValueError:
             return raw
-    if kind in {"sha256", "hash"}:
+    if kind == "email" and "@" in raw:
+        local, domain = raw.rsplit("@", 1)
+        return local + "@" + domain_info(domain).ascii_host
+    if kind in {"md5", "sha1", "sha256", "hash"}:
         return raw.lower()
     return raw
 
@@ -84,7 +82,7 @@ def _safety_metadata(
     value: str, observable_type: str, classification: str
 ) -> dict[str, object]:
     nonproduction = is_nonproduction_observable(value, observable_type)
-    environment = "test" if nonproduction else "production"
+    environment = "TEST" if nonproduction else "PRODUCTION"
     exportable_class = classification in {
         "confirmed_malicious",
         "suspicious",
@@ -93,8 +91,8 @@ def _safety_metadata(
     exportable = bool(exportable_class and not nonproduction)
 
     if nonproduction:
-        if observable_type == "domain":
-            reason = classify_domain(value).classification
+        if observable_type in {"domain", "email"}:
+            reason = classify_domain(value.rsplit("@", 1)[-1]).classification
         elif observable_type == "url":
             hostname = urlsplit(value).hostname or ""
             domain_result = classify_domain(hostname)
@@ -123,7 +121,7 @@ def _safety_metadata(
 class ObservableRegistry:
     """Deduplicate observables globally and retain only their highest classification."""
 
-    def __init__(self, maximum: int = 50) -> None:
+    def __init__(self, maximum: int | None = None) -> None:
         self.maximum = maximum
         self._records: dict[tuple[str, str], dict] = {}
 
@@ -138,7 +136,12 @@ class ObservableRegistry:
         if normalized_classification not in CLASSIFICATION_PRIORITY:
             raise ValueError(f"Unknown observable classification: {classification}")
         kind = observable_type or infer_observable_type(label, value)
-        normalized = normalize_observable(value, kind)
+        try:
+            if kind == "domain" and domain_info(str(value or "")).is_ip:
+                kind = "ip"
+            normalized = normalize_observable(value, kind)
+        except (UnicodeError, ValueError):
+            return
         if not normalized:
             return
         key = (kind, normalized)
@@ -152,7 +155,7 @@ class ObservableRegistry:
                 if str(label).startswith("Displayed "):
                     existing["label"] = str(label)
                 return
-        elif len(self._records) >= self.maximum:
+        elif self.maximum is not None and len(self._records) >= self.maximum:
             return
 
         record: dict[str, object] = {
@@ -191,7 +194,11 @@ def collect_observables(
     attachment_risks: list[dict] | None = None,
     origin_ip: str = "",
     ip_reputation: list[dict] | None = None,
+    email_data: dict | None = None,
+    header_forensics: dict | None = None,
+    lab_mode: bool = False,
 ) -> list[dict]:
+    """Extract intrinsic IOCs; legacy reputation inputs have no effect."""
     registry = ObservableRegistry()
     identity_findings = (brand_impersonation or {}).get("sender_identity_mismatch", [])
     suspicious_senders = {
@@ -212,14 +219,9 @@ def collect_observables(
 
     for item in urls:
         actual_url = (
-            item.get("normalized_url") or item.get("expanded_url") or item.get("url")
+            item.get("url")
         )
-        actual_domain = str(
-            item.get("actual_domain")
-            or item.get("domain")
-            or item.get("registered_domain")
-            or ""
-        )
+        actual_domain = domain_info(str(actual_url or "")).ascii_host
         is_mismatch = item.get("link_target_comparison") == "mismatch"
         registry.add(
             "contextual",
@@ -256,58 +258,6 @@ def collect_observables(
                 finding.get("actual_domain"),
                 "domain",
             )
-    for finding in (url_intelligence or {}).get("redirect_findings", []):
-        if int(finding.get("hops", 0)) > 0 and not finding.get("error"):
-            registry.add(
-                "contextual",
-                "Observed redirect destination",
-                finding.get("redirect_destination") or finding.get("final_url"),
-                "url",
-            )
-            registry.add(
-                "contextual",
-                "Observed redirect domain",
-                finding.get("final_domain"),
-                "domain",
-            )
-    for finding in (url_intelligence or {}).get("shortener_findings", []):
-        registry.add("contextual", "Expanded URL", finding.get("expanded_url"), "url")
-        registry.add(
-            "contextual", "Expanded domain", finding.get("expanded_domain"), "domain"
-        )
-
-    for report in vt_url_reports or []:
-        if int(report.get("malicious", 0)) > 0:
-            registry.add(
-                "confirmed_malicious", "Known-malicious URL", report.get("url"), "url"
-            )
-        elif int(report.get("suspicious", 0)) > 0:
-            registry.add("suspicious", "Suspicious URL", report.get("url"), "url")
-    for report in vt_hash_reports or []:
-        if int(report.get("malicious", 0)) > 0:
-            registry.add(
-                "confirmed_malicious",
-                "Known-malicious SHA-256",
-                report.get("sha256"),
-                "sha256",
-            )
-    for report in otx_reports or []:
-        if int(report.get("pulse_count", 0)) > 0:
-            value = report.get("sha256") or report.get("url") or report.get("domain")
-            observable_type = (
-                "sha256"
-                if report.get("sha256")
-                else "url" if report.get("url") else "domain"
-            )
-            registry.add("ioc_candidate", "OTX indicator", value, observable_type)
-    for finding in ip_reputation or []:
-        registry.add(
-            "suspicious" if int(finding.get("risk_score", 0)) > 0 else "contextual",
-            "Origin IP reputation",
-            finding.get("ip"),
-            "ip",
-        )
-
     risky_names = {
         str(finding.get("filename", ""))
         for finding in attachment_risks or []
@@ -319,13 +269,48 @@ def collect_observables(
             if attachment.get("filename") in risky_names
             else "contextual"
         )
-        registry.add(
-            classification,
-            "Attachment SHA-256",
-            attachment.get("sha256"),
-            "sha256",
-        )
-    return registry.records()
+        registry.add(classification, "Attachment filename", attachment.get("filename"), "filename")
+        for algorithm in ("md5", "sha1", "sha256"):
+            registry.add(classification, f"Attachment {algorithm.upper()}", attachment.get(algorithm), algorithm)
+
+    data = email_data or {}
+    headers = data.get("headers", [])
+    address_headers = [str(value) for name, value in headers if name.lower() in {
+        "from", "to", "cc", "bcc", "reply-to", "return-path", "sender"
+    }]
+    address_headers.extend(str(data.get(key) or "") for key in ("from", "to", "reply_to", "return_path"))
+    body = str(data.get("body_text") or "") + " " + str(data.get("body_html") or "")
+    addresses = [address for _, address in getaddresses(address_headers) if "@" in address]
+    addresses.extend(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", body))
+    for address in addresses:
+        registry.add("contextual", "Email address", address, "email")
+        registry.add("contextual", "Email domain", address.rsplit("@", 1)[-1], "domain")
+    for name, value in headers:
+        if name.lower() == "message-id" and "@" in str(value):
+            registry.add("informational", "Message-ID domain", str(value).rsplit("@", 1)[-1].strip("<> "), "domain")
+    for hop in (header_forensics or {}).get("relay_chain", []):
+        registry.add("contextual", "Relay IP", hop.get("ip"), "ip")
+        registry.add("contextual", "Relay domain", hop.get("server"), "domain")
+
+    # Extract IP literals without resolving any hostname.
+    text = body + " " + " ".join(str(value) for _, value in headers)
+    for candidate in extract_ip_literals(text):
+        registry.add("contextual", "Observed IP", candidate, "ip")
+    for record in list(registry.records()):
+        if record["type"] in {"domain", "url"}:
+            host = urlsplit(str(record["value"])).hostname if record["type"] == "url" else str(record["value"])
+            try:
+                registry.add("contextual", "URL IP", str(ipaddress.ip_address(host or "")), "ip")
+            except ValueError:
+                pass
+    records = registry.records()
+    for record in records:
+        if lab_mode:
+            record.update(environment="TEST", exportable=False, export_reason="Explicit lab analysis")
+        elif record["type"] in {"md5", "sha1", "sha256", "filename"}:
+            record.update(environment="UNKNOWN", exportable=False, export_reason="File origin requires downstream assessment")
+    return sorted(records, key=lambda item: (str(item["type"]), str(item["value"])))
+
 
 
 def group_observables(observables: list[dict]) -> dict[str, list[dict]]:

@@ -11,7 +11,7 @@ pytestmark = pytest.mark.unit
 def _risk() -> dict:
     return {
         "score": 0,
-        "verdict": "LIKELY_BENIGN",
+        "verdict": "BENIGN",
         "risk_severity": "LOW",
         "confidence": 0.8,
         "data_completeness": 80,
@@ -77,7 +77,7 @@ def test_threat_summary_exposes_nonproduction_operational_use() -> None:
     )
 
     assert "Environment           : LAB" in lines
-    assert "Operational Use       : NON-PRODUCTION / SIMULATED RESPONSE ONLY" in lines
+    assert "Operational Use       : NON-PRODUCTION / LAB PIPELINE" in lines
 
 
 def test_normal_report_compacts_zero_risk_test_domain_randomness() -> None:

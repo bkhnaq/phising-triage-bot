@@ -7,12 +7,8 @@ urllib3>=2.7,<3
 # Telegram bot
 python-telegram-bot>=20.7,<22
 
-# WHOIS lookups for domain age checks
-python-whois>=0.9,<1
+# Offline bundled Public Suffix List for domain parsing
 tldextract>=5.3,<6
-
-# DNS-based blocklist lookups (Spamhaus)
-dnspython>=2.4,<3
 
 # QR code scanning
 Pillow>=12.2,<13

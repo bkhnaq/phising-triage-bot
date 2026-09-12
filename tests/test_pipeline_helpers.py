@@ -34,72 +34,10 @@ def test_parser_recovers_headers_after_blank_subject_line(tmp_path) -> None:
     assert result["body_text"] == "Please verify your account."
 
 
-def test_pipeline_deduplicates_url_indicators_and_hashes() -> None:
-    urls = [
-        {"url": "https://a.example/login", "domain": "a.example"},
-        {"url": "https://short.example/x", "expanded_url": "https://a.example/login"},
-        {"url": "https://b.example", "domain": "b.example:443"},
-    ]
-    attachments = [
-        {"sha256": "A" * 64},
-        {"sha256": "a" * 64},
-        {"sha256": "b" * 64},
-    ]
-
-    indicators = PhishingPipeline._build_url_indicators(urls)
-    domains = PhishingPipeline._extract_unique_domains(urls)
-    hashes = PhishingPipeline._extract_unique_hashes(attachments)
-
-    assert [item["lookup_url"] for item in indicators] == [
-        "https://a.example/login",
-        "https://b.example",
-    ]
-    assert domains == ["a.example", "b.example"]
-    assert hashes == ["a" * 64, "b" * 64]
 
 
-def test_pipeline_url_indicators_prefer_redirect_final_url() -> None:
-    urls = [
-        {
-            "url": "https://tracker.example/click",
-            "domain": "tracker.example",
-            "expanded_url": "https://tracker.example/click",
-        }
-    ]
-    url_intelligence = {
-        "shortener_findings": [],
-        "redirect_findings": [
-            {
-                "source_url": "https://tracker.example/click",
-                "final_url": "https://landing.example/login/verify",
-                "error": None,
-            }
-        ],
-    }
-
-    indicators = PhishingPipeline._build_url_indicators(urls, url_intelligence)
-
-    assert indicators == [
-        {
-            "source_url": "https://tracker.example/click",
-            "lookup_url": "https://landing.example/login/verify",
-            "is_shortened": False,
-            "source": "body",
-        }
-    ]
 
 
-def test_parallel_lookup_preserves_input_order() -> None:
-    pipeline = PhishingPipeline(analysis_id="test")
-
-    def worker(value: int) -> dict:
-        return {"value": value}
-
-    assert pipeline._run_parallel([3, 1, 2], worker) == [
-        {"value": 3},
-        {"value": 1},
-        {"value": 2},
-    ]
 
 
 def test_attachment_extraction_stops_before_hashing_extra_parts(
@@ -197,13 +135,11 @@ def test_pipeline_filters_qr_findings_to_shared_url_budget(
     from email_analysis import (
         ai_classifier,
         domain_intelligence,
-        landing_page_analyzer,
         qr_code_analyzer,
         url_intelligence,
     )
     from report import report_generator
     from scoring import risk_scoring
-    from threat_intel import ip_reputation, passive_dns
 
     def fail_network(*_args, **_kwargs):
         raise AssertionError("network access is forbidden in this test")
@@ -263,16 +199,6 @@ def test_pipeline_filters_qr_findings_to_shared_url_budget(
         domain_intelligence, "analyze_domain_intelligence", lambda _domains: {}
     )
     monkeypatch.setattr(
-        PhishingPipeline,
-        "_run_parallel",
-        lambda _self, _items, _worker: [],
-    )
-    monkeypatch.setattr(ip_reputation, "check_ip_reputation", lambda _domains: [])
-    monkeypatch.setattr(passive_dns, "check_passive_dns", lambda _ips: [])
-    monkeypatch.setattr(
-        landing_page_analyzer, "analyze_landing_pages", lambda _urls: []
-    )
-    monkeypatch.setattr(
         ai_classifier,
         "classify_email",
         lambda _email_data, _urls, _findings: {
@@ -282,18 +208,10 @@ def test_pipeline_filters_qr_findings_to_shared_url_budget(
         },
     )
 
-    def record_risk_qr_findings(
-        _auth_results,
-        _vt_url_reports,
-        _vt_hash_reports,
-        _otx_reports,
-        _heuristics,
-        received_qr_findings,
-        *_args,
-        **_kwargs,
-    ) -> dict:
+    def record_risk_qr_findings(_auth_results, *, qr_findings=None, **_kwargs) -> dict:
+        received_qr_findings = qr_findings or []
         observed["risk"] = list(received_qr_findings)
-        return {"score": 0, "verdict": "LOW"}
+        return {"score": 0, "verdict": "BENIGN"}
 
     monkeypatch.setattr(risk_scoring, "calculate_risk", record_risk_qr_findings)
 
@@ -303,9 +221,6 @@ def test_pipeline_filters_qr_findings_to_shared_url_budget(
         _urls,
         _attachments,
         _risk,
-        _vt_url_reports,
-        _vt_hash_reports,
-        _otx_reports,
         *,
         qr_findings=None,
         **_kwargs,

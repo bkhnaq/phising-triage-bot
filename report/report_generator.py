@@ -9,14 +9,14 @@ Structure:
   EMAIL AUTHENTICATION  /  HEADER FORENSICS
   SMTP RELAY ANALYSIS
   URL ANALYSIS
-  DOMAIN INTELLIGENCE
+  STATIC DOMAIN ANALYSIS
   BRAND IMPERSONATION ANALYSIS  (unified)
   PHISHING LANGUAGE ANALYSIS
   CREDENTIAL HARVESTING DETECTION
-  THREAT INTELLIGENCE  (VT, OTX, IP rep, passive DNS)
+  EXTERNAL ENRICHMENT (pending Shuffle)
   AI PHISHING CLASSIFIER
   ATTACHMENTS  /  QR CODES
-  RISK ASSESSMENT
+  INITIAL RISK ASSESSMENT
 
 Usage:
     from report.report_generator import generate_report
@@ -29,7 +29,8 @@ from datetime import datetime, timezone
 
 from email_analysis.analysis_environment import normalize_analysis_environment
 from email_analysis.observables import collect_observables, group_observables
-from scoring.config import AuthState, SourceStatus, ThreatIntelStatus
+from scoring.config import AuthState, SourceStatus
+from output.siem import suggested_playbook
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,6 @@ _FINDING_CATEGORY_LABELS = {
     "url_web": "URL / Web",
     "identity_impersonation": "Identity / Impersonation",
     "content_social": "Content / Social Engineering",
-    "threat_intelligence": "Threat Intelligence",
     "attachment_malware": "Attachment / Malware",
 }
 
@@ -47,7 +47,6 @@ _FINDING_TO_RISK_CATEGORY = {
     "url_web": "URL behavior",
     "identity_impersonation": "brand impersonation",
     "content_social": "content/language",
-    "threat_intelligence": "threat intelligence",
     "attachment_malware": "attachment/malware",
 }
 
@@ -56,7 +55,6 @@ _RISK_CATEGORY_LABELS = {
     "URL behavior": "URL / Web",
     "brand impersonation": "Identity / Impersonation",
     "content/language": "Content / Social Engineering",
-    "threat intelligence": "Threat Intelligence",
     "attachment/malware": "Attachment / Malware",
     "AI / ML": "AI / ML",
     "Cross-category Confirmation": "Cross-category Confirmation",
@@ -102,141 +100,6 @@ def _clean_error(raw: str | None) -> str:
     # Fallback: return first 120 chars, strip tracebacks
     first_line = raw.strip().split("\n")[0][:120]
     return first_line
-
-
-def _recommended_actions(
-    verdict: str,
-    *,
-    confidence: float = 0.0,
-    email_data: dict | None = None,
-    auth_results: dict | None = None,
-    urls: list[dict] | None = None,
-    brand_impersonation: dict | None = None,
-    credential_harvesting: dict | None = None,
-    url_intelligence: dict | None = None,
-    attachment_risks: list[dict] | None = None,
-) -> list[str]:
-    """Return evidence-driven SOC actions for the current message."""
-    normalized = verdict.upper()
-    actions: list[str] = []
-    identity_findings = (brand_impersonation or {}).get("sender_identity_mismatch", [])
-    if identity_findings:
-        finding = identity_findings[0]
-        actions.append("Treat the sender identity as unverified.")
-        actions.append(
-            f"Verify whether {finding.get('sender_domain', 'the sender domain')} is "
-            "authorized to send for the claimed organization."
-        )
-        actions.append(
-            f"Do not block {finding.get('expected_domain', 'the claimed brand domain')} "
-            "or its subdomains based on this sample alone."
-        )
-
-    auth = auth_results or {}
-    auth_unknown = any(
-        AuthState.parse(
-            auth.get(check, {}).get("state")
-            or auth.get(check, {}).get("result", "unknown")
-        )
-        is AuthState.UNKNOWN
-        for check in ("spf", "dkim", "dmarc")
-    )
-    missing_received = not auth.get("forensics", {}).get("received_hops")
-    if auth_unknown or missing_received:
-        actions.append(
-            "Obtain the original message with full SMTP headers for authentication and relay analysis."
-        )
-
-    url_items = urls or []
-    no_anchor_evidence = bool(url_items) and not any(
-        item.get("link_target_comparison") in {"match", "mismatch"}
-        for item in url_items
-    )
-    if no_anchor_evidence:
-        actions.append(
-            "Preserve the original HTML MIME part to compare displayed links with actual HREF destinations."
-        )
-
-    deceptive = any(
-        int(item.get("risk_score", 0)) > 0
-        for item in (url_intelligence or {}).get("deceptive_links", [])
-    )
-    credential_evidence = bool(
-        credential_harvesting and credential_harvesting.get("detected")
-    )
-    if deceptive or credential_evidence:
-        actions.append(
-            "Search proxy/DNS logs for users who accessed the actual HREF destination."
-        )
-        actions.append("Determine whether any users submitted credentials.")
-        actions.append(
-            "If credentials may have been submitted, escalate for account containment and password reset."
-        )
-
-    if any(int(item.get("risk_score", 0)) > 0 for item in attachment_risks or []):
-        actions.append(
-            "Quarantine the attachment and review execution telemetry in an approved sandbox."
-        )
-
-    sender = (auth.get("forensics", {}) or {}).get("from_domain", "")
-    subject = str((email_data or {}).get("subject", "")).strip()
-    if sender or subject:
-        search_terms = ", ".join(
-            term
-            for term in (
-                f"sender {sender}" if sender else "",
-                f"subject '{subject}'" if subject else "",
-            )
-            if term
-        )
-        actions.append(
-            f"Search the mail environment for messages matching {search_terms}."
-        )
-
-    if (
-        normalized in {"PHISHING", "BEC", "MALWARE"} and confidence >= 0.80
-    ) or normalized in {"HIGH", "CRITICAL"}:
-        actions.insert(
-            0,
-            "Quarantine the message and search for matching copies across the mail environment.",
-        )
-    elif normalized == "SUSPICIOUS" and confidence < 0.70:
-        actions.insert(0, "Escalate the message for human review before containment.")
-    elif not actions:
-        actions.append(
-            "Retain normal monitoring and verify any unexpected request through a trusted channel."
-        )
-    return list(dict.fromkeys(actions))[:8]
-
-
-def _collect_iocs(
-    urls: list[dict],
-    attachments: list[dict],
-    url_intelligence: dict | None,
-    sender_domain: str = "",
-    brand_impersonation: dict | None = None,
-    vt_url_reports: list[dict] | None = None,
-    vt_hash_reports: list[dict] | None = None,
-    otx_reports: list[dict] | None = None,
-    attachment_risks: list[dict] | None = None,
-) -> dict[str, list[dict]]:
-    """Compatibility wrapper around the globally deduplicated IOC registry."""
-    return group_observables(
-        collect_observables(
-            urls=urls,
-            attachments=attachments,
-            url_intelligence=url_intelligence,
-            sender_domain=sender_domain,
-            brand_impersonation=brand_impersonation,
-            vt_url_reports=vt_url_reports,
-            vt_hash_reports=vt_hash_reports,
-            otx_reports=otx_reports,
-            attachment_risks=attachment_risks,
-        )
-    )
-
-
-# ── Threat summary builder ───────────────────────────────────
 
 
 def _build_threat_summary(
@@ -375,8 +238,6 @@ def _build_threat_summary(
         attack_type = "Malware delivery"
     elif sender_identity_mismatch or target_brand:
         attack_type = "Organization impersonation"
-    elif ai_verdict and ai_verdict.get("verdict") == "phishing":
-        attack_type = "Generic phishing"
     else:
         attack_type = "Unknown"
 
@@ -413,17 +274,17 @@ def _build_threat_summary(
     if primary_indicator:
         lines.append(f"Primary indicator     : {primary_indicator}")
     lines.append("")
-    lines.append(f"Verdict               : {verdict}")
+    lines.append(f"Initial Verdict       : {verdict}")
     lines.append(f"Verdict Confidence    : {overall_confidence:.0%}")
     lines.append("")
-    lines.append(f"Risk Severity         : {risk_severity}")
-    lines.append(f"Risk Score            : {risk.get('score', 0)} / 100")
+    lines.append(f"Initial Severity      : {risk_severity}")
+    lines.append(f"Base Score            : {risk.get('score', 0)} / 100")
     lines.append(f"Applicable Evidence Coverage : {completeness}%")
     environment = normalize_analysis_environment(analysis_environment)
     environment_type = str(environment["type"])
     if environment_type in {"TEST", "LAB"}:
         lines.append(f"Environment           : {environment_type}")
-        lines.append("Operational Use       : NON-PRODUCTION / SIMULATED RESPONSE ONLY")
+        lines.append("Operational Use       : NON-PRODUCTION / LAB PIPELINE")
     elif environment_type == "MIXED":
         lines.append("Environment           : MIXED")
         lines.append("Operational Use       : PER-OBSERVABLE EXPORT CONTROL REQUIRED")
@@ -442,9 +303,9 @@ def generate_report(
     urls: list[dict],
     attachments: list[dict],
     risk: dict,
-    vt_url_reports: list[dict],
-    vt_hash_reports: list[dict],
-    otx_reports: list[dict],
+    vt_url_reports: list[dict] | None = None,
+    vt_hash_reports: list[dict] | None = None,
+    otx_reports: list[dict] | None = None,
     heuristics: dict | None = None,
     qr_findings: list[dict] | None = None,
     ip_reputation: list[dict] | None = None,
@@ -475,6 +336,12 @@ def generate_report(
     """
     lines: list[str] = []
     explain = str(verbosity or "DEBUG").strip().upper() in {"DEBUG", "EXPLAIN"}
+    risk = {
+        **risk,
+        "score": risk.get("base_score", risk.get("score", 0)),
+        "verdict": risk.get("initial_verdict", risk.get("verdict", "BENIGN")),
+        "risk_severity": risk.get("initial_severity", risk.get("risk_severity", "LOW")),
+    }
     environment = normalize_analysis_environment(analysis_environment)
     environment_type = str(environment["type"])
 
@@ -594,35 +461,6 @@ def generate_report(
             ip_classification = header_forensics.get("origin_ip_classification", "")
             if ip_classification:
                 lines.append(f"IP Classification: {ip_classification}")
-            if (
-                header_forensics.get("geolocation_status")
-                == SourceStatus.NOT_APPLICABLE.value
-            ):
-                lines.append("Geolocation: Not applicable")
-                lines.append(
-                    "Reputation : Not applicable for real-world threat intelligence"
-                )
-
-            country = header_forensics.get("origin_country", "Unknown")
-            cc = header_forensics.get("origin_country_code", "")
-            city = header_forensics.get("origin_city", "")
-            isp = header_forensics.get("origin_isp", "")
-            if country and country != "Unknown":
-                loc_parts = [p for p in [city, country] if p]
-                lines.append(f"Country    : {', '.join(loc_parts)} ({cc})")
-            if isp:
-                lines.append(f"ISP        : {isp}")
-            asn = header_forensics.get("origin_asn", "")
-            asname = header_forensics.get("origin_asname", "")
-            if asn:
-                lines.append(f"ASN        : {asn}")
-            if asname:
-                lines.append(f"ASN Name   : {asname}")
-            if header_forensics.get("origin_is_hosting"):
-                lines.append("             ⚠️ Hosting / datacenter address")
-            if header_forensics.get("origin_is_proxy"):
-                lines.append("             ⚠️ Proxy / VPN exit node")
-
             lines.append("")
             lines.append("Relay Path:")
             for idx, hop in enumerate(relay_chain, 1):
@@ -658,7 +496,7 @@ def generate_report(
             short_tag = " [SHORTENED]" if u.get("is_shortened") else ""
             lines.append(f"• {u['url']}{short_tag}")
             if u.get("is_shortened"):
-                lines.append(f"  ↳ Expanded: {u.get('expanded_url', 'N/A')}")
+                lines.append("  Resolution pending Shuffle enrichment")
             for warning in u.get("url_warnings", [])[:3]:
                 lines.append(f"  ⚠️ {warning}")
         deceptive_links = [
@@ -697,7 +535,6 @@ def generate_report(
     # URL shortener findings
     if url_intelligence:
         shortener_findings = url_intelligence.get("shortener_findings", [])
-        redirect_findings = url_intelligence.get("redirect_findings", [])
         suspicious_endpoints = url_intelligence.get("suspicious_endpoints", [])
 
         if shortener_findings:
@@ -708,46 +545,6 @@ def generate_report(
                 if f.get("expanded_url") and f["expanded_url"] != f["url"]:
                     lines.append(f"     Expanded: {f['expanded_url']}")
 
-        if redirect_findings:
-            lines.append("")
-            lines.append("Redirect Chains:")
-            for f in redirect_findings:
-                if f.get("status") == SourceStatus.NOT_APPLICABLE.value:
-                    lines.append(f"  ℹ️ Redirect analysis not applicable: {f['url']}")
-                    lines.append(
-                        f"     Reason: {f.get('reason', 'special-use resource')}"
-                    )
-                elif f.get("error"):
-                    lines.append(f"  ➖ Redirect analysis unavailable: {f['url']}")
-                    lines.append(f"     Reason: {_clean_error(f['error'])}")
-                elif int(f.get("hops", 0)) <= 0:
-                    lines.append(f"  ℹ️ No HTTP redirect observed: {f['url']}")
-                else:
-                    lines.append(
-                        f"  Redirect source: {f.get('redirect_source', f['url'])}"
-                    )
-                    lines.append(
-                        "  Redirect destination: "
-                        f"{f.get('redirect_destination', f.get('final_url', '?'))}"
-                    )
-                    for i, step in enumerate(f.get("redirect_chain", []), 1):
-                        status_code = step.get("status_code")
-                        suffix = (
-                            "Final destination"
-                            if step.get("final")
-                            else (
-                                f"HTTP {status_code}"
-                                if status_code
-                                else "HTTP redirect observed"
-                            )
-                        )
-                        lines.append(f"     {i}. {step.get('url', '?')} — {suffix}")
-                    if f.get("suspicious_intermediates"):
-                        for si in f["suspicious_intermediates"]:
-                            lines.append(
-                                f"     ⚠️ Suspicious intermediate: {si['domain']} ({si['reason']})"
-                            )
-
         if suspicious_endpoints:
             lines.append("")
             lines.append("Suspicious Endpoints:")
@@ -756,97 +553,10 @@ def generate_report(
                 lines.append(f"     URL: {f['url']}")
     lines.append("")
 
-    # ── 6. DOMAIN INTELLIGENCE ───────────────────────────────
-    _has_domain_intel = False
     if domain_intelligence:
-        whois_results = domain_intelligence.get("whois_results", [])
-        dns_results = domain_intelligence.get("dns_results", [])
-        entropy_results = domain_intelligence.get("entropy_results", [])
-        randomness_results = domain_intelligence.get(
-            "randomness_results", entropy_results
-        )
-
-        if whois_results or dns_results or randomness_results:
-            _has_domain_intel = True
-            lines.append("━━━ DOMAIN INTELLIGENCE ━━━")
-
-            for w in whois_results:
-                lines.append(f"Domain: {w['domain']}")
-                if w.get("status") == SourceStatus.NOT_APPLICABLE.value:
-                    classification = w.get("special_use", {}).get(
-                        "classification", "Reserved special-use domain"
-                    )
-                    lines.append(f"  ℹ️ {classification}")
-                    lines.append(
-                        "  DNS/WHOIS enrichment is not applicable for reputation purposes."
-                    )
-                elif w.get("error"):
-                    lines.append("  WHOIS: lookup unavailable")
-                else:
-                    if w.get("created"):
-                        warning = (
-                            " ⚠️ Newly registered"
-                            if (w.get("age_days") or 999) < 30
-                            else ""
-                        )
-                        lines.append(f"  Created   : {w['created']}{warning}")
-                        lines.append(f"  Age       : {w['age_days']} day(s)")
-                    if w.get("registrar"):
-                        lines.append(f"  Registrar : {w['registrar']}")
-                    if w.get("country"):
-                        lines.append(f"  Country   : {w['country']}")
-                    if w.get("name_servers"):
-                        lines.append(
-                            f"  NS        : {', '.join(w['name_servers'][:4])}"
-                        )
-                lines.append("")
-
-            if dns_results:
-                lines.append("DNS Analysis:")
-                for d in dns_results:
-                    lines.append(f"  {d['domain']}:")
-                    if d.get("status") == SourceStatus.NOT_APPLICABLE.value:
-                        lines.append("    ℹ️ Reserved special-use domain")
-                        lines.append("    DNS reputation: Not applicable")
-                        continue
-                    if d.get("a_records"):
-                        lines.append(f"    A   : {', '.join(d['a_records'][:3])}")
-                    elif d.get("record_status", {}).get("A") in {
-                        "unavailable",
-                        "error",
-                        "not_checked",
-                    }:
-                        lines.append("    ➖ A lookup unavailable")
-                    if d.get("mx_records"):
-                        mx_str = ", ".join(
-                            f"{m['host']} (pri {m['priority']})"
-                            for m in d["mx_records"][:3]
-                        )
-                        lines.append(f"    MX  : {mx_str}")
-                    else:
-                        mx_status = d.get("record_status", {}).get("MX", "unknown")
-                        if mx_status == "absent":
-                            lines.append("    ➖ No MX records published")
-                        elif mx_status == "nxdomain":
-                            lines.append("    ⚠️ Domain does not exist (NXDOMAIN)")
-                        else:
-                            lines.append("    ➖ MX lookup unavailable")
-                    if d.get("has_spf"):
-                        lines.append("    ✅ SPF record found")
-                    else:
-                        txt_status = d.get("record_status", {}).get("TXT", "unknown")
-                        if txt_status in {"ok", "absent"}:
-                            lines.append("    ➖ No SPF policy found")
-                        else:
-                            lines.append("    ➖ SPF lookup unavailable")
-                    if d.get("has_dmarc"):
-                        lines.append("    ✅ DMARC policy found")
-                    elif d.get("dmarc_status") in {"ok", "absent"}:
-                        lines.append("    ➖ No DMARC policy published")
-                    else:
-                        lines.append("    ➖ DMARC lookup unavailable")
-                lines.append("")
-
+        randomness_results = domain_intelligence.get("randomness_results", domain_intelligence.get("entropy_results", []))
+        if randomness_results:
+            lines.append("━━━ STATIC DOMAIN ANALYSIS ━━━")
             if randomness_results:
                 lines.append("Domain Randomness Analysis:")
                 compact_test_randomness = (
@@ -885,8 +595,6 @@ def generate_report(
 
     # Suspicious keywords from heuristics (unique to this module)
     if heuristics and heuristics.get("suspicious_keywords"):
-        if not _has_domain_intel:
-            lines.append("━━━ DOMAIN INTELLIGENCE ━━━")
         lines.append("URL Keyword Context (weak evidence):")
         for f in heuristics["suspicious_keywords"]:
             lines.append(f"  ℹ️ Keyword '{f['keyword']}' in {f['source']}")
@@ -902,8 +610,8 @@ def generate_report(
         lines.extend(_brand_lines)
 
     # ── 8. PHISHING LANGUAGE ANALYSIS ────────────────────────
+    lines.append("━━━ PHISHING LANGUAGE ANALYSIS ━━━")
     if language_analysis and language_analysis.get("total_matches", 0) > 0:
-        lines.append("━━━ PHISHING LANGUAGE ANALYSIS ━━━")
         for cat_name, cat_info in language_analysis.get("categories", {}).items():
             matches_str = ", ".join(cat_info["matches"][:3])
             icon = "ℹ️" if cat_name in {"urgency", "call_to_action"} else "⚠️"
@@ -921,189 +629,12 @@ def generate_report(
                 lines.append(f"   POST endpoint: {ep}")
         lines.append("")
 
-    # ── 10. THREAT INTELLIGENCE ──────────────────────────────
-    risky_landing_pages = [
-        page for page in (landing_pages or []) if int(page.get("risk_score", 0)) > 0
-    ]
-    if risky_landing_pages:
-        lines.append("━━━ LANDING PAGE INTELLIGENCE ━━━")
-        for page in risky_landing_pages[:5]:
-            lines.append(f"⚠️ {page.get('final_url') or page.get('url')}")
-            if page.get("title"):
-                lines.append(f"   Title: {_esc(page['title'])}")
-            for finding in page.get("findings", [])[:4]:
-                lines.append(f"   {finding}")
-            lines.append(f"   Risk: +{page.get('risk_score', 0)}")
-        lines.append("")
-
-    _ti_header_shown = False
-
-    # VirusTotal URL results
-    if vt_url_reports:
-        lines.append("━━━ THREAT INTELLIGENCE ━━━")
-        _ti_header_shown = True
-        lines.append("VirusTotal – URLs:")
-        unavailable_count = 0
-        no_known_threat_count = 0
-        for r in vt_url_reports:
-            status = str(r.get("status") or r.get("state", "")).upper()
-            if status == ThreatIntelStatus.NOT_APPLICABLE.value:
-                lines.append(f"  ℹ️ {r.get('url', '?')} — reputation not applicable")
-            elif r.get("malicious", 0) > 0:
-                lines.append(
-                    f"  🔴 {r.get('url', '?')} — {r['malicious']} engine(s) flagged malicious"
-                )
-            elif status == ThreatIntelStatus.NOT_FOUND.value:
-                lines.append(f"  ➖ {r.get('url', '?')} — no record found")
-            elif r.get("error") and r["error"] != "submitted_for_analysis":
-                unavailable_count += 1
-                lines.append(f"  ➖ {r.get('url', '?')} — lookup unavailable")
-            elif r.get("error") == "submitted_for_analysis":
-                lines.append(f"  ➖ {r.get('url', '?')} — analysis pending")
-            else:
-                no_known_threat_count += 1
-                lines.append(
-                    f"  ➖ {r.get('url', '?')} — No known malicious reputation detected"
-                )
-        young_domain = any(
-            item.get("age_days") is not None and int(item["age_days"]) < 30
-            for item in (domain_intelligence or {}).get("whois_results", [])
-        )
-        if no_known_threat_count and young_domain:
-            lines.append(
-                "  ℹ️ Newly registered domains may not yet appear in threat-intelligence feeds."
-            )
-        if unavailable_count:
-            lines.append(
-                "  ℹ️ Note: unavailable threat-intel scans are treated as missing "
-                "evidence, not proof of safety."
-            )
-        if no_known_threat_count and (brand_impersonation or {}).get(
-            "sender_identity_mismatch"
-        ):
-            lines.append(
-                "  ℹ️ URL reputation does not reduce the sender-impersonation finding."
-            )
-            lines.append(
-                "     A benign destination does not make the email trustworthy."
-            )
-        if no_known_threat_count:
-            lines.append(
-                "  ℹ️ No known malicious reputation is not evidence of safety."
-            )
-        lines.append("")
-
-    # VirusTotal Hash results
-    if vt_hash_reports:
-        if not _ti_header_shown:
-            lines.append("━━━ THREAT INTELLIGENCE ━━━")
-            _ti_header_shown = True
-        lines.append("VirusTotal – File Hashes:")
-        for r in vt_hash_reports:
-            status = str(r.get("status") or r.get("state", "")).upper()
-            if status == ThreatIntelStatus.NOT_APPLICABLE.value:
-                lines.append(
-                    f"  ℹ️ {r.get('sha256', '?')[:32]}… — reputation not applicable"
-                )
-            elif r.get("malicious", 0) > 0:
-                lines.append(
-                    f"  🔴 {r.get('sha256', '?')[:32]}… — {r['malicious']} engine(s)"
-                )
-            elif status == ThreatIntelStatus.NOT_FOUND.value:
-                lines.append(f"  ➖ {r.get('sha256', '?')[:32]}… — no record found")
-            elif r.get("error"):
-                lines.append(f"  ➖ {r.get('sha256', '?')[:32]}… — lookup unavailable")
-            else:
-                lines.append(
-                    f"  ➖ {r.get('sha256', '?')[:32]}… — No known malicious reputation detected"
-                )
-        lines.append("")
-
-    # AlienVault OTX
-    if otx_reports:
-        if not _ti_header_shown:
-            lines.append("━━━ THREAT INTELLIGENCE ━━━")
-            _ti_header_shown = True
-        lines.append("AlienVault OTX:")
-        for r in otx_reports:
-            identifier = (
-                r.get("domain") or r.get("url") or (r.get("sha256", "?")[:32] + "…")
-            )
-            status = str(r.get("status") or r.get("state", "")).upper()
-            if status == ThreatIntelStatus.NOT_APPLICABLE.value:
-                lines.append(f"  ℹ️ {identifier}: reputation not applicable")
-                continue
-            if status == ThreatIntelStatus.NOT_FOUND.value:
-                lines.append(f"  ➖ {identifier}: no record found")
-                continue
-            if r.get("error"):
-                lines.append(f"  ➖ {identifier}: lookup unavailable")
-                continue
-            count = r.get("pulse_count", 0)
-            if count > 0:
-                lines.append(f"  ⚠️ {identifier}: {count} pulse(s)")
-            else:
-                lines.append(f"  ➖ {identifier}: No known malicious reputation")
-        lines.append("")
-
-    # IP Reputation
-    if ip_reputation:
-        if not _ti_header_shown:
-            lines.append("━━━ THREAT INTELLIGENCE ━━━")
-            _ti_header_shown = True
-        lines.append("IP Reputation:")
-        for f in ip_reputation:
-            if (
-                str(f.get("status", "")).upper()
-                == ThreatIntelStatus.NOT_APPLICABLE.value
-            ):
-                lines.append(
-                    f"  ℹ️ {f['ip']} — {f.get('classification', 'special-use IP')}"
-                )
-                lines.append("     Geolocation: Not applicable")
-                lines.append(
-                    "     Reputation: Not applicable for real-world threat intelligence"
-                )
-                continue
-            abuse = f["abuseipdb"]
-            spamhaus = f["spamhaus"]
-            bl_icon = "🔴" if f["blacklisted"] else "➖"
-            lines.append(f"  {bl_icon} {f['ip']} (domain: {f['domain']})")
-            if abuse.get("error"):
-                lines.append("     AbuseIPDB: unavailable")
-            else:
-                lines.append(f"     AbuseIPDB: abuse score {abuse['abuse_score']}%")
-                if abuse.get("total_reports"):
-                    lines.append(
-                        f"     Reports: {abuse['total_reports']} | Country: {abuse.get('country', '?')}"
-                    )
-            if spamhaus.get("error"):
-                lines.append("     Spamhaus: unavailable")
-            elif spamhaus["listed"]:
-                lines.append(f"     Spamhaus: ⚠️ LISTED in {spamhaus['zone']}")
-            else:
-                lines.append("     Spamhaus: no known listing")
-        lines.append("")
-
-    # Passive DNS
-    if passive_dns:
-        has_pdns = any(f["domain_count"] > 0 or f.get("error") for f in passive_dns)
-        if has_pdns:
-            if not _ti_header_shown:
-                lines.append("━━━ THREAT INTELLIGENCE ━━━")
-                _ti_header_shown = True
-            lines.append("Passive DNS:")
-            for f in passive_dns:
-                if f.get("error"):
-                    lines.append(f"  ➖ IP {f['ip']}: lookup unavailable")
-                else:
-                    flag = " ⚠️" if f["suspicious"] else ""
-                    lines.append(
-                        f"  • IP {f['ip']}: {f['domain_count']} domain(s) hosted{flag}"
-                    )
-                    for d in f.get("sample_domains", [])[:5]:
-                        lines.append(f"    → {d}")
-            lines.append("")
+    lines.extend([
+        "━━━ EXTERNAL ENRICHMENT ━━━",
+        "Status: Pending SOAR enrichment",
+        "Performed by: Shuffle",
+        "Observables are emitted through Wazuh for downstream enrichment.", "",
+    ])
 
     # ── 11. AI PHISHING CLASSIFIER ───────────────────────────
     if ai_verdict:
@@ -1141,22 +672,12 @@ def generate_report(
             lines.append("")
 
     lines.append("━━━ OBSERVABLES / IOC SUMMARY ━━━")
-    sender_domain = auth_results.get("forensics", {}).get("from_domain", "")
-    iocs = (
-        group_observables(observables)
-        if observables is not None
-        else _collect_iocs(
-            urls,
-            attachments,
-            url_intelligence,
-            sender_domain,
-            brand_impersonation,
-            vt_url_reports,
-            vt_hash_reports,
-            otx_reports,
-            attachment_risks,
-        )
-    )
+    iocs = group_observables(observables if observables is not None else collect_observables(
+        urls=urls, attachments=attachments, url_intelligence=url_intelligence,
+        sender_domain=auth_results.get("forensics", {}).get("from_domain", ""),
+        brand_impersonation=brand_impersonation, attachment_risks=attachment_risks,
+        email_data=email_data, header_forensics=header_forensics, lab_mode=lab_mode,
+    ))
     has_test_context = environment_type in {"TEST", "LAB", "MIXED"}
     if environment_type in {"TEST", "LAB"}:
         lines.append("IOC Environment: TEST / LAB")
@@ -1350,7 +871,7 @@ def generate_report(
     lines.append("")
 
     # ── 13. RISK ASSESSMENT ──────────────────────────────────
-    lines.append("━━━ RISK ASSESSMENT ━━━")
+    lines.append("━━━ INITIAL RISK ASSESSMENT ━━━")
     severity = str(risk.get("risk_severity", risk.get("risk_level", "LOW")))
     reconciliation = risk.get("score_reconciliation", {})
     pre_calibration = int(
@@ -1384,9 +905,9 @@ def generate_report(
                 f"Critical severity cap : {critical_gate.get('score_cap', 84)}"
             )
     lines.append("")
-    lines.append(f"Final score : {risk['score']} / 100")
-    lines.append(f"Severity    : {severity}")
-    lines.append(f"Verdict     : {verdict_icon} {risk['verdict']}")
+    lines.append(f"Base Score : {risk['score']} / 100")
+    lines.append(f"Initial Severity : {severity}")
+    lines.append(f"Initial Verdict  : {verdict_icon} {risk['verdict']}")
     if "data_completeness" in risk:
         lines.append(
             "Applicable Evidence Coverage : "
@@ -1404,7 +925,6 @@ def generate_report(
             "URL behavior": "URL / web",
             "brand impersonation": "Identity / impersonation",
             "content/language": "Content / social engineering",
-            "threat intelligence": "Threat intelligence",
             "AI / ML": "AI / ML",
             "attachment/malware": "Attachment / malware",
             "ESP detection": "Legitimate ESP context",
@@ -1457,7 +977,7 @@ def generate_report(
                 "  Pre-calibration score          : "
                 f"{reconciliation.get('pre_calibration_score', risk['score'])}"
             )
-            lines.append(f"  Final score                    : {risk['score']}")
+            lines.append(f"  Base Score                    : {risk['score']}")
         if int(reconciliation.get("suppressed_overall_weight", 0)) > 0:
             lines.append(
                 "  Overall 100-point limit suppressed: "
@@ -1505,46 +1025,9 @@ def generate_report(
             )
         lines.append("  ℹ️ NOT_APPLICABLE sources are excluded from coverage scoring.")
     lines.append("")
-    lines.append("━━━ RECOMMENDED SOC ACTIONS ━━━")
-    actions = _recommended_actions(
-        str(risk.get("verdict", "LOW")),
-        confidence=float(risk.get("confidence", 0.0)),
-        email_data=email_data,
-        auth_results=auth_results,
-        urls=urls,
-        brand_impersonation=brand_impersonation,
-        credential_harvesting=credential_harvesting,
-        url_intelligence=url_intelligence,
-        attachment_risks=attachment_risks,
-    )
-    if environment_type in {"TEST", "LAB"}:
-        lines.append("Lab/Test Context:")
-        lines.append(
-            "This sample uses reserved testing infrastructure. The IOC values below must not be deployed into production blocking or detection systems."
-        )
-        lines.append("")
-        lines.append("Simulated Production Response:")
-        for action in actions:
-            simulated = action.replace(
-                "Quarantine the message", "Quarantine the equivalent message"
-            )
-            lines.append(f"• {simulated}")
-        lines.append("")
-        lines.append("Operational Safety:")
-        lines.append("• Do not block reserved *.test domains.")
-        lines.append("• Do not block TEST-NET documentation addresses.")
-        lines.append(
-            "• Do not export test IOC values to production SIEM/SOAR/EDR/mail gateways."
-        )
-    else:
-        if environment_type == "MIXED":
-            lines.append("Mixed Environment Context:")
-            lines.append(
-                "Apply response actions to production-eligible observables only; reserved test values remain non-exportable."
-            )
-        for action in actions:
-            lines.append(f"• {action}")
-    lines.append("Human validation and an approved sandbox may still be required.")
+    lines.append(f"Suggested playbook: {suggested_playbook(risk, language_analysis)}")
+    lines.append("External enrichment: PENDING")
+    lines.append("Final severity and response decisions are determined by the Shuffle SOAR workflow after threat-intelligence enrichment.")
     lines.append("")
     lines.append("━━━ END OF REPORT ━━━")
 

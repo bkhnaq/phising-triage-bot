@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import re
-from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 from email_analysis.domain_utils import domain_info
 from scoring.config import weight
@@ -100,16 +100,14 @@ def analyze_url(url: str) -> URLAnalysis:
 
 def _normalize_url(parsed, ascii_host: str) -> str:
     scheme = parsed.scheme.lower()
-    host = ascii_host
-    try:
-        port = parsed.port
-    except ValueError:
-        port = None
+    host = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
+    port = parsed.port
     include_port = port and not (
         (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
     )
     netloc = f"{host}:{port}" if include_port else host
-    path = quote(unquote(parsed.path or "/"), safe="/:@-._~!$&'()*+,;=")
-    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    query = urlencode(query_pairs, doseq=True)
-    return urlunparse((scheme, netloc, path, "", query, ""))
+    if "@" in parsed.netloc:
+        netloc = parsed.netloc.rsplit("@", 1)[0] + "@" + netloc
+    # Preserve path escaping, query order, userinfo, parameters and fragment:
+    # rewriting them can change the target or remove an IOC's phishing behavior.
+    return urlunparse((scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))

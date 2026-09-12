@@ -1,7 +1,7 @@
 """
 URL Extractor Module
 --------------------
-Extracts URLs from email bodies, detects shortened URLs, and expands them.
+Extracts URLs from email bodies, detects shortened URLs, and compares displayed links with their targets.
 
 Usage:
     from email_analysis.url_extractor import extract_urls
@@ -13,43 +13,18 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
-from urllib3.exceptions import HTTPError
 
-from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_utils import registered_domain
-from email_analysis.safe_http import SafeHTTPError, fetch_url
 from email_analysis.url_utils import analyze_url
-from threat_intel.cache import TTLCache
+from email_analysis.url_intelligence import SHORTENER_DOMAINS
 
 logger = logging.getLogger(__name__)
 
 # Regex to capture http/https URLs from plain text
 _URL_REGEX = re.compile(
-    r"https?://[^\s<>\"')\]},;]+",
+    r"https?://[^\s<>\"')},]+",
     re.IGNORECASE,
 )
-
-# Well-known URL shortener domains
-_SHORTENER_DOMAINS = frozenset(
-    {
-        "bit.ly",
-        "tinyurl.com",
-        "t.co",
-        "goo.gl",
-        "ow.ly",
-        "is.gd",
-        "buff.ly",
-        "rebrand.ly",
-        "cutt.ly",
-        "shorturl.at",
-        "tiny.cc",
-        "lnkd.in",
-        "rb.gy",
-    }
-)
-
-_EXPAND_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
-
 
 def extract_urls(
     body_text: str = "",
@@ -69,7 +44,7 @@ def extract_urls(
             - url: the original URL found
             - domain: extracted domain
             - is_shortened: bool
-            - expanded_url: resolved URL if shortened, else same as url
+            - expanded_url: compatibility alias for the original URL (never resolved)
     """
     raw_urls = sorted(_collect_raw_urls(body_text, body_html))
     link_relationships = _extract_link_relationships(body_html)
@@ -84,8 +59,8 @@ def extract_urls(
             logger.warning("Skipping malformed URL during extraction")
             continue
         domain = url_analysis.domain
-        is_shortened = domain.lower() in _SHORTENER_DOMAINS
-        expanded = _expand_url(url) if is_shortened else url
+        is_shortened = domain.lower() in SHORTENER_DOMAINS
+        expanded = url  # Compatibility alias; never a resolved destination.
 
         link_evidence = _best_link_evidence(url, link_relationships)
         results.append(
@@ -122,7 +97,7 @@ def _collect_raw_urls(body_text: str, body_html: str) -> set[str]:
         raw_urls.update(_URL_REGEX.findall(body_text))
     if body_html:
         raw_urls.update(_extract_urls_from_html(body_html))
-    return raw_urls
+    return {url for url in raw_urls if url.lower().startswith(("http://", "https://"))}
 
 
 # ── HTML link extractor ──────────────────────────────────────
@@ -139,6 +114,10 @@ class _LinkParser(HTMLParser):
         self._anchor_text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
+        for name, value in attrs:
+            if name.lower() in {"src", "action", "formaction"} and value:
+                if value.lower().startswith(("https://", "http://")):
+                    self.urls.append(value.strip())
         if tag == "a":
             self._anchor_href = None
             self._anchor_text = []
@@ -195,6 +174,7 @@ def _best_link_evidence(url: str, relationships: list[dict]) -> dict:
         return {
             "link_target_comparison": "unavailable",
             "deceptive_hyperlink": False,
+            "deceptive_link": False,
         }
 
     candidates: list[dict] = []
@@ -205,15 +185,16 @@ def _best_link_evidence(url: str, relationships: list[dict]) -> dict:
             displayed_domain = (urlparse(displayed_url).hostname or "").lower()
             actual_root = registered_domain(actual_domain)
             displayed_root = registered_domain(displayed_domain)
+            mismatch = analyze_url(url).normalized_url != analyze_url(displayed_url).normalized_url
         except (UnicodeError, ValueError):
             continue
         if not actual_root or not displayed_root:
             continue
-        mismatch = actual_root != displayed_root
         candidates.append(
             {
                 "link_target_comparison": "mismatch" if mismatch else "match",
                 "deceptive_hyperlink": mismatch,
+                "deceptive_link": mismatch,
                 "displayed_url": displayed_url,
                 "displayed_domain": displayed_domain,
                 "actual_domain": actual_domain,
@@ -225,6 +206,7 @@ def _best_link_evidence(url: str, relationships: list[dict]) -> dict:
         return {
             "link_target_comparison": "unavailable",
             "deceptive_hyperlink": False,
+            "deceptive_link": False,
         }
     return next(
         (item for item in candidates if item["deceptive_hyperlink"]), candidates[0]
@@ -234,34 +216,5 @@ def _best_link_evidence(url: str, relationships: list[dict]) -> dict:
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _extract_domain(url: str) -> str:
-    """Return the network-location (domain) part of a URL."""
-    parsed = urlparse(url)
-    return parsed.hostname or ""
 
 
-def _expand_url(short_url: str) -> str:
-    """
-    Follow redirects on a shortened URL and return the final destination.
-    Returns the original URL on any error.
-    """
-    if OFFLINE_MODE:
-        return short_url
-
-    found, cached = _EXPAND_CACHE.get(short_url)
-    if found:
-        return cached
-
-    try:
-        resp = fetch_url(
-            short_url,
-            method="HEAD",
-            max_bytes=0,
-        )
-        expanded = resp.url
-    except (SafeHTTPError, HTTPError, OSError) as exc:
-        logger.warning("Could not expand URL %s: %s", short_url, exc)
-        expanded = short_url
-
-    _EXPAND_CACHE.set(short_url, expanded)
-    return expanded

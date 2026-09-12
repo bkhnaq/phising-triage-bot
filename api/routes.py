@@ -85,14 +85,17 @@ class EmailAnalysisRequest(BaseModel):
 
 
 class RiskResult(BaseModel):
-    """Risk scoring result."""
+    """Initial intrinsic risk, with deprecated aliases for existing API callers."""
+
+    base_score: int = Field(..., ge=0, le=100)
+    initial_verdict: str = Field(..., pattern="^(BENIGN|SUSPICIOUS|PHISHING)$")
+    initial_severity: str
 
     score: int = Field(..., ge=0, le=100, description="Risk score 0-100")
     verdict: str = Field(
         ...,
         description=(
-            "Threat classification: BENIGN / LIKELY_BENIGN / SUSPICIOUS / "
-            "PHISHING / BEC / MALWARE / SPAM / UNKNOWN"
+            "Compatibility alias for initial_verdict: BENIGN / SUSPICIOUS / PHISHING"
         ),
     )
     risk_severity: str = Field(
@@ -114,6 +117,9 @@ class AnalysisResponse(BaseModel):
     success: bool
     request_id: str
     analysis_id: str = Field(..., description="Pipeline analysis identifier")
+    event_id: str = ""
+    siem_event: dict = Field(default_factory=dict)
+    event_output: dict = Field(default_factory=dict)
     risk: RiskResult
     report: str = Field(..., description="Human-readable analysis report")
     email_metadata: dict = Field(default_factory=dict)
@@ -493,7 +499,13 @@ def _build_response(result: dict, request_id: str) -> AnalysisResponse:
         success=True,
         request_id=request_id,
         analysis_id=result.get("analysis_id", request_id),
+        event_id=result.get("event_id", ""),
+        siem_event=result.get("siem_event", {}),
+        event_output=result.get("event_output", {}),
         risk=RiskResult(
+            base_score=risk_data.get("base_score", risk_data.get("score", 0)),
+            initial_verdict=risk_data.get("initial_verdict", "BENIGN"),
+            initial_severity=risk_data.get("initial_severity", risk_data.get("risk_severity", "LOW")),
             score=risk_data.get("score", 0),
             verdict=risk_data.get("verdict", "UNKNOWN"),
             risk_severity=risk_data.get("risk_severity", "LOW"),

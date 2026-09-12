@@ -118,7 +118,7 @@ def _high_behavior_bundle() -> dict:
     }
 
 
-def test_critical_gate_caps_unconfirmed_high_behavior() -> None:
+def test_critical_gate_accepts_independent_intrinsic_phishing_confirmation() -> None:
     ai = {"verdict": "phishing", "confidence": 1.0}
     result = calculate_risk(
         {
@@ -135,10 +135,10 @@ def test_critical_gate_caps_unconfirmed_high_behavior() -> None:
     gate = result["score_reconciliation"]["critical_evidence_gate"]
 
     assert result["score_reconciliation"]["pre_calibration_score"] >= 85
-    assert gate["status"] == "NOT_MET"
-    assert gate["applied"] is True
-    assert result["score"] == gate["score_cap"] == 84
-    assert result["risk_severity"] == "HIGH"
+    assert gate["status"] == "MET"
+    assert gate["applied"] is False
+    assert result["score"] >= 85
+    assert result["risk_severity"] == "CRITICAL"
 
 
 def test_critical_gate_allows_confirmed_malicious_case() -> None:
@@ -163,24 +163,24 @@ def test_critical_gate_allows_confirmed_malicious_case() -> None:
 
 
 def test_observable_deduplication_and_classification_precedence() -> None:
-    actual = "https://evil.example.net/login"
+    actual = "https://evil-public-host.com/login"
     records = collect_observables(
         urls=[
             {
                 "url": actual,
-                "domain": "evil.example.net",
+                "domain": "evil-public-host.com",
                 "displayed_url": "https://portal.example.org/account",
                 "displayed_domain": "portal.example.org",
                 "link_target_comparison": "mismatch",
             },
-            {"url": actual, "domain": "evil.example.net"},
+            {"url": actual, "domain": "evil-public-host.com"},
         ],
         attachments=[],
         url_intelligence={
             "deceptive_links": [
                 {
                     "url": actual,
-                    "actual_domain": "evil.example.net",
+                    "actual_domain": "evil-public-host.com",
                     "risk_score": 30,
                 }
             ]
@@ -192,7 +192,7 @@ def test_observable_deduplication_and_classification_precedence() -> None:
     ]
 
     assert len(actual_urls) == 1
-    assert actual_urls[0]["classification"] == "confirmed_malicious"
+    assert actual_urls[0]["classification"] == "ioc_candidate"
     assert any(item["label"] == "Displayed URL" for item in records)
 
     registry = ObservableRegistry()
@@ -213,7 +213,7 @@ def test_reserved_observables_are_nonexportable() -> None:
     assert is_reserved_test_domain("login.example.test")
     assert is_documentation_ip("203.0.113.77")
     assert is_nonproduction_observable("203.0.113.77", "ip")
-    assert all(item["environment"] == "test" for item in records)
+    assert all(item["environment"] == "TEST" for item in records)
     assert all(item["exportable"] is False for item in records)
     assert all(item["reputation"] == "NOT_APPLICABLE" for item in records)
 
@@ -251,7 +251,7 @@ def test_applicable_coverage_excludes_na_and_counts_none_present() -> None:
     assert result["evidence_coverage"]["attachments"]["status"] == "NONE_PRESENT"
 
 
-def test_failed_applicable_provider_reduces_coverage() -> None:
+def test_external_provider_failure_does_not_reduce_intrinsic_coverage() -> None:
     auth = {
         "spf": {"result": "pass"},
         "dkim": {"result": "pass"},
@@ -281,8 +281,8 @@ def test_failed_applicable_provider_reduces_coverage() -> None:
         ai_verdict={"verdict": "legitimate", "confidence": 0.9},
     )
 
-    assert result["evidence_coverage"]["virustotal"]["status"] == "UNAVAILABLE"
-    assert result["data_completeness"] < 100
+    assert "virustotal" not in result["evidence_coverage"]
+    assert result["data_completeness"] == 100
 
 
 def test_normal_report_is_compact_and_debug_report_is_traceable() -> None:
@@ -509,14 +509,14 @@ def test_lab_recommendations_are_explicitly_simulated() -> None:
     report = _environment_report(environment, observables)
 
     assert environment["type"] == "LAB"
-    assert "Lab/Test Context" in report
-    assert "Simulated Production Response" in report
-    assert "Do not block TEST-NET" in report
+    assert "LAB ENVIRONMENT DETECTED" in report
+    assert "Suggested playbook:" in report
+    assert "not exportable" in report
 
 
 def test_production_recommendations_are_not_simulated() -> None:
     observables = collect_observables(
-        urls=[{"url": "https://example.org/login", "domain": "example.org"}],
+        urls=[{"url": "https://public-host.com/login", "domain": "public-host.com"}],
         attachments=[],
         url_intelligence=None,
     )

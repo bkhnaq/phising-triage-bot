@@ -24,18 +24,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="disable network enrichment for local analysis",
+        help="disable optional remote AI; intrinsic detectors always run locally",
     )
     parser.add_argument(
         "--lab-mode",
         action="store_true",
-        help="label reserved test infrastructure and skip inapplicable reputation lookups",
+        help="mark all observables as non-exportable test data",
     )
     parser.add_argument(
         "--output",
         type=Path,
         metavar="REPORT.md",
         help="write an analysis report to this UTF-8 file",
+    )
+    parser.add_argument(
+        "--events-jsonl",
+        type=Path,
+        metavar="EVENTS.jsonl",
+        help="append the Wazuh event to this file (overrides EVENTS_JSONL_PATH)",
     )
     parser.add_argument(
         "--report-verbosity",
@@ -69,6 +75,7 @@ def _analyze_file(
     lab_mode: bool,
     output: Path | None,
     report_verbosity: str | None,
+    events_jsonl: Path | None = None,
 ) -> int:
     try:
         resolved_path = path.expanduser().resolve(strict=True)
@@ -87,16 +94,14 @@ def _analyze_file(
     try:
         from email_analysis.pipeline import PhishingPipeline
 
-        if lab_mode and report_verbosity:
-            pipeline = PhishingPipeline(
-                lab_mode=True, report_verbosity=report_verbosity
-            )
-        elif lab_mode:
-            pipeline = PhishingPipeline(lab_mode=True)
-        elif report_verbosity:
-            pipeline = PhishingPipeline(report_verbosity=report_verbosity)
-        else:
-            pipeline = PhishingPipeline()
+        options = {}
+        if lab_mode:
+            options["lab_mode"] = True
+        if report_verbosity:
+            options["report_verbosity"] = report_verbosity
+        if events_jsonl is not None:
+            options["events_jsonl_path"] = str(events_jsonl)
+        pipeline = PhishingPipeline(**options)
         result = pipeline.analyze_file(str(resolved_path))
         report = result["report"]
         if not isinstance(report, str):
@@ -107,6 +112,9 @@ def _analyze_file(
             destination.write_text(report, encoding="utf-8")
         else:
             _write_report(report)
+        if result.get("event_output", {}).get("status") == "FAILED":
+            print("Analysis completed, but JSONL output failed; inspect application logs.", file=sys.stderr)
+            return 1
     except (KeyError, OSError, RuntimeError, ValueError):
         logging.getLogger(__name__).exception("Local analysis failed")
         print("Analysis failed; inspect application logs for details.", file=sys.stderr)
@@ -178,15 +186,17 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             lab_mode=args.lab_mode,
             output=args.output,
             report_verbosity=args.report_verbosity,
+            events_jsonl=args.events_jsonl,
         )
     if (
         args.offline
         or args.lab_mode
         or args.output is not None
         or args.report_verbosity is not None
+        or args.events_jsonl is not None
     ):
         return _usage_error(
-            "--offline, --lab-mode, --output, and --report-verbosity require --analyze"
+            "--offline, --lab-mode, --output, --events-jsonl, and --report-verbosity require --analyze"
         )
     if args.healthcheck:
         return _healthcheck()

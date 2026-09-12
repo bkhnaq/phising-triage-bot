@@ -63,7 +63,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📖 *How to use this bot*\n\n"
         "1. Forward or upload a suspicious email saved as an `.eml` file.\n"
         "2. The bot will parse headers, extract URLs & attachments, "
-        "query threat-intel APIs, and compute a risk score.\n"
+        "extract observables, compute a base score, and emit a Wazuh event.\n"
         "3. A full phishing triage report will be sent back to this chat.\n\n"
         "Commands:\n"
         "/start – Wake up the bot\n"
@@ -160,6 +160,8 @@ def _run_analysis(eml_path: str, analysis_id: str | None = None) -> str:
 
     pipeline = PhishingPipeline(analysis_id=analysis_id, report_verbosity="NORMAL")
     result = pipeline.analyze_file(eml_path)
+    if result.get("event_output", {}).get("status") == "FAILED":
+        return result["report"] + "\nSIEM JSONL output failed; inspect application logs."
     return result["report"]
 
 

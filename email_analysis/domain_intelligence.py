@@ -1,49 +1,9 @@
-"""
-Domain Intelligence Module
----------------------------
-Comprehensive domain investigation providing:
+"""Static domain analysis: randomness, special-use names, and lookalikes."""
 
-  - WHOIS lookup (creation date, age, registrar, country)
-  - DNS record analysis (A, AAAA, MX, NS, TXT, CNAME)
-  - MX record validation
-  - Domain entropy scoring
-  - Lookalike domain detection
-  - Levenshtein distance for brand similarity
-
-Usage:
-    from email_analysis.domain_intelligence import analyze_domain_intelligence
-    findings = analyze_domain_intelligence(domains)
-"""
-
-import logging
-import importlib
-from datetime import datetime, timezone
-from typing import Any
-
-from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_randomness import analyze_domain_randomness
 from email_analysis.domain_utils import base_label, registered_domain
 from email_analysis.special_use import classify_domain
-from scoring.config import SourceStatus, weight
-from threat_intel.cache import TTLCache
-
-try:
-    dns_resolver: Any | None = importlib.import_module("dns.resolver")
-except ImportError:
-    dns_resolver = None
-
-try:
-    whois_lib: Any | None = importlib.import_module("whois")
-except ImportError:
-    whois_lib = None
-
-logger = logging.getLogger(__name__)
-
-_WHOIS_TIMEOUT = 10
-_DNS_TIMEOUT = 5
-
-_WHOIS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
-_DNS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
+from scoring.config import weight
 
 # Protected brands for lookalike detection
 _PROTECTED_BRANDS: dict[str, set[str]] = {
@@ -69,24 +29,9 @@ _PROTECTED_BRANDS: dict[str, set[str]] = {
 
 
 def analyze_domain_intelligence(domains: list[str]) -> dict:
-    """
-    Run comprehensive domain intelligence on a list of domains.
-
-    Args:
-        domains: List of domain strings to investigate.
-
-    Returns:
-        Dict with keys:
-            whois_results     – list of WHOIS finding dicts
-            dns_results       – list of DNS analysis dicts
-            entropy_results   – list of entropy finding dicts
-            lookalike_results – list of lookalike finding dicts
-            risk_score        – aggregate risk score
-    """
+    """Analyze domain strings without DNS, WHOIS, or reputation lookups."""
     unique = _deduplicate_domains(domains)
 
-    whois_results = []
-    dns_results = []
     entropy_results = []
     randomness_results = []
     lookalike_results = []
@@ -101,16 +46,6 @@ def analyze_domain_intelligence(domains: list[str]) -> dict:
         special = classify_domain(reg_domain)
         if special.is_special_use:
             special_use_results.append(special.to_dict())
-
-        # WHOIS
-        w = whois_lookup(reg_domain)
-        whois_results.append(w)
-        total_risk += w.get("risk_score", 0)
-
-        # DNS
-        d = dns_lookup(reg_domain)
-        dns_results.append(d)
-        total_risk += d.get("risk_score", 0)
 
         # Entropy
         randomness = entropy_check(reg_domain)
@@ -127,8 +62,6 @@ def analyze_domain_intelligence(domains: list[str]) -> dict:
         total_risk += sum(lookalike_item["risk_score"] for lookalike_item in look)
 
     return {
-        "whois_results": whois_results,
-        "dns_results": dns_results,
         "entropy_results": entropy_results,
         "randomness_results": randomness_results,
         "lookalike_results": lookalike_results,
@@ -137,289 +70,8 @@ def analyze_domain_intelligence(domains: list[str]) -> dict:
     }
 
 
-def whois_lookup(domain: str) -> dict:
-    """
-    Perform WHOIS lookup with enhanced intelligence extraction.
-
-    Returns:
-        Dict with: domain, created, age_days, registrar, country,
-                   name_servers, expires, updated, risk_score, error.
-    """
-    result: dict = {
-        "domain": domain,
-        "created": None,
-        "age_days": None,
-        "registrar": None,
-        "country": None,
-        "name_servers": [],
-        "expires": None,
-        "updated": None,
-        "risk_score": 0,
-        "status": SourceStatus.UNAVAILABLE.value,
-        "error": None,
-    }
-
-    special = classify_domain(domain)
-    if special.is_special_use:
-        result.update(
-            {
-                "status": SourceStatus.NOT_APPLICABLE.value,
-                "special_use": special.to_dict(),
-                "reason": "WHOIS is not applicable for special-use domains",
-            }
-        )
-        return result
-
-    if whois_lib is None:
-        result["error"] = "python-whois not installed"
-        return result
-
-    if OFFLINE_MODE:
-        result["error"] = "offline mode enabled"
-        return result
-
-    found, cached = _WHOIS_CACHE.get(domain)
-    if found:
-        return cached
-
-    try:
-        w = whois_lib.whois(domain)
-
-        # Clean WHOIS text
-        raw_text = w.get("text") or ""
-        if isinstance(raw_text, list):
-            raw_text = "\n".join(raw_text)
-        if "TERMS OF USE" in raw_text:
-            raw_text = raw_text.split("TERMS OF USE")[0].rstrip()
-        w["text"] = raw_text
-
-        # Registrar
-        registrar = w.get("registrar")
-        if registrar:
-            result["registrar"] = str(registrar).strip()
-
-        # Country
-        country = w.get("country")
-        if country:
-            result["country"] = str(country).strip().upper()
-
-        # Name servers
-        ns = w.get("name_servers")
-        if ns:
-            if isinstance(ns, str):
-                ns = [ns]
-            result["name_servers"] = sorted({s.lower().strip() for s in ns if s})
-
-        # Expiration date
-        expires = w.get("expiration_date")
-        if isinstance(expires, list):
-            expires = expires[0]
-        if expires:
-            result["expires"] = expires.strftime("%Y-%m-%d")
-
-        # Updated date
-        updated = w.get("updated_date")
-        if isinstance(updated, list):
-            updated = updated[0]
-        if updated:
-            result["updated"] = updated.strftime("%Y-%m-%d")
-
-        # Creation date and age
-        creation = w.get("creation_date")
-        if isinstance(creation, list):
-            creation = creation[0]
-
-        if creation is None:
-            result["error"] = "creation_date not available"
-            return result
-
-        if creation.tzinfo is None:
-            creation = creation.replace(tzinfo=timezone.utc)
-
-        age_days = (datetime.now(timezone.utc) - creation).days
-        result["created"] = creation.strftime("%Y-%m-%d")
-        result["age_days"] = age_days
-        result["status"] = SourceStatus.AVAILABLE.value
-
-        # Risk scoring based on age
-        if age_days < 7:
-            result["risk_score"] = weight("domain_age_under_7_days")
-        elif age_days < 30:
-            result["risk_score"] = weight("domain_age_under_30_days")
-        elif age_days < 90:
-            result["risk_score"] = weight("domain_age_under_90_days")
-
-    except Exception as exc:
-        err_msg = str(exc)
-        if "TERMS OF USE" in err_msg:
-            err_msg = err_msg.split("TERMS OF USE")[0].rstrip()
-        first_line = err_msg.strip().split("\n")[0].strip()
-        result["error"] = (
-            f"lookup failed ({first_line})" if first_line else "lookup failed"
-        )
-        logger.debug("WHOIS lookup failed for %s: %s", domain, first_line)
-
-    _WHOIS_CACHE.set(domain, result)
-    return result
 
 
-def dns_lookup(domain: str) -> dict:
-    """
-    Perform DNS record analysis.
-
-    Returns:
-        Dict with record values plus per-type status. ``absent`` means the
-        resolver answered authoritatively with no record; ``unavailable`` and
-        ``error`` mean no conclusion can be drawn.
-    """
-    result: dict = {
-        "domain": domain,
-        "a_records": [],
-        "aaaa_records": [],
-        "mx_records": [],
-        "ns_records": [],
-        "txt_records": [],
-        "cname_records": [],
-        "has_mx": False,
-        "has_spf": False,
-        "dmarc_records": [],
-        "has_dmarc": False,
-        "dmarc_status": "not_checked",
-        "dmarc_error": None,
-        "risk_score": 0,
-        "status": SourceStatus.UNAVAILABLE.value,
-        "error": None,
-        "record_status": {
-            rtype: "not_checked" for rtype in ("A", "AAAA", "MX", "NS", "TXT", "CNAME")
-        },
-        "record_errors": {},
-    }
-
-    special = classify_domain(domain)
-    if special.is_special_use:
-        result.update(
-            {
-                "status": SourceStatus.NOT_APPLICABLE.value,
-                "special_use": special.to_dict(),
-                "reason": "DNS reputation enrichment is not applicable for special-use domains",
-                "record_status": {
-                    rtype: "not_applicable" for rtype in result["record_status"]
-                },
-                "dmarc_status": "not_applicable",
-            }
-        )
-        return result
-
-    if dns_resolver is None:
-        result["error"] = "dnspython not installed"
-        result["record_status"] = {
-            rtype: "unavailable" for rtype in result["record_status"]
-        }
-        result["dmarc_status"] = "unavailable"
-        return result
-
-    if OFFLINE_MODE:
-        result["error"] = "offline mode enabled"
-        result["record_status"] = {
-            rtype: "unavailable" for rtype in result["record_status"]
-        }
-        result["dmarc_status"] = "unavailable"
-        return result
-
-    found, cached = _DNS_CACHE.get(domain)
-    if found:
-        return cached
-
-    resolver = dns_resolver.Resolver()
-    resolver.timeout = _DNS_TIMEOUT
-    resolver.lifetime = _DNS_TIMEOUT
-
-    record_types = {
-        "A": "a_records",
-        "AAAA": "aaaa_records",
-        "MX": "mx_records",
-        "NS": "ns_records",
-        "TXT": "txt_records",
-        "CNAME": "cname_records",
-    }
-
-    for rtype, key in record_types.items():
-        try:
-            answers = resolver.resolve(domain, rtype)
-            if rtype == "MX":
-                result[key] = [
-                    {"priority": r.preference, "host": str(r.exchange).rstrip(".")}
-                    for r in answers
-                ]
-            else:
-                result[key] = [str(r).strip('"') for r in answers]
-            result["record_status"][rtype] = "ok"
-        except dns_resolver.NoAnswer:
-            result["record_status"][rtype] = "absent"
-        except dns_resolver.NXDOMAIN:
-            result["record_status"][rtype] = "nxdomain"
-        except dns_resolver.Timeout:
-            result["record_status"][rtype] = "unavailable"
-            result["record_errors"][rtype] = "lookup timed out"
-        except dns_resolver.NoNameservers:
-            result["record_status"][rtype] = "unavailable"
-            result["record_errors"][rtype] = "no nameservers available"
-        except Exception as exc:
-            result["record_status"][rtype] = "error"
-            result["record_errors"][rtype] = "lookup failed"
-            logger.debug("DNS %s lookup failed for %s: %s", rtype, domain, exc)
-
-    # Analyze results
-    result["has_mx"] = bool(result["mx_records"])
-    result["has_spf"] = any("v=spf1" in t for t in result["txt_records"])
-
-    try:
-        dmarc_answers = resolver.resolve(f"_dmarc.{domain}", "TXT")
-        result["dmarc_records"] = [str(record).strip('"') for record in dmarc_answers]
-        result["has_dmarc"] = any(
-            record.lower().startswith("v=dmarc1") for record in result["dmarc_records"]
-        )
-        result["dmarc_status"] = "ok"
-    except dns_resolver.NoAnswer:
-        result["dmarc_status"] = "absent"
-    except dns_resolver.NXDOMAIN:
-        result["dmarc_status"] = "absent"
-    except dns_resolver.Timeout:
-        result["dmarc_status"] = "unavailable"
-        result["dmarc_error"] = "lookup timed out"
-    except dns_resolver.NoNameservers:
-        result["dmarc_status"] = "unavailable"
-        result["dmarc_error"] = "no nameservers available"
-    except Exception as exc:
-        result["dmarc_status"] = "error"
-        result["dmarc_error"] = "lookup failed"
-        logger.debug("DNS DMARC lookup failed for %s: %s", domain, exc)
-
-    a_state = result["record_status"]["A"]
-    mx_state = result["record_status"]["MX"]
-    if a_state == "nxdomain" and mx_state == "nxdomain":
-        result["risk_score"] += weight("dns_no_a_or_mx")
-        result["error"] = "Domain does not exist (NXDOMAIN)"
-    elif a_state == "absent" and mx_state == "absent":
-        result["risk_score"] += weight("dns_no_a_or_mx")
-        result["error"] = "No A or MX records published"
-    elif (
-        not result["a_records"]
-        and not result["mx_records"]
-        and (
-            a_state in {"unavailable", "error"} or mx_state in {"unavailable", "error"}
-        )
-    ):
-        result["error"] = "A/MX lookup unavailable"
-
-    if any(
-        status in {"ok", "absent", "nxdomain"}
-        for status in result["record_status"].values()
-    ):
-        result["status"] = SourceStatus.AVAILABLE.value
-
-    _DNS_CACHE.set(domain, result)
-    return result
 
 
 def entropy_check(domain: str) -> dict:

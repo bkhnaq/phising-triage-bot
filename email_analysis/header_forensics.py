@@ -1,56 +1,21 @@
-"""
-Header Forensics Module
------------------------
-Analyzes SMTP Received headers to reconstruct the relay chain and detect
-network-level spoofing indicators.
-
-Complements header_analyzer.py (which checks SPF/DKIM/DMARC and
-header-level sender anomalies) by focusing on the SMTP routing layer:
-
-  - Relay chain reconstruction from all Received headers
-  - Origin IP extraction (first external-IP hop walking from oldest to newest)
-  - IP geolocation via ip-api.com  (free tier — no API key required)
-  - Hosting / datacenter detection  (ip-api.com ``hosting`` field)
-  - Proxy / VPN detection           (ip-api.com ``proxy`` field)
-  - Relay server domain vs declared sender domain mismatch
-
-Risk scores produced by this module:
-  +10  Origin IP belongs to a hosting/datacenter provider
-  +15  Origin IP is a known proxy or VPN exit node
-  +10  Relay server domain does not match the declared sender domain
-
-Usage:
-    from email_analysis.header_forensics import run_header_forensics
-    result = run_header_forensics(email_data)
-"""
+"""Parse SMTP routing and sender/relay alignment without GeoIP or DNS calls."""
 
 import ipaddress
 import logging
 import re
 
-import requests
 
-from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_utils import registered_domain
+from email_analysis.ip_utils import extract_ip_literals
 from email_analysis.special_use import classify_ip
-from scoring.config import SourceStatus, weight
-from threat_intel.cache import TTLCache
+from scoring.config import weight
 
 logger = logging.getLogger(__name__)
-
-# ── Geolocation API (ip-api.com, free tier, no key required) ─────────────────
-_GEO_API = (
-    "http://ip-api.com/json/{ip}"
-    "?fields=status,country,countryCode,regionName,city,isp,org,as,asname,hosting,proxy"
-)
-_GEO_TIMEOUT = 5  # seconds
-_GEO_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
 
 # ── Received-header parsing patterns ─────────────────────────────────────────
 _FROM_HOST_RE = re.compile(r"from\s+(\S+)", re.IGNORECASE)
 _BY_HOST_RE = re.compile(r"\bby\s+(\S+)", re.IGNORECASE)
 # Match an IPv4 address, optionally bracketed: [1.2.3.4] or 1.2.3.4
-_IPV4_RE = re.compile(r"\[?((?:\d{1,3}\.){3}\d{1,3})\]?")
 
 # ── Private / reserved IPv4 ranges ───────────────────────────────────────────
 _PRIVATE_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
@@ -59,6 +24,9 @@ _PRIVATE_NETS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("100.64.0.0/10"),  # CGNAT
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+    ipaddress.ip_network("::1/128"),
 ]
 
 # ── Known MTA relay services ──────────────────────────────────────────────────
@@ -109,12 +77,7 @@ def run_header_forensics(email_data: dict) -> dict:
         email_data: Output from email_parser.parse_eml_file().
 
     Returns:
-        Dict with keys:
-          origin_ip, origin_country, origin_country_code, origin_city,
-          origin_isp, origin_org, origin_is_hosting, origin_is_proxy,
-          relay_chain (list of hop dicts), from_domain,
-          spoofing_detected (bool), warnings (list[str]),
-          risk_score (int), error (str|None).
+        Origin IP, relay chain, static alignment findings, and their risk weight.
     """
     result = _empty_result()
     try:
@@ -130,51 +93,19 @@ def run_header_forensics(email_data: dict) -> dict:
         origin_ip = _get_origin_ip(relay_chain)
         result["origin_ip"] = origin_ip
 
-        # ── Step 3: Geolocate origin IP ───────────────────────────────────
-        geo: dict = {}
         if origin_ip:
-            ip_classification = classify_ip(origin_ip)
-            result["origin_ip_classification"] = ip_classification.classification
-            if ip_classification.is_special_use:
-                result["geolocation_status"] = SourceStatus.NOT_APPLICABLE.value
-                result["reputation_status"] = SourceStatus.NOT_APPLICABLE.value
-            else:
-                geo = _geolocate_ip(origin_ip)
-                result["geolocation_status"] = (
-                    SourceStatus.AVAILABLE.value
-                    if geo
-                    else SourceStatus.UNAVAILABLE.value
-                )
-            result["origin_country"] = geo.get("country", "Unknown")
-            result["origin_country_code"] = geo.get("countryCode", "")
-            result["origin_city"] = geo.get("city", "")
-            result["origin_isp"] = geo.get("isp", "")
-            result["origin_org"] = geo.get("org", "")
-            result["origin_asn"] = geo.get("as", "")
-            result["origin_asname"] = geo.get("asname", "")
-            result["origin_is_hosting"] = bool(geo.get("hosting", False))
-            result["origin_is_proxy"] = bool(geo.get("proxy", False))
+            result["origin_ip_classification"] = classify_ip(origin_ip).classification
 
         # ── Step 4: Spoof / relay analysis ───────────────────────────────
         from_domain = _extract_from_domain(from_raw)
         result["from_domain"] = from_domain
 
-        warnings, risk_score = _analyze_relay(from_domain, relay_chain, geo)
+        warnings, risk_score = _analyze_relay(from_domain, relay_chain)
         result["warnings"] = warnings
         result["spoofing_detected"] = bool(warnings)
         result["risk_score"] = risk_score
 
-        logger.info(
-            "Header forensics: origin_ip=%s country=%s hosting=%s proxy=%s "
-            "relay_hops=%d warnings=%d risk=%d",
-            origin_ip or "none",
-            result["origin_country"],
-            result["origin_is_hosting"],
-            result["origin_is_proxy"],
-            len(relay_chain),
-            len(warnings),
-            risk_score,
-        )
+        logger.info("Relay analysis: hops=%d risk=%d", len(relay_chain), risk_score)
 
     except Exception:
         logger.exception("Header forensics failed")
@@ -211,13 +142,8 @@ def _parse_hop(raw: str) -> dict:
     server = from_match.group(1).rstrip(";,") if from_match else None
     by_server = by_match.group(1).rstrip(";,") if by_match else None
 
-    # Extract the first IPv4 address present (usually inside parens after hostname).
-    ip_match = _IPV4_RE.search(clean)
-    ip = ip_match.group(1) if ip_match else None
-
-    # Discard private / loopback IPs — not useful for origin analysis.
-    if ip and _is_private_ip(ip):
-        ip = None
+    addresses = extract_ip_literals(clean)
+    ip = addresses[0] if addresses else None
 
     return {
         "server": server,
@@ -248,42 +174,8 @@ def _is_private_ip(ip: str) -> bool:
         return False
 
 
-# ── Geolocation ───────────────────────────────────────────────────────────────
 
 
-def _geolocate_ip(ip: str) -> dict:
-    """
-    Query ip-api.com for country, city, ISP, and hosting/proxy metadata.
-
-    Returns a dict with keys: country, countryCode, regionName, city,
-    isp, org, hosting, proxy.  Returns {} on any failure so callers can
-    safely use .get().
-    """
-    if OFFLINE_MODE:
-        return {}
-
-    found, cached = _GEO_CACHE.get(ip)
-    if found:
-        return cached
-
-    try:
-        url = _GEO_API.format(ip=ip)
-        resp = requests.get(url, timeout=_GEO_TIMEOUT)
-        resp.raise_for_status()
-        data: dict = resp.json()
-        if data.get("status") != "success":
-            logger.warning(
-                "ip-api returned non-success for %s: %s", ip, data.get("message")
-            )
-            return {}
-        _GEO_CACHE.set(ip, data)
-        return data
-    except requests.Timeout:
-        logger.warning("Geolocation timeout for IP %s", ip)
-        return {}
-    except requests.RequestException as exc:
-        logger.warning("Geolocation request failed for IP %s: %s", ip, exc)
-        return {}
 
 
 # ── Domain helpers ────────────────────────────────────────────────────────────
@@ -306,30 +198,10 @@ def _root_domain(domain: str) -> str:
 def _analyze_relay(
     from_domain: str,
     relay_chain: list[dict],
-    geo: dict,
 ) -> tuple[list[str], int]:
-    """
-    Run relay-level checks and return (warnings, total_risk_score).
-
-    Checks performed:
-      1. Origin IP is a hosting / datacenter address  → +10
-      2. Origin IP is a proxy / VPN                   → +15
-      3. Origin relay server domain ≠ From domain     → +10
-      4. Country information (informational, no score)
-    """
+    """Return static relay mismatch evidence and its supporting weight."""
     warnings: list[str] = []
     risk = 0
-
-    # ── 1. Hosting / datacenter origin ───────────────────────────────────
-    if geo.get("hosting"):
-        isp_label = geo.get("isp") or geo.get("org") or "unknown ISP"
-        warnings.append(f"Origin IP is a hosting/datacenter address ({isp_label})")
-        risk += weight("hosting_origin")
-
-    # ── 2. Proxy / VPN origin ─────────────────────────────────────────────
-    if geo.get("proxy"):
-        warnings.append("Origin IP is a known proxy or VPN exit node")
-        risk += weight("proxy_origin")
 
     # ── 3. Relay server domain mismatch ──────────────────────────────────
     if from_domain and relay_chain:
@@ -341,13 +213,6 @@ def _analyze_relay(
                 f"relay server(s): {', '.join(mismatches[:3])}"
             )
             risk += weight("relay_mismatch")
-
-    # ── 4. Country (informational only) ──────────────────────────────────
-    country = geo.get("country", "")
-    country_code = geo.get("countryCode", "")
-    if country:
-        warnings.append(f"Origin IP geolocation: {country} ({country_code})")
-        # No automatic risk score — the SOC analyst interprets this.
 
     return warnings, risk
 
@@ -391,18 +256,7 @@ def _empty_result() -> dict:
     """Return a safe zeroed-out result dict for the module."""
     return {
         "origin_ip": None,
-        "origin_country": "Unknown",
-        "origin_country_code": "",
-        "origin_city": "",
-        "origin_isp": "",
-        "origin_org": "",
-        "origin_asn": "",
-        "origin_asname": "",
-        "origin_is_hosting": False,
-        "origin_is_proxy": False,
         "origin_ip_classification": "",
-        "geolocation_status": SourceStatus.UNAVAILABLE.value,
-        "reputation_status": SourceStatus.UNAVAILABLE.value,
         "relay_chain": [],
         "route_available": False,
         "from_domain": "",

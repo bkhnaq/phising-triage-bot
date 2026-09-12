@@ -19,6 +19,7 @@ DOCUMENTATION_NETWORKS: tuple[
     (ipaddress.ip_network("192.0.2.0/24"), "Documentation / TEST-NET-1"),
     (ipaddress.ip_network("198.51.100.0/24"), "Documentation / TEST-NET-2"),
     (ipaddress.ip_network("203.0.113.0/24"), "Documentation / TEST-NET-3"),
+    (ipaddress.ip_network("2001:db8::/32"), "Documentation IPv6"),
 )
 
 
@@ -35,6 +36,11 @@ class SpecialUseClassification:
 
 def classify_domain(domain: str) -> SpecialUseClassification:
     normalized = str(domain or "").strip().lower().rstrip(".")
+    for reserved in ("example.com", "example.net", "example.org"):
+        if normalized == reserved or normalized.endswith("." + reserved):
+            return SpecialUseClassification(
+                normalized, True, "Reserved documentation domain", reserved
+            )
     for suffix, classification in SPECIAL_USE_SUFFIXES.items():
         bare_suffix = suffix.removeprefix(".")
         if normalized == bare_suffix or normalized.endswith(suffix):
@@ -100,4 +106,6 @@ def is_nonproduction_observable(value: str, observable_type: str = "") -> bool:
         return classify_ip(normalized_value).is_special_use
     if normalized_type == "domain":
         return is_reserved_test_domain(normalized_value)
+    if normalized_type == "email":
+        return is_reserved_test_domain(normalized_value.rsplit("@", 1)[-1])
     return False

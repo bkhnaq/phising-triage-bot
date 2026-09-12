@@ -131,7 +131,7 @@ def _infer_evidence_group(category: str, tags: list[str]) -> str:
         return EvidenceGroup.HEADER_ALIGNMENT.value
     if "deceptive_link" in tag_set:
         return EvidenceGroup.URL_DECEPTION.value
-    if category in {"credential_harvesting", "landing_page"}:
+    if category in {"credential_harvesting"}:
         return EvidenceGroup.CREDENTIAL_LURE.value
     if category == "content":
         if tag_set & {
@@ -143,8 +143,6 @@ def _infer_evidence_group(category: str, tags: list[str]) -> str:
         return EvidenceGroup.SOCIAL_ENGINEERING.value
     if category == "brand_impersonation" or "brand" in tag_set:
         return EvidenceGroup.BRAND_IDENTITY.value
-    if category == "threat_intel":
-        return EvidenceGroup.THREAT_INTEL.value
     if category == "attachment":
         return EvidenceGroup.ATTACHMENT.value
     if category in {"url", "domain"}:

@@ -335,8 +335,8 @@ def test_report_separates_verdict_severity_and_renders_evidence_state() -> None:
         evidence_bundle=bundle,
     )
 
-    assert "Verdict               : PHISHING" in report
-    assert f"Risk Severity         : {risk['risk_severity']}" in report
+    assert "Initial Verdict       : PHISHING" in report
+    assert f"Initial Severity      : {risk['risk_severity']}" in report
     assert "Category: Authentication / Relay" in report
     assert "Cross-category confirmation" in report
     assert "[CONSUMED → sender_auth_alignment_failure]" in report

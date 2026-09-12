@@ -38,16 +38,6 @@ class SourceStatus(StrEnum):
     FAILED = "FAILED"
 
 
-class ThreatIntelStatus(StrEnum):
-    MALICIOUS = "MALICIOUS"
-    SUSPICIOUS = "SUSPICIOUS"
-    CLEAN = "CLEAN"
-    NOT_FOUND = "NOT_FOUND"
-    UNAVAILABLE = "UNAVAILABLE"
-    NOT_APPLICABLE = "NOT_APPLICABLE"
-    ERROR = "ERROR"
-
-
 class Severity(StrEnum):
     INFO = "INFO"
     LOW = "LOW"
@@ -80,7 +70,6 @@ class EvidenceGroup(StrEnum):
     CREDENTIAL_LURE = "CREDENTIAL_LURE"
     SOCIAL_ENGINEERING = "SOCIAL_ENGINEERING"
     BRAND_IDENTITY = "BRAND_IDENTITY"
-    THREAT_INTEL = "THREAT_INTEL"
     ATTACHMENT = "ATTACHMENT"
     INFRASTRUCTURE = "INFRASTRUCTURE"
     AI_ML = "AI_ML"
@@ -90,13 +79,8 @@ class Verdict(StrEnum):
     """Threat identity; deliberately independent from risk severity."""
 
     BENIGN = "BENIGN"
-    LIKELY_BENIGN = "LIKELY_BENIGN"
     SUSPICIOUS = "SUSPICIOUS"
     PHISHING = "PHISHING"
-    BEC = "BEC"
-    MALWARE = "MALWARE"
-    SPAM = "SPAM"
-    UNKNOWN = "UNKNOWN"
 
 
 class RiskSeverity(StrEnum):
@@ -140,31 +124,17 @@ WEIGHTS: dict[str, int] = {
     "homograph_domain": 30,
     "homograph_brand": 25,
     "suspicious_keyword": 15,
-    "hosting_origin": 10,
-    "proxy_origin": 15,
     # URL and infrastructure
     "deceptive_hyperlink": 30,
     "suspicious_endpoint": 6,
     "url_shortener": 3,
-    "shortener_credential_path": 5,
     "possible_randomized_domain": 3,
     "strong_dga_pattern": 5,
-    "young_domain": 12,
-    "domain_age_under_7_days": 25,
-    "domain_age_under_30_days": 20,
-    "domain_age_under_90_days": 10,
-    "dns_no_a_or_mx": 10,
     "url_userinfo": 18,
     "url_ip_host": 10,
     "url_punycode": 12,
     "url_encoded_host": 6,
     "url_credential_path": 6,
-    "redirect_many_hops": 15,
-    "redirect_observed": 5,
-    "redirect_shortener_intermediate": 10,
-    "redirect_cross_domain": 5,
-    "redirect_suspicious_landing": 8,
-    "esp_suspicious_landing": 12,
     "credential_form": 10,
     "credential_external_post": 15,
     "credential_password_field": 20,
@@ -173,26 +143,14 @@ WEIGHTS: dict[str, int] = {
     "credential_js_submit": 10,
     "credential_form_password_correlation": 10,
     "credential_collection": 20,
-    "landing_page": 20,
     "sender_identity_mismatch": 20,
-    "landing_password_field": 20,
-    "landing_external_post": 15,
-    "landing_login_title": 8,
-    "landing_brand_mismatch": 8,
-    "landing_meta_refresh": 10,
     "qr_detected": 10,
     "qr_url": 15,
-    "ip_blacklisted": 20,
-    "passive_dns_density": 20,
     "attachment_double_extension": 15,
     "attachment_encrypted_archive": 12,
     "attachment_archive_executable": 20,
     "attachment_vba_macro": 25,
     "attachment_html_credential_cap": 25,
-    "vt_malicious_url": 20,
-    "vt_suspicious_url": 8,
-    "vt_malicious_hash": 25,
-    "otx_pulse": 10,
     "ai_phishing": 25,
     "ai_suspicious": 10,
     "ai_support_phishing_very_high": 10,
@@ -216,8 +174,6 @@ WEIGHTS: dict[str, int] = {
     "organization_credential_phishing": 15,
     "reply_to_payment_fraud": 12,
     "brand_credential_phish": 20,
-    "brand_landing_page": 18,
-    "young_obfuscated_landing": 12,
     "language_plus_credential_collection": 10,
     "multi_signal_credential_phishing": 8,
 }
@@ -228,7 +184,6 @@ CATEGORY_CAPS: dict[str, int] = {
     "URL behavior": 40,
     "brand impersonation": 25,
     "content/language": 15,
-    "threat intelligence": 25,
     "AI / ML": 10,
     "attachment/malware": 40,
 }
@@ -266,18 +221,6 @@ FINDING_CONFIG: dict[str, dict[str, str | int]] = {
         "max_score": 25,
         "severity": "HIGH",
     },
-    "brand_landing_page": {
-        "category": "identity_impersonation",
-        "base_score": WEIGHTS["brand_landing_page"],
-        "max_score": 25,
-        "severity": "HIGH",
-    },
-    "young_obfuscated_landing": {
-        "category": "url_web",
-        "base_score": WEIGHTS["young_obfuscated_landing"],
-        "max_score": 20,
-        "severity": "MEDIUM",
-    },
     "language_plus_credential_collection": {
         "category": "url_web",
         "base_score": WEIGHTS["language_plus_credential_collection"],
@@ -300,7 +243,6 @@ ELIGIBLE_CROSS_CATEGORY_TYPES: frozenset[str] = frozenset(
         "url_web",
         "content_social",
         "attachment_malware",
-        "threat_intelligence",
         "authentication",
         "identity",
         "url",
@@ -345,11 +287,6 @@ COVERAGE_WEIGHTS: dict[str, int] = {
     "mime_parsing": 10,
     "url_analysis": 15,
     "html_analysis": 10,
-    "dns": 10,
-    "whois": 5,
-    "virustotal": 10,
-    "otx": 5,
-    "redirect": 10,
     "attachments": 5,
     "ai": 5,
 }

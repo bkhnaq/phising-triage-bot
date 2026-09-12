@@ -58,12 +58,6 @@ ALLOWED_CHAT_IDS: list[int] = (
     [int(cid.strip()) for cid in _allowed.split(",") if cid.strip()] if _allowed else []
 )
 
-# ── Threat Intelligence APIs ─────────────────────────────────
-VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY", "")
-ALIENVAULT_OTX_API_KEY = os.getenv("ALIENVAULT_OTX_API_KEY", "")
-ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY", "")
-SECURITYTRAILS_API_KEY = os.getenv("SECURITYTRAILS_API_KEY", "")
-
 # ── AI Classifier ────────────────────────────────────────────
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
@@ -90,25 +84,20 @@ RATE_LIMIT_MAX_CLIENTS = _get_int(
 MAX_UPLOAD_SIZE_BYTES = _get_int("MAX_UPLOAD_SIZE_BYTES", 10 * 1024 * 1024, minimum=1)
 OFFLINE_MODE = _get_bool("OFFLINE_MODE", False)
 LAB_MODE = _get_bool("LAB_MODE", False)
-THREAT_INTEL_CACHE_TTL_SECONDS = _get_int(
-    "THREAT_INTEL_CACHE_TTL_SECONDS", 900, minimum=1
-)
-THREAT_INTEL_MAX_WORKERS = _get_int("THREAT_INTEL_MAX_WORKERS", 8, minimum=1)
-
 MAX_RAW_EMAIL_CHARS = _get_int("MAX_RAW_EMAIL_CHARS", 10 * 1024 * 1024, minimum=1)
 MAX_URLS_PER_EMAIL = _get_int("MAX_URLS_PER_EMAIL", 50, minimum=1, maximum=500)
 MAX_ATTACHMENTS_PER_EMAIL = _get_int(
     "MAX_ATTACHMENTS_PER_EMAIL", 25, minimum=1, maximum=100
 )
-SAFE_HTTP_MAX_BYTES = _get_int("SAFE_HTTP_MAX_BYTES", 80_000, minimum=1, maximum=80_000)
-SAFE_HTTP_TIMEOUT_SECONDS = _get_int(
-    "SAFE_HTTP_TIMEOUT_SECONDS", 6, minimum=1, maximum=6
-)
-SAFE_HTTP_MAX_REDIRECTS = _get_int("SAFE_HTTP_MAX_REDIRECTS", 10, minimum=0, maximum=10)
-
 # ── File Storage ─────────────────────────────────────────────
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Each completed analysis is appended for Wazuh collection. Empty disables the sink.
+EVENTS_JSONL_PATH = os.getenv(
+    "EVENTS_JSONL_PATH",
+    "logs/events.jsonl" if os.name == "nt" else "/var/log/phishing-bot/events.jsonl",
+)
 
 # ── Logging ──────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()

@@ -4,7 +4,6 @@ Heuristic Analyzer Module
 SOC-style heuristic detection rules for phishing triage:
   - Brand impersonation in URLs/domains
   - Suspicious domain keywords
-  - Domain age via WHOIS
   - URL shortener detection
 
 Usage:
@@ -14,26 +13,14 @@ Usage:
 
 import logging
 import math
-import importlib
-from datetime import datetime, timezone
-from typing import Any
 from urllib.parse import urlparse
 
-from urllib3.exceptions import HTTPError
 
-from config.settings import OFFLINE_MODE, THREAT_INTEL_CACHE_TTL_SECONDS
 from email_analysis.domain_randomness import analyze_domain_randomness
 from email_analysis.domain_utils import any_domain_match, registered_domain
-from email_analysis.safe_http import SafeHTTPError, fetch_url
 from scoring.config import weight
 
-try:
-    whois_lib: Any | None = importlib.import_module("whois")
-except ImportError:
-    whois_lib = None
-
 from email_analysis.homograph_analyzer import detect_homograph_brands
-from threat_intel.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -123,14 +110,6 @@ _CONFUSABLES: dict[str, str] = {
     "\u01c3": "!",  # Latin letter retroflex click
 }
 
-# ── Redirect chain ───────────────────────────────────────────
-
-# ── WHOIS timeout (seconds) ─────────────────────────────────
-_WHOIS_TIMEOUT = 10
-_WHOIS_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
-_REDIRECT_CACHE = TTLCache(THREAT_INTEL_CACHE_TTL_SECONDS)
-
-
 # ── Public API ───────────────────────────────────────────────
 
 
@@ -145,7 +124,6 @@ def run_heuristics(urls: list[dict]) -> dict:
         Dict with keys:
             brand_impersonation  – list of finding dicts
             suspicious_keywords  – list of finding dicts
-            domain_age           – list of finding dicts
             url_shorteners       – list of finding dicts
     """
     domains = _unique_domains(urls)
@@ -153,12 +131,10 @@ def run_heuristics(urls: list[dict]) -> dict:
     return {
         "brand_impersonation": detect_brand_impersonation(urls, domains),
         "suspicious_keywords": detect_suspicious_keywords(urls, domains),
-        "domain_age": check_domain_age(domains),
         "url_shorteners": detect_url_shorteners(urls),
         "homograph": detect_homograph(domains),
         "homograph_brands": detect_homograph_brands(domains),
         "domain_entropy": calculate_entropy_findings(domains),
-        "redirect_chains": [],
     }
 
 
@@ -261,146 +237,8 @@ def detect_suspicious_keywords(
     return findings
 
 
-def get_domain_age(domain: str) -> dict:
-    """
-    Perform a WHOIS lookup for a single domain, clean the raw output,
-    and return structured age information.
-
-    The raw WHOIS text is stripped of "TERMS OF USE" boilerplate so that
-    only useful registration data is processed.
-
-    Args:
-        domain: A registrable domain name (e.g. ``example.com``).
-
-    Returns:
-        Dict with keys:
-            created      – creation date as ``YYYY-MM-DD`` string, or None
-            age_days     – int number of days since creation, or None
-            registrar    – registrar name, or None
-            name_servers – list of name-server strings
-            error        – error description string, or None
-    """
-    result: dict = {
-        "created": None,
-        "age_days": None,
-        "registrar": None,
-        "name_servers": [],
-        "error": None,
-    }
-
-    if whois_lib is None:
-        result["error"] = "python-whois not installed"
-        return result
-
-    if OFFLINE_MODE:
-        result["error"] = "offline mode enabled"
-        return result
-
-    found, cached = _WHOIS_CACHE.get(domain)
-    if found:
-        return cached
-
-    try:
-        w = whois_lib.whois(domain)
-
-        # ── Clean raw WHOIS text ─────────────────────────────
-        raw_text = w.get("text") or ""
-        if isinstance(raw_text, list):
-            raw_text = "\n".join(raw_text)
-        if "TERMS OF USE" in raw_text:
-            raw_text = raw_text.split("TERMS OF USE")[0].rstrip()
-        # Store the cleaned text back (informational only)
-        w["text"] = raw_text
-
-        # ── Registrar ────────────────────────────────────────
-        registrar = w.get("registrar")
-        if registrar:
-            result["registrar"] = str(registrar).strip()
-
-        # ── Name servers ─────────────────────────────────────
-        ns = w.get("name_servers")
-        if ns:
-            if isinstance(ns, str):
-                ns = [ns]
-            result["name_servers"] = sorted({s.lower().strip() for s in ns if s})
-
-        # ── Creation date ────────────────────────────────────
-        creation = w.get("creation_date")
-        if isinstance(creation, list):
-            creation = creation[0]
-
-        if creation is None:
-            result["error"] = "creation_date not available"
-            return result
-
-        # Make timezone-aware if naive
-        if creation.tzinfo is None:
-            creation = creation.replace(tzinfo=timezone.utc)
-
-        age_days = (datetime.now(timezone.utc) - creation).days
-        result["created"] = creation.strftime("%Y-%m-%d")
-        result["age_days"] = age_days
-
-    except Exception as exc:
-        err_msg = str(exc)
-        # Strip verbose WHOIS boilerplate from error messages
-        if "TERMS OF USE" in err_msg:
-            err_msg = err_msg.split("TERMS OF USE")[0].rstrip()
-        # Keep only the first meaningful line
-        first_line = err_msg.strip().split("\n")[0].strip()
-        result["error"] = (
-            f"lookup failed ({first_line})" if first_line else "lookup failed"
-        )
-        logger.debug("WHOIS lookup failed for %s: %s", domain, first_line)
-
-    _WHOIS_CACHE.set(domain, result)
-    return result
 
 
-def check_domain_age(domains: list[str]) -> list[dict]:
-    """
-    Query WHOIS for each domain and flag recently registered ones.
-
-    Scoring:
-        < 30 days  → +20 risk
-
-    Returns:
-        List of dicts with keys:
-            domain, created, age_days, registrar, name_servers,
-            risk_score, error.
-    """
-    findings: list[dict] = []
-    checked: set[str] = set()
-
-    for raw_domain in domains:
-        domain = _registrable_domain(raw_domain)
-        if not domain or domain in checked:
-            continue
-        checked.add(domain)
-
-        age_info = get_domain_age(domain)
-
-        finding: dict = {
-            "domain": domain,
-            "created": age_info["created"],
-            "age_days": age_info["age_days"],
-            "registrar": age_info["registrar"],
-            "name_servers": age_info["name_servers"],
-            "risk_score": 0,
-            "error": age_info["error"],
-        }
-
-        if age_info["age_days"] is not None and age_info["age_days"] < 30:
-            finding["risk_score"] = weight("domain_age_under_30_days")
-            logger.warning(
-                "Young domain: %s registered %d day(s) ago (+20 risk)",
-                domain,
-                age_info["age_days"],
-            )
-
-        findings.append(finding)
-
-    return findings
 
 
 def detect_url_shorteners(urls: list[dict]) -> list[dict]:
@@ -563,74 +401,8 @@ def calculate_entropy_findings(domains: list[str]) -> list[dict]:
 # ── Redirect chain detection ─────────────────────────────────
 
 
-def check_redirect_chain(url: str) -> dict:
-    """
-    Follow redirects for a single URL and return the chain.
-
-    Returns:
-        Dict with keys: url, chain (list of URLs), hops, final_url, risk_score, error.
-    """
-    result: dict = {
-        "url": url,
-        "chain": [url],
-        "hops": 0,
-        "final_url": url,
-        "risk_score": 0,
-        "error": None,
-    }
-
-    if OFFLINE_MODE:
-        result["error"] = "offline mode enabled"
-        return result
-
-    found, cached = _REDIRECT_CACHE.get(url)
-    if found:
-        return cached
-
-    try:
-        resp = fetch_url(
-            url,
-            method="HEAD",
-            max_bytes=0,
-        )
-
-        result["chain"] = list(resp.history) + [resp.url]
-        result["hops"] = len(resp.history)
-        result["final_url"] = resp.url
-
-        if result["hops"] > 1:
-            result["risk_score"] = weight("redirect_shortener_intermediate")
-            logger.info(
-                "Redirect chain: %s → %d hop(s) → %s",
-                url,
-                result["hops"],
-                result["final_url"],
-            )
-
-    except SafeHTTPError as exc:
-        result["error"] = exc.code
-        logger.debug("Redirect chain check failed for %s: %s", url, exc)
-    except (HTTPError, OSError) as exc:
-        result["error"] = "Redirect analysis failed"
-        logger.debug("Redirect chain check failed for %s: %s", url, exc)
-
-    _REDIRECT_CACHE.set(url, result)
-    return result
 
 
-def check_redirect_chains(urls: list[dict]) -> list[dict]:
-    """
-    Check redirect chains for all extracted URLs.
-
-    Returns:
-        List of redirect-chain result dicts (only those with > 1 hop or errors).
-    """
-    findings: list[dict] = []
-    for u in urls:
-        chain = check_redirect_chain(u["url"])
-        if chain["hops"] > 1 or chain.get("error"):
-            findings.append(chain)
-    return findings
 
 
 # ── Internal helpers ─────────────────────────────────────────

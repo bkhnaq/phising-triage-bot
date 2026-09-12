@@ -121,6 +121,8 @@ def _extract_host(value: str) -> str:
     raw = (value or "").strip().strip("<>[]()\"'")
     if not raw:
         return ""
+    if _is_ip_address(raw):
+        return raw.lower()
 
     if "://" in raw:
         parsed = urlparse(raw)

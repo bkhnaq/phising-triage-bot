@@ -14,8 +14,6 @@ is treated as incomplete evidence, not direct phishing evidence.
 import logging
 from itertools import combinations
 
-from email_analysis.brand_impersonation import BRAND_DATABASE
-from email_analysis.domain_utils import registered_domain
 from email_analysis.url_keyword_context import build_url_keyword_context
 from scoring.config import (
     CATEGORY_CAPS,
@@ -44,7 +42,6 @@ _RULE_CATEGORIES = (
     "URL behavior",
     "brand impersonation",
     "content/language",
-    "threat intelligence",
     "AI / ML",
     "attachment/malware",
 )
@@ -55,18 +52,16 @@ _DATA_COMPLETENESS_PENALTIES = {
     "auth_none": 12,
     "missing_received_headers": 20,
     "relay_forensics_unavailable": 6,
-    "intel_error": 3,
 }
 
 _ESP_MITIGATION_MIN = -20
-_ESP_MISMATCH_PENALTY = 10
 
 
 def calculate_risk(
     auth_results: dict,
-    url_reports: list[dict],
-    hash_reports: list[dict],
-    otx_reports: list[dict],
+    url_reports: list[dict] | None = None,
+    hash_reports: list[dict] | None = None,
+    otx_reports: list[dict] | None = None,
     heuristics: dict | None = None,
     qr_findings: list[dict] | None = None,
     ip_reputation: list[dict] | None = None,
@@ -87,7 +82,11 @@ def calculate_risk(
     urls: list[dict] | None = None,
     attachments: list[dict] | None = None,
 ) -> dict:
-    """Calculate risk score, confidence, and data completeness."""
+    """Calculate intrinsic base risk. Legacy enrichment inputs are ignored.
+
+    score/risk_score/verdict/risk_severity remain aliases for existing Python callers.
+    The SIEM contract uses only base_score/initial_severity/initial_verdict.
+    """
     category_scores: dict[str, int] = {k: 0 for k in _RULE_CATEGORIES}
     breakdown: list[str] = []
     completeness_breakdown: list[str] = []
@@ -98,15 +97,9 @@ def calculate_risk(
 
     data_completeness = _compute_data_completeness(
         auth_results,
-        url_reports,
-        hash_reports,
-        otx_reports,
         header_forensics,
         completeness_breakdown,
         email_data=email_data,
-        urls=urls,
-        domain_intelligence=domain_intelligence,
-        url_intelligence=url_intelligence,
         attachment_risks=attachment_risks,
         attachments=attachments,
         ai_verdict=ai_verdict,
@@ -157,25 +150,6 @@ def calculate_risk(
                 weak_signals += 1
 
     # ── 2) URL behavior ──────────────────────────────────────
-    suspicious_url_lookup: set[str] = set()
-    for report in url_reports:
-        url = report.get("url", "")
-        if report.get("malicious", 0) > 0:
-            pts = weight("vt_malicious_url")
-            category_scores["threat intelligence"] += pts
-            suspicious_url_lookup.add(url)
-            breakdown.append(
-                f"Malicious URL: {url or '?'} ({report.get('malicious', 0)} engines) (+{pts})"
-            )
-            strong_signals += 1
-        elif report.get("suspicious", 0) > 0:
-            pts = weight("vt_suspicious_url")
-            category_scores["threat intelligence"] += pts
-            suspicious_url_lookup.add(url)
-            breakdown.append(f"Suspicious URL: {url or '?'} (+{pts})")
-            weak_signals += 1
-
-    redirect_by_url: dict[str, dict] = {}
     endpoint_url_set: set[str] = set()
     if url_intelligence:
         for finding in url_intelligence.get("shortener_findings", []):
@@ -185,26 +159,6 @@ def calculate_risk(
             category_scores["URL behavior"] += pts
             breakdown.append(f"Shortened URL: {finding.get('domain', '?')} (+{pts})")
             weak_signals += 1
-
-        for finding in url_intelligence.get("redirect_findings", []):
-            source_url = finding.get("source_url") or finding.get("url", "")
-            redirect_by_url[source_url] = finding
-
-            pts = int(finding.get("risk_score", 0))
-            if finding.get("is_esp_tracking") and not finding.get("suspicious_landing"):
-                pts = 0
-
-            if pts <= 0:
-                continue
-
-            category_scores["URL behavior"] += pts
-            breakdown.append(
-                f"Redirect behavior: {source_url or '?'} → {finding.get('final_domain', '?')} (+{pts})"
-            )
-            if finding.get("suspicious_landing") or pts >= 10:
-                strong_signals += 1
-            else:
-                weak_signals += 1
 
         for finding in url_intelligence.get("suspicious_endpoints", []):
             url = finding.get("url", "")
@@ -220,43 +174,18 @@ def calculate_risk(
             )
             strong_signals += 1
 
-    # ── 3) ESP detection and contradiction handling ──────────
-    expected_roots = _expected_context_roots(auth_results, brand_impersonation)
+    # Known ESP context is intrinsic; it cannot suppress independent detections.
     if url_intelligence:
+        deceptive_urls = {
+            item.get("url") for item in url_intelligence.get("deceptive_links", [])
+            if int(item.get("risk_score", 0)) > 0
+        }
         for finding in url_intelligence.get("esp_findings", []):
-            url = finding.get("url", "")
-            provider = finding.get("provider", "ESP")
-
-            redirect_ctx = redirect_by_url.get(url, {})
-            final_domain = finding.get("final_domain") or redirect_ctx.get(
-                "final_domain", ""
-            )
-            suspicious_landing = bool(
-                finding.get("suspicious_landing")
-                or redirect_ctx.get("suspicious_landing")
-            )
-
-            has_contradiction = (
-                url in suspicious_url_lookup
-                or url in endpoint_url_set
-                or suspicious_landing
-            )
-
-            mismatch = _is_strong_context_mismatch(final_domain, expected_roots)
-            if mismatch:
-                category_scores["URL behavior"] += _ESP_MISMATCH_PENALTY
-                breakdown.append(
-                    f"ESP tracking URL mismatches sender/brand context: {provider} (+{_ESP_MISMATCH_PENALTY})"
-                )
-                strong_signals += 1
-                has_contradiction = True
-
-            if has_contradiction:
+            if finding.get("url") in endpoint_url_set | deceptive_urls:
                 continue
-
             adjust = int(finding.get("risk_adjustment", -6))
             category_scores["ESP detection"] += adjust
-            breakdown.append(f"Known ESP pattern: {provider} ({adjust})")
+            breakdown.append(f"Known ESP pattern: {finding.get('provider', 'ESP')} ({adjust})")
 
     # ── 4) Brand impersonation ───────────────────────────────
     if brand_impersonation:
@@ -371,15 +300,6 @@ def calculate_risk(
             strong_signals += 1
 
     # ── 6) Attachment/malware ────────────────────────────────
-    for report in hash_reports:
-        if report.get("malicious", 0) > 0:
-            pts = weight("vt_malicious_hash")
-            category_scores["threat intelligence"] += pts
-            breakdown.append(
-                f"Malicious attachment hash ({report.get('malicious', 0)} engines) (+{pts})"
-            )
-            strong_signals += 1
-
     if attachment_risks:
         for finding in attachment_risks:
             pts = int(finding.get("risk_score", 0))
@@ -394,52 +314,7 @@ def calculate_risk(
             else:
                 weak_signals += 1
 
-    for report in otx_reports:
-        pulses = int(report.get("pulse_count", 0))
-        if pulses <= 0:
-            continue
-        pts = weight("otx_pulse")
-        if report.get("sha256"):
-            category_scores["threat intelligence"] += pts
-            breakdown.append(f"OTX pulse hit for attachment hash (+{pts})")
-            strong_signals += 1
-        elif report.get("url"):
-            category_scores["threat intelligence"] += pts
-            breakdown.append(f"OTX pulse hit for URL (+{pts})")
-            weak_signals += 1
-        else:
-            category_scores["threat intelligence"] += pts
-            breakdown.append(f"OTX pulse hit for domain (+{pts})")
-            weak_signals += 1
-
-    # ── 7) IP/domain infrastructure signals ──────────────────
-    if ip_reputation:
-        for finding in ip_reputation:
-            pts = int(finding.get("risk_score", 0))
-            if pts <= 0:
-                continue
-            category_scores["threat intelligence"] += pts
-            breakdown.append(f"Blacklisted infrastructure IP (+{pts})")
-            weak_signals += 1
-
-    if passive_dns:
-        for finding in passive_dns:
-            pts = int(finding.get("risk_score", 0))
-            if pts <= 0:
-                continue
-            category_scores["threat intelligence"] += pts
-            breakdown.append(f"Suspicious shared hosting density (+{pts})")
-            weak_signals += 1
-
     if domain_intelligence:
-        for w in domain_intelligence.get("whois_results", []):
-            pts = min(weight("young_domain"), int(w.get("risk_score", 0)))
-            if pts <= 0:
-                continue
-            category_scores["URL behavior"] += pts
-            breakdown.append(f"Young domain signal: {w.get('domain', '?')} (+{pts})")
-            weak_signals += 1
-
         for e in domain_intelligence.get("entropy_results", []):
             classification = str(e.get("classification", ""))
             pts = weight(classification, int(e.get("risk_score", 0)))
@@ -472,18 +347,6 @@ def calculate_risk(
                 f"QR-delivered URL indicator: {finding.get('filename', '?')} (+{pts})"
             )
             weak_signals += 1
-
-    if landing_pages:
-        for finding in landing_pages:
-            pts = min(weight("landing_page"), int(finding.get("risk_score", 0)))
-            if pts <= 0:
-                continue
-            category_scores["URL behavior"] += pts
-            breakdown.append(f"Suspicious landing page evidence (+{pts})")
-            if finding.get("password_fields"):
-                strong_signals += 1
-            else:
-                weak_signals += 1
 
     if evidence_bundle:
         for evidence in evidence_bundle.get("evidence", []):
@@ -611,7 +474,7 @@ def calculate_risk(
             }
         )
         breakdown.append(
-            f"Final finding [{category}]: "
+            f"Correlated finding [{category}]: "
             f"{finding.get('summary', 'signal cluster')} (+{pts})"
         )
         strong_signals += 1
@@ -738,12 +601,8 @@ def calculate_risk(
     pre_limit_score = risk_score
     critical_gate = _evaluate_critical_evidence_gate(
         pre_calibration_score=bounded_risk_score,
-        url_reports=url_reports,
-        hash_reports=hash_reports,
-        landing_pages=landing_pages,
-        attachment_risks=attachment_risks,
-        email_data=email_data,
-        domain_intelligence=domain_intelligence,
+        findings=correlations,
+        credential_harvesting=credential_harvesting,
     )
     critical_threshold = int(CRITICAL_EVIDENCE_GATE_CONFIG["critical_threshold"])
     unconfirmed_cap = int(CRITICAL_EVIDENCE_GATE_CONFIG["unconfirmed_score_cap"])
@@ -772,7 +631,6 @@ def calculate_risk(
         data_completeness=data_completeness,
         evidence_bundle=evidence_bundle,
         auth_results=auth_results,
-        hash_reports=hash_reports,
         credential_harvesting=credential_harvesting,
         attachment_risks=attachment_risks,
         final_findings=correlations,
@@ -789,6 +647,9 @@ def calculate_risk(
     )
 
     return {
+        "base_score": risk_score,
+        "initial_verdict": verdict,
+        "initial_severity": risk_severity,
         "score": risk_score,
         "risk_score": risk_score,
         "verdict": verdict,
@@ -806,7 +667,7 @@ def calculate_risk(
             "raw_effective_total": pre_limit_score,
             "pre_calibration_score": bounded_risk_score,
             "score_maximum": 100,
-            "final_score": risk_score,
+            "base_score": risk_score,
             "suppressed_overall_weight": max(0, pre_limit_score - bounded_risk_score),
             "suppressed_by_calibration": calibration_suppressed,
             "critical_confirmation": bool(critical_gate["met"]),
@@ -821,71 +682,25 @@ def calculate_risk(
 
 
 def _evaluate_critical_evidence_gate(
-    *,
-    pre_calibration_score: int,
-    url_reports: list[dict],
-    hash_reports: list[dict],
-    landing_pages: list[dict] | None,
-    attachment_risks: list[dict] | None,
-    email_data: dict | None,
-    domain_intelligence: dict | None,
+    *, pre_calibration_score: int, findings: list[dict],
+    credential_harvesting: dict | None,
 ) -> dict:
-    """Return explicit strong confirmations required for CRITICAL severity."""
-    critical_threshold = int(CRITICAL_EVIDENCE_GATE_CONFIG["critical_threshold"])
-    if pre_calibration_score < critical_threshold:
-        return {
-            "met": False,
-            "status": "NOT_REQUIRED",
-            "confirmations": [],
-            "reason": "Score did not reach the Critical threshold.",
-        }
-
-    confirmations: list[str] = []
-    if any(int(report.get("malicious", 0)) > 0 for report in url_reports):
-        confirmations.append("Known-malicious URL confirmed by threat intelligence")
-    if any(int(report.get("malicious", 0)) > 0 for report in hash_reports):
-        confirmations.append(
-            "Malicious attachment hash confirmed by threat intelligence"
-        )
-    if any(
-        int(page.get("password_fields", 0)) > 0
-        and not page.get("error")
-        and str(page.get("state", "")).lower() == "suspicious"
-        for page in landing_pages or []
+    """Require independent intrinsic confirmation for the highest initial severity."""
+    if pre_calibration_score < int(CRITICAL_EVIDENCE_GATE_CONFIG["critical_threshold"]):
+        return {"met": False, "status": "NOT_REQUIRED", "confirmations": [],
+                "reason": "Base score did not reach the Critical threshold."}
+    types = {item.get("type") for item in findings}
+    confirmations = []
+    if "sender_auth_alignment_failure" in types and (
+        "credential_lure_deceptive_link" in types
+        or bool((credential_harvesting or {}).get("detected"))
     ):
-        confirmations.append("Fetched credential-harvesting destination confirmed")
-    if any(
-        bool(item.get("confirmed_malicious"))
-        or bool(item.get("malware_detected"))
-        or str(item.get("sandbox_verdict", "")).lower() == "malicious"
-        for item in attachment_risks or []
-    ):
-        confirmations.append("Malicious payload or sandbox behavior confirmed")
-    if bool((email_data or {}).get("credential_compromise_confirmed")):
-        confirmations.append("Credential compromise confirmed")
-    if bool((email_data or {}).get("malware_execution_confirmed")):
-        confirmations.append("Malware execution confirmed")
-
-    test_context = bool((domain_intelligence or {}).get("special_use_results"))
-    if confirmations:
-        reason = "; ".join(confirmations)
-    elif test_context:
-        reason = (
-            "The numerical score reached the Critical range, but the sample uses "
-            "reserved testing infrastructure and contains no production-confirmed "
-            "critical-level malicious evidence."
-        )
-    else:
-        reason = (
-            "The numerical score reached the Critical range, but no confirmed "
-            "critical-level malicious infrastructure, payload, credential-harvesting "
-            "destination, or compromise evidence was available."
-        )
+        confirmations.append("Independent sender authentication/alignment failure and credential phishing evidence")
     return {
-        "met": bool(confirmations),
-        "status": "MET" if confirmations else "NOT_MET",
+        "met": bool(confirmations), "status": "MET" if confirmations else "NOT_MET",
         "confirmations": confirmations,
-        "reason": reason,
+        "reason": "; ".join(confirmations) if confirmations else
+            "Insufficient independent intrinsic evidence for Critical initial severity.",
     }
 
 
@@ -900,10 +715,8 @@ def _risk_category_for_evidence(evidence: dict) -> str:
         "relay": "auth checks",
         "url": "URL behavior",
         "domain": "URL behavior",
-        "landing_page": "URL behavior",
         "credential_harvesting": "URL behavior",
         "content": "content/language",
-        "threat_intel": "threat intelligence",
         "ai_ml": "AI / ML",
         "attachment": "attachment/malware",
     }.get(primitive_category, "")
@@ -915,7 +728,6 @@ def _finding_risk_category(category: str) -> str:
         "url_web": "URL behavior",
         "identity_impersonation": "brand impersonation",
         "content_social": "content/language",
-        "threat_intelligence": "threat intelligence",
         "attachment_malware": "attachment/malware",
     }.get(category, category)
 
@@ -1064,16 +876,10 @@ def _build_cross_category_findings(
 
 def _compute_data_completeness(
     auth_results: dict,
-    url_reports: list[dict],
-    hash_reports: list[dict],
-    otx_reports: list[dict],
     header_forensics: dict | None,
     completeness_breakdown: list[str],
     *,
     email_data: dict | None = None,
-    urls: list[dict] | None = None,
-    domain_intelligence: dict | None = None,
-    url_intelligence: dict | None = None,
     attachment_risks: list[dict] | None = None,
     attachments: list[dict] | None = None,
     ai_verdict: dict | None = None,
@@ -1083,15 +889,9 @@ def _compute_data_completeness(
     if email_data is not None:
         return _compute_detailed_completeness(
             auth_results,
-            url_reports,
-            hash_reports,
-            otx_reports,
-            header_forensics,
+                        header_forensics,
             completeness_breakdown,
             email_data,
-            urls or [],
-            domain_intelligence or {},
-            url_intelligence or {},
             attachment_risks,
             attachments,
             ai_verdict,
@@ -1132,36 +932,14 @@ def _compute_data_completeness(
         score -= _DATA_COMPLETENESS_PENALTIES["relay_forensics_unavailable"]
         completeness_breakdown.append("Relay forensics unavailable (-6)")
 
-    intel_errors = 0
-    intel_errors += sum(
-        1
-        for r in url_reports
-        if r.get("error") and r.get("error") != "submitted_for_analysis"
-    )
-    intel_errors += sum(1 for r in hash_reports if r.get("error"))
-    intel_errors += sum(1 for r in otx_reports if r.get("error"))
-
-    if intel_errors > 0:
-        penalty = min(15, intel_errors * _DATA_COMPLETENESS_PENALTIES["intel_error"])
-        score -= penalty
-        completeness_breakdown.append(
-            f"Threat-intel lookups unavailable for {intel_errors} indicator(s) (-{penalty})"
-        )
-
     return int(_clamp(score, 0, 100))
 
 
 def _compute_detailed_completeness(
     auth_results: dict,
-    url_reports: list[dict],
-    hash_reports: list[dict],
-    otx_reports: list[dict],
     header_forensics: dict | None,
     completeness_breakdown: list[str],
     email_data: dict,
-    urls: list[dict],
-    domain_intelligence: dict,
-    url_intelligence: dict,
     attachment_risks: list[dict] | None,
     attachments: list[dict] | None,
     ai_verdict: dict | None,
@@ -1236,39 +1014,6 @@ def _compute_detailed_completeness(
         "message has no HTML MIME part" if not email_data.get("body_html") else "",
     )
 
-    def enrichment_status(results: list[dict]) -> SourceStatus:
-        if not results:
-            return SourceStatus.NOT_APPLICABLE
-        statuses = {str(item.get("status", "")).upper() for item in results}
-        if statuses and statuses <= {SourceStatus.NOT_APPLICABLE.value}:
-            return SourceStatus.NOT_APPLICABLE
-        if any(
-            str(item.get("status", "")).upper() == SourceStatus.AVAILABLE.value
-            or not item.get("error")
-            for item in results
-        ):
-            return SourceStatus.AVAILABLE
-        return SourceStatus.UNAVAILABLE
-
-    whois_results = domain_intelligence.get("whois_results", [])
-    dns_results = domain_intelligence.get("dns_results", [])
-    record("whois", enrichment_status(whois_results))
-    record("dns", enrichment_status(dns_results))
-
-    vt_reports = url_reports + hash_reports
-    record("virustotal", enrichment_status(vt_reports))
-    record("otx", enrichment_status(otx_reports))
-
-    redirect_results = url_intelligence.get("redirect_findings", [])
-    if not urls:
-        redirect_status = SourceStatus.NOT_APPLICABLE
-    elif redirect_results:
-        redirect_status = enrichment_status(redirect_results)
-    else:
-        # A completed check with no redirect is still available evidence.
-        redirect_status = SourceStatus.ANALYZED
-    record("redirect", redirect_status)
-
     if attachments is not None:
         attachment_status = (
             SourceStatus.ANALYZED if attachments else SourceStatus.NONE_PRESENT
@@ -1315,8 +1060,7 @@ def _compute_confidence(
         "URL behavior",
         "brand impersonation",
         "content/language",
-        "threat intelligence",
-        "attachment/malware",
+            "attachment/malware",
     )
     structured_score = sum(
         category_scores.get(name, 0) for name in structured_categories
@@ -1369,7 +1113,7 @@ def _compute_confidence(
     )
 
     if data_completeness < 50:
-        notes.append("Limited by incomplete SMTP, MIME, or enrichment evidence.")
+        notes.append("Limited by incomplete intrinsic email evidence.")
 
     return round(_clamp(confidence, 0.05, 0.99), 2), notes
 
@@ -1387,7 +1131,6 @@ def _derive_threat_verdict(
     data_completeness: int,
     evidence_bundle: dict | None,
     auth_results: dict,
-    hash_reports: list[dict],
     credential_harvesting: dict | None,
     attachment_risks: list[dict] | None,
     final_findings: list[dict],
@@ -1395,17 +1138,12 @@ def _derive_threat_verdict(
 ) -> str:
     """Classify the threat from detections, never from a score threshold alone."""
     finding_types = {str(item.get("type", "")) for item in final_findings}
-    if any(int(item.get("malicious", 0)) > 0 for item in hash_reports):
-        return Verdict.MALWARE.value
-    if "reply_to_payment_fraud" in finding_types:
-        return Verdict.BEC.value
-
     phishing_findings = {
         "credential_lure_deceptive_link",
         "organization_credential_phishing",
         "brand_credential_phish",
-        "brand_landing_page",
         "language_plus_credential_collection",
+        "reply_to_payment_fraud",
     }
     if finding_types & phishing_findings:
         return Verdict.PHISHING.value
@@ -1431,7 +1169,6 @@ def _derive_threat_verdict(
             "auth checks": 12,
             "URL behavior": 10,
             "brand impersonation": 15,
-            "threat intelligence": 8,
             "attachment/malware": 8,
         }.items()
     )
@@ -1440,68 +1177,15 @@ def _derive_threat_verdict(
 
     if all(state is AuthState.PASS for state in auth_states.values()):
         return (
-            Verdict.LIKELY_BENIGN.value
+            Verdict.BENIGN.value
             if risk_score <= 24
             else Verdict.SUSPICIOUS.value
         )
     if forwarding_survived and risk_score <= 24:
-        return Verdict.LIKELY_BENIGN.value
+        return Verdict.BENIGN.value
     if risk_score == 0 and data_completeness >= 70:
-        return Verdict.LIKELY_BENIGN.value
-    return Verdict.UNKNOWN.value
-
-
-def _expected_context_roots(
-    auth_results: dict, brand_impersonation: dict | None
-) -> set[str]:
-    """Build expected landing-domain context from sender and detected brand context."""
-    roots: set[str] = set()
-
-    sender_domain = auth_results.get("forensics", {}).get("from_domain", "")
-    if sender_domain:
-        roots.add(_root_domain(sender_domain))
-
-    if not brand_impersonation:
-        return roots
-
-    brand_names: set[str] = set()
-    for finding in brand_impersonation.get("sender_identity_mismatch", []):
-        expected_domain = finding.get("expected_domain")
-        if expected_domain:
-            roots.add(_root_domain(str(expected_domain)))
-    for finding in brand_impersonation.get("domain_impersonation", []):
-        brand = finding.get("brand")
-        if brand:
-            brand_names.add(str(brand).lower())
-    for finding in brand_impersonation.get("display_name_spoofing", []):
-        brand = finding.get("brand")
-        if brand:
-            brand_names.add(str(brand).lower())
-    for finding in brand_impersonation.get("body_brand_mentions", []):
-        brand = finding.get("brand")
-        if brand:
-            brand_names.add(str(brand).lower())
-
-    for brand_name in brand_names:
-        info = BRAND_DATABASE.get(brand_name)
-        if not info:
-            continue
-        for domain in info.get("domains", set()):
-            roots.add(_root_domain(domain))
-
-    return roots
-
-
-def _is_strong_context_mismatch(final_domain: str, expected_roots: set[str]) -> bool:
-    """Check strong mismatch between final landing domain and expected sender/brand roots."""
-    if not final_domain or not expected_roots:
-        return False
-    final_root = _root_domain(final_domain)
-    return final_root not in expected_roots
-
-
-def _root_domain(domain: str) -> str:
-    return registered_domain(domain)
+        return Verdict.BENIGN.value
+    return Verdict.BENIGN.value
 
 
 def _status(value: str) -> str:

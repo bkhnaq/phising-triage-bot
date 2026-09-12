@@ -5,13 +5,11 @@ from email_analysis.domain_intelligence import analyze_domain_intelligence
 from email_analysis.domain_randomness import analyze_domain_randomness
 from email_analysis.header_analyzer import analyze_headers
 from email_analysis.header_forensics import run_header_forensics
-from email_analysis.safe_http import SafeHTTPResponse
 from email_analysis.special_use import classify_ip
 from email_analysis.url_extractor import extract_urls
 from email_analysis import url_intelligence
 from scoring.config import WEIGHTS
 from scoring.risk_scoring import calculate_risk
-from threat_intel.ip_reputation import check_ip_reputation
 
 
 def _empty_bundle_inputs() -> dict:
@@ -46,15 +44,14 @@ def test_random_domain_uses_bounded_multifeature_score() -> None:
 def test_reserved_test_domain_has_no_nxdomain_penalty() -> None:
     result = analyze_domain_intelligence(["example.test"])
 
-    assert result["whois_results"][0]["status"] == "NOT_APPLICABLE"
-    assert result["dns_results"][0]["status"] == "NOT_APPLICABLE"
-    assert result["dns_results"][0]["risk_score"] == 0
-    assert "NXDOMAIN" not in str(result["dns_results"][0])
+    assert result["special_use_results"][0]["is_special_use"] is True
+    assert result["risk_score"] == 0
+    assert "whois_results" not in result
+    assert "dns_results" not in result
 
 
 def test_test_net_ip_has_no_geo_or_reputation_penalty() -> None:
     classification = classify_ip("203.0.113.77")
-    reputation = check_ip_reputation(["203.0.113.77"])[0]
     forensic = run_header_forensics(
         {
             "from": "sender@example.com",
@@ -69,10 +66,9 @@ def test_test_net_ip_has_no_geo_or_reputation_penalty() -> None:
     )
 
     assert classification.classification == "Documentation / TEST-NET-3"
-    assert reputation["status"] == "NOT_APPLICABLE"
-    assert reputation["risk_score"] == 0
-    assert forensic["geolocation_status"] == "NOT_APPLICABLE"
-    assert forensic["origin_country"] == "Unknown"
+    assert forensic["origin_ip"] == "203.0.113.77"
+    assert forensic["risk_score"] == 0
+    assert "geolocation_status" not in forensic
 
 
 def test_dkim_none_is_known_state_and_not_an_evidence_gap() -> None:
@@ -127,7 +123,7 @@ def test_third_party_return_path_mismatch_is_weak_when_auth_passes() -> None:
     result = calculate_risk(auth, [], [], [])
 
     assert result["score"] <= WEIGHTS["return_path_mismatch"]
-    assert result["verdict"] == "LIKELY_BENIGN"
+    assert result["verdict"] == "BENIGN"
     assert result["risk_severity"] == "LOW"
 
 
@@ -210,34 +206,7 @@ def test_href_mismatch_does_not_create_redirect_destination() -> None:
     assert deceptive["displayed_url"] == "https://safe.example"
     assert deceptive["url"] == "https://evil.example"
     assert "redirect_destination" not in deceptive
-    assert all(
-        "redirect_destination" not in item
-        for item in intel["redirect_findings"]
-        if not item.get("hops")
-    )
-
-
-def test_true_redirect_records_source_destination_and_http_status(monkeypatch) -> None:
-    url_intelligence._REDIRECT_CACHE.clear()
-    monkeypatch.setattr(url_intelligence, "OFFLINE_MODE", False)
-    monkeypatch.setattr(
-        url_intelligence,
-        "fetch_url",
-        lambda url, **_kwargs: SafeHTTPResponse(
-            url="https://b.example/final",
-            status_code=200,
-            headers={},
-            body=b"",
-            history=(url,),
-            history_statuses=(302,),
-        ),
-    )
-
-    result = url_intelligence.follow_redirect_chain("https://a.example/start")
-
-    assert result["redirect_source"] == "https://a.example/start"
-    assert result["redirect_destination"] == "https://b.example/final"
-    assert result["redirect_chain"][0]["status_code"] == 302
+    assert "redirect_findings" not in intel
 
 
 def test_score_and_provenance_share_central_dmarc_weight() -> None:

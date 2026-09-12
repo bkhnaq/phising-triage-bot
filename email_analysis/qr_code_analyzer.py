@@ -144,7 +144,7 @@ def scan_attachments_for_qr(attachments: list[dict]) -> list[dict]:
 def extract_qr_urls(qr_findings: list[dict]) -> list[dict]:
     """
     Extract URL dicts from QR findings so they can be fed into the
-    existing url-analysis pipeline (VT, OTX, heuristics).
+    static URL analysis and observable extraction pipeline.
 
     Returns:
         List of url-info dicts compatible with url_extractor output:
@@ -158,15 +158,11 @@ def extract_qr_urls(qr_findings: list[dict]) -> list[dict]:
         if not url or url in seen:
             continue
         seen.add(url)
-        url_dicts.append(
-            {
-                "url": url,
-                "domain": f.get("domain", ""),
-                "is_shortened": False,
-                "expanded_url": url,
-                "source": "qr_code",
-            }
-        )
+        from email_analysis.url_extractor import extract_urls
+
+        for item in extract_urls(body_text=url):
+            item["source"] = "qr_code"
+            url_dicts.append(item)
 
     return url_dicts
 
