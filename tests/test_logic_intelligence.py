@@ -1,7 +1,6 @@
 import zipfile
 from pathlib import Path
 
-import requests
 
 from email_analysis.domain_utils import registered_domain, same_registered_domain
 from email_analysis.header_analyzer import analyze_headers
@@ -23,8 +22,6 @@ def test_url_userinfo_obfuscation_uses_real_host() -> None:
     assert urls[0]["registered_domain"] == "evil.example"
     assert urls[0]["has_userinfo"] is True
     assert urls[0]["url_risk_score"] >= 18
-
-
 
 
 def test_url_extractor_skips_malformed_url_without_stopping_analysis() -> None:
@@ -76,18 +73,6 @@ def test_auth_alignment_flags_spf_pass_mismatch() -> None:
     finding_types = {f["type"] for f in result["alignment"]["findings"]}
     assert "spf_alignment_mismatch" in finding_types
     assert "no_aligned_authentication" in finding_types
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_attachment_deep_inspection_detects_archive_payload_and_html(

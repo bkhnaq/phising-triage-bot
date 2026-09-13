@@ -173,7 +173,8 @@ WEIGHTS: dict[str, int] = {
     "credential_lure_deceptive_link": 30,
     "organization_credential_phishing": 15,
     "reply_to_payment_fraud": 12,
-    "brand_credential_phish": 20,
+    # Confirmed credential collection with impersonation fills the identity cap.
+    "brand_credential_phish": 25,
     "language_plus_credential_collection": 10,
     "multi_signal_credential_phishing": 8,
 }

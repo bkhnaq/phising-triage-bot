@@ -10,11 +10,6 @@ from scoring.config import weight
 logger = logging.getLogger(__name__)
 
 
-
-
-
-
-
 # ── Extended URL shortener list ──────────────────────────────
 SHORTENER_DOMAINS: frozenset[str] = frozenset(
     {
@@ -159,9 +154,14 @@ def detect_deceptive_links(urls: list[dict]) -> list[dict]:
 def detect_shorteners(urls: list[dict]) -> list[dict]:
     """Identify shortener infrastructure without opening the URL."""
     return [
-        {"url": item["url"], "domain": item["domain"],
-         "risk_score": weight("url_shortener"), "resolution_status": "PENDING_SOAR"}
-        for item in urls if item.get("domain", "").lower() in SHORTENER_DOMAINS
+        {
+            "url": item["url"],
+            "domain": item["domain"],
+            "risk_score": weight("url_shortener"),
+            "resolution_status": "PENDING_SOAR",
+        }
+        for item in urls
+        if item.get("domain", "").lower() in SHORTENER_DOMAINS
     ]
 
 
@@ -194,7 +194,9 @@ def detect_suspicious_endpoints(urls: list[dict]) -> list[dict]:
             else parsed.path.lower()
         )
 
-        matched_keywords = sorted(kw for kw in _SUSPICIOUS_PATH_KEYWORDS if kw in path_lower)
+        matched_keywords = sorted(
+            kw for kw in _SUSPICIOUS_PATH_KEYWORDS if kw in path_lower
+        )
         if len(matched_keywords) >= 2:
             findings.append(
                 {
@@ -270,10 +272,6 @@ def classify_esp_url(url: str) -> dict | None:
         }
 
     return None
-
-
-
-
 
 
 def _normalize_domain(netloc: str) -> str:

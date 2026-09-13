@@ -505,7 +505,9 @@ def _build_response(result: dict, request_id: str) -> AnalysisResponse:
         risk=RiskResult(
             base_score=risk_data.get("base_score", risk_data.get("score", 0)),
             initial_verdict=risk_data.get("initial_verdict", "BENIGN"),
-            initial_severity=risk_data.get("initial_severity", risk_data.get("risk_severity", "LOW")),
+            initial_severity=risk_data.get(
+                "initial_severity", risk_data.get("risk_severity", "LOW")
+            ),
             score=risk_data.get("score", 0),
             verdict=risk_data.get("verdict", "UNKNOWN"),
             risk_severity=risk_data.get("risk_severity", "LOW"),

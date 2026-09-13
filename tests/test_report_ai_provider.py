@@ -52,7 +52,9 @@ def test_high_risk_report_has_playbook_iocs_and_safe_ai_unavailable_state() -> N
     assert "AI analysis unavailable" in report
     assert "Shuffle SOAR workflow" in report
     assert "https://final.test/login" not in report
-    assert "final.test" not in report  # Never export a legacy resolved/rewritten target.
+    assert (
+        "final.test" not in report
+    )  # Never export a legacy resolved/rewritten target.
     assert report.count("a" * 64) == 2  # Attachment listing plus one SHA-256 IOC.
     assert "C:/private/path" not in report
 

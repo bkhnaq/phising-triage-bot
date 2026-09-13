@@ -237,10 +237,6 @@ def detect_suspicious_keywords(
     return findings
 
 
-
-
-
-
 def detect_url_shorteners(urls: list[dict]) -> list[dict]:
     """
     Flag URLs that use well-known URL shortener services.
@@ -399,10 +395,6 @@ def calculate_entropy_findings(domains: list[str]) -> list[dict]:
 
 
 # ── Redirect chain detection ─────────────────────────────────
-
-
-
-
 
 
 # ── Internal helpers ─────────────────────────────────────────

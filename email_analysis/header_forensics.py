@@ -174,10 +174,6 @@ def _is_private_ip(ip: str) -> bool:
         return False
 
 
-
-
-
-
 # ── Domain helpers ────────────────────────────────────────────────────────────
 
 

@@ -26,6 +26,7 @@ _URL_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+
 def extract_urls(
     body_text: str = "",
     body_html: str = "",
@@ -185,7 +186,10 @@ def _best_link_evidence(url: str, relationships: list[dict]) -> dict:
             displayed_domain = (urlparse(displayed_url).hostname or "").lower()
             actual_root = registered_domain(actual_domain)
             displayed_root = registered_domain(displayed_domain)
-            mismatch = analyze_url(url).normalized_url != analyze_url(displayed_url).normalized_url
+            mismatch = (
+                analyze_url(url).normalized_url
+                != analyze_url(displayed_url).normalized_url
+            )
         except (UnicodeError, ValueError):
             continue
         if not actual_root or not displayed_root:
@@ -214,7 +218,3 @@ def _best_link_evidence(url: str, relationships: list[dict]) -> dict:
 
 
 # ── Helpers ──────────────────────────────────────────────────
-
-
-
-

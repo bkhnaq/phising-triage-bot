@@ -70,10 +70,6 @@ def analyze_domain_intelligence(domains: list[str]) -> dict:
     }
 
 
-
-
-
-
 def entropy_check(domain: str) -> dict:
     """Compatibility wrapper for the feature-based randomness classifier."""
     return analyze_domain_randomness(domain)

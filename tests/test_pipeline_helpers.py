@@ -34,12 +34,6 @@ def test_parser_recovers_headers_after_blank_subject_line(tmp_path) -> None:
     assert result["body_text"] == "Please verify your account."
 
 
-
-
-
-
-
-
 def test_attachment_extraction_stops_before_hashing_extra_parts(
     monkeypatch, tmp_path: Path
 ) -> None:

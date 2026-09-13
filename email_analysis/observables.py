@@ -218,9 +218,7 @@ def collect_observables(
     registry.add("contextual", "Origin IP", origin_ip, "ip")
 
     for item in urls:
-        actual_url = (
-            item.get("url")
-        )
+        actual_url = item.get("url")
         actual_domain = domain_info(str(actual_url or "")).ascii_host
         is_mismatch = item.get("link_target_comparison") == "mismatch"
         registry.add(
@@ -269,25 +267,49 @@ def collect_observables(
             if attachment.get("filename") in risky_names
             else "contextual"
         )
-        registry.add(classification, "Attachment filename", attachment.get("filename"), "filename")
+        registry.add(
+            classification,
+            "Attachment filename",
+            attachment.get("filename"),
+            "filename",
+        )
         for algorithm in ("md5", "sha1", "sha256"):
-            registry.add(classification, f"Attachment {algorithm.upper()}", attachment.get(algorithm), algorithm)
+            registry.add(
+                classification,
+                f"Attachment {algorithm.upper()}",
+                attachment.get(algorithm),
+                algorithm,
+            )
 
     data = email_data or {}
     headers = data.get("headers", [])
-    address_headers = [str(value) for name, value in headers if name.lower() in {
-        "from", "to", "cc", "bcc", "reply-to", "return-path", "sender"
-    }]
-    address_headers.extend(str(data.get(key) or "") for key in ("from", "to", "reply_to", "return_path"))
+    address_headers = [
+        str(value)
+        for name, value in headers
+        if name.lower()
+        in {"from", "to", "cc", "bcc", "reply-to", "return-path", "sender"}
+    ]
+    address_headers.extend(
+        str(data.get(key) or "") for key in ("from", "to", "reply_to", "return_path")
+    )
     body = str(data.get("body_text") or "") + " " + str(data.get("body_html") or "")
-    addresses = [address for _, address in getaddresses(address_headers) if "@" in address]
-    addresses.extend(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", body))
+    addresses = [
+        address for _, address in getaddresses(address_headers) if "@" in address
+    ]
+    addresses.extend(
+        re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", body)
+    )
     for address in addresses:
         registry.add("contextual", "Email address", address, "email")
         registry.add("contextual", "Email domain", address.rsplit("@", 1)[-1], "domain")
     for name, value in headers:
         if name.lower() == "message-id" and "@" in str(value):
-            registry.add("informational", "Message-ID domain", str(value).rsplit("@", 1)[-1].strip("<> "), "domain")
+            registry.add(
+                "informational",
+                "Message-ID domain",
+                str(value).rsplit("@", 1)[-1].strip("<> "),
+                "domain",
+            )
     for hop in (header_forensics or {}).get("relay_chain", []):
         registry.add("contextual", "Relay IP", hop.get("ip"), "ip")
         registry.add("contextual", "Relay domain", hop.get("server"), "domain")
@@ -298,19 +320,32 @@ def collect_observables(
         registry.add("contextual", "Observed IP", candidate, "ip")
     for record in list(registry.records()):
         if record["type"] in {"domain", "url"}:
-            host = urlsplit(str(record["value"])).hostname if record["type"] == "url" else str(record["value"])
+            host = (
+                urlsplit(str(record["value"])).hostname
+                if record["type"] == "url"
+                else str(record["value"])
+            )
             try:
-                registry.add("contextual", "URL IP", str(ipaddress.ip_address(host or "")), "ip")
+                registry.add(
+                    "contextual", "URL IP", str(ipaddress.ip_address(host or "")), "ip"
+                )
             except ValueError:
                 pass
     records = registry.records()
     for record in records:
         if lab_mode:
-            record.update(environment="TEST", exportable=False, export_reason="Explicit lab analysis")
+            record.update(
+                environment="TEST",
+                exportable=False,
+                export_reason="Explicit lab analysis",
+            )
         elif record["type"] in {"md5", "sha1", "sha256", "filename"}:
-            record.update(environment="UNKNOWN", exportable=False, export_reason="File origin requires downstream assessment")
+            record.update(
+                environment="UNKNOWN",
+                exportable=False,
+                export_reason="File origin requires downstream assessment",
+            )
     return sorted(records, key=lambda item: (str(item["type"]), str(item["value"])))
-
 
 
 def group_observables(observables: list[dict]) -> dict[str, list[dict]]:

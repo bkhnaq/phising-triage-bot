@@ -110,4 +110,6 @@ def _normalize_url(parsed, ascii_host: str) -> str:
         netloc = parsed.netloc.rsplit("@", 1)[0] + "@" + netloc
     # Preserve path escaping, query order, userinfo, parameters and fragment:
     # rewriting them can change the target or remove an IOC's phishing behavior.
-    return urlunparse((scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+    return urlunparse(
+        (scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )

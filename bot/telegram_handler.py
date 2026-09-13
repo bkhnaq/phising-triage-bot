@@ -161,7 +161,9 @@ def _run_analysis(eml_path: str, analysis_id: str | None = None) -> str:
     pipeline = PhishingPipeline(analysis_id=analysis_id, report_verbosity="NORMAL")
     result = pipeline.analyze_file(eml_path)
     if result.get("event_output", {}).get("status") == "FAILED":
-        return result["report"] + "\nSIEM JSONL output failed; inspect application logs."
+        return (
+            result["report"] + "\nSIEM JSONL output failed; inspect application logs."
+        )
     return result["report"]
 
 

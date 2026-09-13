@@ -8,6 +8,13 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 import sys
+from typing import TypedDict
+
+
+class _PipelineOptions(TypedDict, total=False):
+    lab_mode: bool
+    report_verbosity: str
+    events_jsonl_path: str
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,7 +101,7 @@ def _analyze_file(
     try:
         from email_analysis.pipeline import PhishingPipeline
 
-        options = {}
+        options: _PipelineOptions = {}
         if lab_mode:
             options["lab_mode"] = True
         if report_verbosity:
@@ -113,7 +120,10 @@ def _analyze_file(
         else:
             _write_report(report)
         if result.get("event_output", {}).get("status") == "FAILED":
-            print("Analysis completed, but JSONL output failed; inspect application logs.", file=sys.stderr)
+            print(
+                "Analysis completed, but JSONL output failed; inspect application logs.",
+                file=sys.stderr,
+            )
             return 1
     except (KeyError, OSError, RuntimeError, ValueError):
         logging.getLogger(__name__).exception("Local analysis failed")

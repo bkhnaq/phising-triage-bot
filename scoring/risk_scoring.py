@@ -177,7 +177,8 @@ def calculate_risk(
     # Known ESP context is intrinsic; it cannot suppress independent detections.
     if url_intelligence:
         deceptive_urls = {
-            item.get("url") for item in url_intelligence.get("deceptive_links", [])
+            item.get("url")
+            for item in url_intelligence.get("deceptive_links", [])
             if int(item.get("risk_score", 0)) > 0
         }
         for finding in url_intelligence.get("esp_findings", []):
@@ -185,7 +186,9 @@ def calculate_risk(
                 continue
             adjust = int(finding.get("risk_adjustment", -6))
             category_scores["ESP detection"] += adjust
-            breakdown.append(f"Known ESP pattern: {finding.get('provider', 'ESP')} ({adjust})")
+            breakdown.append(
+                f"Known ESP pattern: {finding.get('provider', 'ESP')} ({adjust})"
+            )
 
     # ── 4) Brand impersonation ───────────────────────────────
     if brand_impersonation:
@@ -682,25 +685,37 @@ def calculate_risk(
 
 
 def _evaluate_critical_evidence_gate(
-    *, pre_calibration_score: int, findings: list[dict],
+    *,
+    pre_calibration_score: int,
+    findings: list[dict],
     credential_harvesting: dict | None,
 ) -> dict:
     """Require independent intrinsic confirmation for the highest initial severity."""
     if pre_calibration_score < int(CRITICAL_EVIDENCE_GATE_CONFIG["critical_threshold"]):
-        return {"met": False, "status": "NOT_REQUIRED", "confirmations": [],
-                "reason": "Base score did not reach the Critical threshold."}
+        return {
+            "met": False,
+            "status": "NOT_REQUIRED",
+            "confirmations": [],
+            "reason": "Base score did not reach the Critical threshold.",
+        }
     types = {item.get("type") for item in findings}
     confirmations = []
     if "sender_auth_alignment_failure" in types and (
         "credential_lure_deceptive_link" in types
         or bool((credential_harvesting or {}).get("detected"))
     ):
-        confirmations.append("Independent sender authentication/alignment failure and credential phishing evidence")
+        confirmations.append(
+            "Independent sender authentication/alignment failure and credential phishing evidence"
+        )
     return {
-        "met": bool(confirmations), "status": "MET" if confirmations else "NOT_MET",
+        "met": bool(confirmations),
+        "status": "MET" if confirmations else "NOT_MET",
         "confirmations": confirmations,
-        "reason": "; ".join(confirmations) if confirmations else
-            "Insufficient independent intrinsic evidence for Critical initial severity.",
+        "reason": (
+            "; ".join(confirmations)
+            if confirmations
+            else "Insufficient independent intrinsic evidence for Critical initial severity."
+        ),
     }
 
 
@@ -889,7 +904,7 @@ def _compute_data_completeness(
     if email_data is not None:
         return _compute_detailed_completeness(
             auth_results,
-                        header_forensics,
+            header_forensics,
             completeness_breakdown,
             email_data,
             attachment_risks,
@@ -1060,7 +1075,7 @@ def _compute_confidence(
         "URL behavior",
         "brand impersonation",
         "content/language",
-            "attachment/malware",
+        "attachment/malware",
     )
     structured_score = sum(
         category_scores.get(name, 0) for name in structured_categories
@@ -1176,11 +1191,7 @@ def _derive_threat_verdict(
         return Verdict.SUSPICIOUS.value
 
     if all(state is AuthState.PASS for state in auth_states.values()):
-        return (
-            Verdict.BENIGN.value
-            if risk_score <= 24
-            else Verdict.SUSPICIOUS.value
-        )
+        return Verdict.BENIGN.value if risk_score <= 24 else Verdict.SUSPICIOUS.value
     if forwarding_survived and risk_score <= 24:
         return Verdict.BENIGN.value
     if risk_score == 0 and data_completeness >= 70:

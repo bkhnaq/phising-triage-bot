@@ -193,7 +193,9 @@ def _evaluate_sample(sample: dict, result: dict) -> dict:
         "description": sample["description"],
         "notes": sample["notes"],
         "label": sample["label"],
-        "requires_external_enrichment": bool(sample.get("requires_external_enrichment")),
+        "requires_external_enrichment": bool(
+            sample.get("requires_external_enrichment")
+        ),
         "attack_class": sample["attack_class"],
         "predicted_class": predicted_class,
         "expected_classification": sample["expected_classification"],
@@ -301,7 +303,10 @@ def _predicted_class(result: dict, predicted_positive: bool) -> str:
         return "qr_phishing"
     categories = set(result.get("language_analysis", {}).get("categories", {}))
     subject = str(result.get("email_data", {}).get("subject", "")).lower()
-    if any(item.get("type") == "reply_to_payment_fraud" for item in result["risk"].get("final_findings", [])):
+    if any(
+        item.get("type") == "reply_to_payment_fraud"
+        for item in result["risk"].get("final_findings", [])
+    ):
         return (
             "invoice_payment"
             if any(token in subject for token in ("invoice", "billing", "payment"))
@@ -350,7 +355,9 @@ def _invariant_errors(sample: dict, result: dict, findings: set[str]) -> list[st
         errors.append("critical gate applied below Critical threshold")
     for observable in result.get("observables", []):
         value = str(observable.get("value", "")).lower()
-        if str(observable.get("environment", "")).upper() == "TEST" and observable.get("exportable"):
+        if str(observable.get("environment", "")).upper() == "TEST" and observable.get(
+            "exportable"
+        ):
             errors.append(f"special-use observable is exportable: {value}")
     if sample["sample_id"] == "benign_ai_false_positive" and risk["risk_severity"] in {
         "HIGH",
@@ -415,7 +422,11 @@ def _quality_gate(evaluation: dict) -> dict:
             f"FPR {binary['false_positive_rate']:.3f} > {QUALITY_TARGETS['false_positive_rate_max']:.2f}"
         )
     for item in evaluation["samples"]:
-        if item["label"] == "phishing" and not item["predicted_positive"] and not item.get("requires_external_enrichment"):
+        if (
+            item["label"] == "phishing"
+            and not item["predicted_positive"]
+            and not item.get("requires_external_enrichment")
+        ):
             failures.append(
                 f"known phishing became non-positive: {item['sample_id']} ({item['verdict']})"
             )
@@ -473,8 +484,17 @@ def _compare_baseline(evaluation: dict, baseline_path: Path | None) -> dict:
             "sample_changes": [],
         }
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    if baseline.get("dataset", {}).get("schema_version") != evaluation["dataset"]["schema_version"]:
-        return {"available": False, "path": str(baseline_path), "reason": "Baseline belongs to the previous enriched scoring contract", "metric_deltas": {}, "sample_changes": []}
+    if (
+        baseline.get("dataset", {}).get("schema_version")
+        != evaluation["dataset"]["schema_version"]
+    ):
+        return {
+            "available": False,
+            "path": str(baseline_path),
+            "reason": "Baseline belongs to the previous enriched scoring contract",
+            "metric_deltas": {},
+            "sample_changes": [],
+        }
     current_binary = evaluation["metrics"]["binary"]
     old_binary = baseline.get("metrics", {}).get("binary", {})
     metric_deltas = {

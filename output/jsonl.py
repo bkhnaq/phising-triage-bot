@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import sys
 import threading
 
 _WRITE_LOCK = threading.Lock()
@@ -13,14 +14,16 @@ _WRITE_LOCK = threading.Lock()
 
 def serialize_event(event: dict) -> str:
     """Return deterministic single-line JSON; no non-finite numbers or raw newlines."""
-    return json.dumps(event, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        event, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 @contextmanager
 def _process_lock(path: Path):
     descriptor = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
@@ -31,7 +34,7 @@ def _process_lock(path: Path):
         try:
             yield
         finally:
-            if os.name == "nt":
+            if sys.platform == "win32":
                 msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)

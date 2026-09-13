@@ -6,6 +6,7 @@ from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 from urllib.parse import urlparse
 
+
 def _ai_report(kind: str) -> dict:
     fixtures = {
         "phishing_high": ("phishing", 0.98, 10),

@@ -1,6 +1,4 @@
-from types import SimpleNamespace
-
-from email_analysis import domain_intelligence, url_intelligence
+from email_analysis import url_intelligence
 from email_analysis.brand_impersonation import BrandDetector
 from email_analysis.correlation import build_evidence_bundle
 from email_analysis.email_parser import parse_eml_file
@@ -78,8 +76,6 @@ def test_report_does_not_mark_missing_relay_data_clean() -> None:
     assert "The message route cannot be validated" in report
     assert "No suspicious relay indicators" not in report
     assert "Displayed URL vs HREF: unavailable" in report
-
-
 
 
 def test_scoring_reconciles_category_caps_without_negative_adjustments() -> None:

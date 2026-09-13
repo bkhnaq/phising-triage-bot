@@ -554,7 +554,9 @@ def generate_report(
     lines.append("")
 
     if domain_intelligence:
-        randomness_results = domain_intelligence.get("randomness_results", domain_intelligence.get("entropy_results", []))
+        randomness_results = domain_intelligence.get(
+            "randomness_results", domain_intelligence.get("entropy_results", [])
+        )
         if randomness_results:
             lines.append("━━━ STATIC DOMAIN ANALYSIS ━━━")
             if randomness_results:
@@ -629,12 +631,15 @@ def generate_report(
                 lines.append(f"   POST endpoint: {ep}")
         lines.append("")
 
-    lines.extend([
-        "━━━ EXTERNAL ENRICHMENT ━━━",
-        "Status: Pending SOAR enrichment",
-        "Performed by: Shuffle",
-        "Observables are emitted through Wazuh for downstream enrichment.", "",
-    ])
+    lines.extend(
+        [
+            "━━━ EXTERNAL ENRICHMENT ━━━",
+            "Status: Pending SOAR enrichment",
+            "Performed by: Shuffle",
+            "Observables are emitted through Wazuh for downstream enrichment.",
+            "",
+        ]
+    )
 
     # ── 11. AI PHISHING CLASSIFIER ───────────────────────────
     if ai_verdict:
@@ -672,12 +677,21 @@ def generate_report(
             lines.append("")
 
     lines.append("━━━ OBSERVABLES / IOC SUMMARY ━━━")
-    iocs = group_observables(observables if observables is not None else collect_observables(
-        urls=urls, attachments=attachments, url_intelligence=url_intelligence,
-        sender_domain=auth_results.get("forensics", {}).get("from_domain", ""),
-        brand_impersonation=brand_impersonation, attachment_risks=attachment_risks,
-        email_data=email_data, header_forensics=header_forensics, lab_mode=lab_mode,
-    ))
+    iocs = group_observables(
+        observables
+        if observables is not None
+        else collect_observables(
+            urls=urls,
+            attachments=attachments,
+            url_intelligence=url_intelligence,
+            sender_domain=auth_results.get("forensics", {}).get("from_domain", ""),
+            brand_impersonation=brand_impersonation,
+            attachment_risks=attachment_risks,
+            email_data=email_data,
+            header_forensics=header_forensics,
+            lab_mode=lab_mode,
+        )
+    )
     has_test_context = environment_type in {"TEST", "LAB", "MIXED"}
     if environment_type in {"TEST", "LAB"}:
         lines.append("IOC Environment: TEST / LAB")
@@ -1027,7 +1041,9 @@ def generate_report(
     lines.append("")
     lines.append(f"Suggested playbook: {suggested_playbook(risk, language_analysis)}")
     lines.append("External enrichment: PENDING")
-    lines.append("Final severity and response decisions are determined by the Shuffle SOAR workflow after threat-intelligence enrichment.")
+    lines.append(
+        "Final severity and response decisions are determined by the Shuffle SOAR workflow after threat-intelligence enrichment."
+    )
     lines.append("")
     lines.append("━━━ END OF REPORT ━━━")
 

@@ -5,6 +5,7 @@ import tempfile
 import os
 import uuid
 from pathlib import Path
+from typing import Any
 
 from config.settings import (
     MAX_ATTACHMENTS_PER_EMAIL,
@@ -29,7 +30,9 @@ class PhishingPipeline:
     ):
         from config.settings import EVENTS_JSONL_PATH
 
-        self.events_jsonl_path = EVENTS_JSONL_PATH if events_jsonl_path is None else events_jsonl_path
+        self.events_jsonl_path = (
+            EVENTS_JSONL_PATH if events_jsonl_path is None else events_jsonl_path
+        )
         self.upload_dir = upload_dir or UPLOAD_DIR
         self.analysis_id = analysis_id or uuid.uuid4().hex[:12]
         self.lab_mode = lab_mode
@@ -309,7 +312,7 @@ class PhishingPipeline:
                 risk["verdict"],
             )
 
-            result = {
+            result: dict[str, Any] = {
                 "analysis_id": self.analysis_id,
                 "email_data": {
                     "subject": email_data.get("subject"),
@@ -347,14 +350,22 @@ class PhishingPipeline:
             event = build_siem_event(result)
             result["siem_event"] = event
             result["event_id"] = event["event_id"]
-            result["event_output"] = {"status": "DISABLED", "path": self.events_jsonl_path}
+            result["event_output"] = {
+                "status": "DISABLED",
+                "path": self.events_jsonl_path,
+            }
             if self.events_jsonl_path:
                 try:
                     append_event(event, self.events_jsonl_path)
                     result["event_output"]["status"] = "WRITTEN"
                 except OSError:
-                    logger.exception("SIEM event append failed event_id=%s", event["event_id"])
-                    result["event_output"].update(status="FAILED", error="Could not append SIEM event; inspect application logs")
+                    logger.exception(
+                        "SIEM event append failed event_id=%s", event["event_id"]
+                    )
+                    result["event_output"].update(
+                        status="FAILED",
+                        error="Could not append SIEM event; inspect application logs",
+                    )
             return result
         finally:
             for attachment in attachments:
@@ -365,7 +376,6 @@ class PhishingPipeline:
                     Path(saved_path).unlink(missing_ok=True)
                 except OSError:
                     logger.debug("Could not clean attachment artifact: %s", saved_path)
-
 
     @staticmethod
     def _merge_url_lists(*groups: list[dict]) -> list[dict]:
@@ -390,7 +400,6 @@ class PhishingPipeline:
         limit = max(0, max_urls)
         return merged[:limit], len(merged) > limit
 
-
     @staticmethod
     def _collect_context_domains(
         auth_results: dict,
@@ -413,12 +422,6 @@ class PhishingPipeline:
                 seen.add(domain)
                 domains.append(domain)
         return domains
-
-
-
-
-
-
 
     @staticmethod
     def _build_rule_findings(

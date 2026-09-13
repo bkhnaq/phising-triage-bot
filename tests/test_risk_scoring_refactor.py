@@ -479,7 +479,11 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
     def setUpClass(cls) -> None:
         from email_analysis.pipeline import PhishingPipeline
         from email_analysis import ai_classifier
-        cls._orig_keys = {"offline": ai_classifier.OFFLINE_MODE, "local_ai_enabled": ai_classifier.LOCAL_AI_ENABLED}
+
+        cls._orig_keys = {
+            "offline": ai_classifier.OFFLINE_MODE,
+            "local_ai_enabled": ai_classifier.LOCAL_AI_ENABLED,
+        }
         ai_classifier.OFFLINE_MODE = True
         ai_classifier.LOCAL_AI_ENABLED = False
         cls.pipeline = PhishingPipeline(events_jsonl_path="")
@@ -487,6 +491,7 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         from email_analysis import ai_classifier
+
         ai_classifier.OFFLINE_MODE = cls._orig_keys["offline"]
         ai_classifier.LOCAL_AI_ENABLED = cls._orig_keys["local_ai_enabled"]
 
@@ -528,7 +533,7 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
 
     def test_spearphishing_true_positive(self) -> None:
         """
-        Verify a high-confidence spearphishing pattern is escalated to CRITICAL.
+        Verify independent spearphishing evidence reaches at least HIGH severity.
 
         The sample includes full headers, failing auth, PayPal impersonation,
         suspicious credential-harvesting HTML, and an unknown login destination.
@@ -540,7 +545,10 @@ class TestPhishingPipelineIntegration(unittest.TestCase):
         confidence_pct = float(risk.get("confidence", 0.0)) * 100
         score = int(risk.get("score", 0))
 
-        self.assertIn("secure-notice-paypal-login-verify.com", result["siem_event"]["observables"]["domains"])
+        self.assertIn(
+            "secure-notice-paypal-login-verify.com",
+            result["siem_event"]["observables"]["domains"],
+        )
         self.assertNotIn("redirect_findings", result["url_intelligence"])
 
         self.assertEqual(risk.get("verdict"), "PHISHING")
