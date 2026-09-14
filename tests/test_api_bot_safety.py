@@ -10,11 +10,25 @@ import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+import warnings
 
 import pytest
 from pydantic import ValidationError
 
-TestClient = importlib.import_module("starlette.testclient").TestClient
+# Starlette 1.6.0 uses a deprecated AnyIO alias in runtime type annotations.
+# Remove this import-only filter once a release includes the upstream fix:
+# https://github.com/Kludex/starlette/pull/3498
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=(
+            r"^The anyio\.abc\.BlockingPortal alias is deprecated, "
+            r"use anyio\.from_thread\.BlockingPortal instead\.$"
+        ),
+        category=DeprecationWarning,
+        module=r"^starlette\.testclient$",
+    )
+    TestClient = importlib.import_module("starlette.testclient").TestClient
 Request = importlib.import_module("starlette.requests").Request
 
 
