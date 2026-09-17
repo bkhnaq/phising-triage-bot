@@ -121,9 +121,14 @@ def scan_attachments_for_qr(attachments: list[dict]) -> list[dict]:
             }
 
             if _URL_PATTERN.match(data):
-                finding["url"] = data
-                finding["domain"] = urlparse(data).netloc or None
-                finding["risk_score"] = weight("qr_url")
+                try:
+                    parsed = urlparse(data)
+                    if parsed.hostname:
+                        finding["url"] = data
+                        finding["domain"] = parsed.hostname
+                        finding["risk_score"] = weight("qr_url")
+                except ValueError:
+                    logger.debug("Malformed URL in QR payload")
 
             findings.append(finding)
             logger.warning(
@@ -158,9 +163,12 @@ def extract_qr_urls(qr_findings: list[dict]) -> list[dict]:
         if not url or url in seen:
             continue
         seen.add(url)
+        from html import escape
         from email_analysis.url_extractor import extract_urls
 
-        for item in extract_urls(body_text=url):
+        # QR supplies an exact URL, not prose whose trailing punctuation can be
+        # discarded. An escaped attribute preserves commas, quotes and brackets.
+        for item in extract_urls(body_html=f'<a href="{escape(url, quote=True)}"></a>'):
             item["source"] = "qr_code"
             url_dicts.append(item)
 

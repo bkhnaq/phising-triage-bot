@@ -24,18 +24,18 @@ class PhishingPipeline:
         upload_dir: str | None = None,
         analysis_id: str | None = None,
         *,
-        lab_mode: bool = False,
+        lab_mode: bool | None = None,
         report_verbosity: str = "DEBUG",
         events_jsonl_path: str | None = None,
     ):
-        from config.settings import EVENTS_JSONL_PATH
+        from config.settings import EVENTS_JSONL_PATH, LAB_MODE
 
         self.events_jsonl_path = (
             EVENTS_JSONL_PATH if events_jsonl_path is None else events_jsonl_path
         )
         self.upload_dir = upload_dir or UPLOAD_DIR
         self.analysis_id = analysis_id or uuid.uuid4().hex[:12]
-        self.lab_mode = lab_mode
+        self.lab_mode = LAB_MODE if lab_mode is None else lab_mode
         self.report_verbosity = report_verbosity
         os.makedirs(self.upload_dir, exist_ok=True)
 
@@ -68,21 +68,22 @@ class PhishingPipeline:
         Returns:
             Complete analysis result dict with all findings and report.
         """
-        # Write to temp file and parse
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".eml", dir=self.upload_dir, delete=False, encoding="utf-8"
-        ) as f:
-            f.write(raw_email)
-            temp_path = f.name
-
+        raw_bytes = raw_email.encode("utf-8")
+        temp_path = None
         try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", suffix=".eml", dir=self.upload_dir, delete=False
+            ) as f:
+                temp_path = f.name
+                f.write(raw_bytes)
             from email_analysis.email_parser import parse_eml_file
 
             email_data = parse_eml_file(temp_path)
             return self._run_pipeline(email_data)
         finally:
             try:
-                os.unlink(temp_path)
+                if temp_path is not None:
+                    os.unlink(temp_path)
             except OSError:
                 pass
 

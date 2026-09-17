@@ -102,7 +102,7 @@ def _normalize_url(parsed, ascii_host: str) -> str:
     scheme = parsed.scheme.lower()
     host = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
     port = parsed.port
-    include_port = port and not (
+    include_port = port is not None and not (
         (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
     )
     netloc = f"{host}:{port}" if include_port else host

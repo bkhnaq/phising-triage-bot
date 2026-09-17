@@ -4,7 +4,8 @@ import ipaddress
 import re
 
 _IP_CANDIDATE = re.compile(
-    r"(?<![\w:])(?:\d{1,3}\.){3}\d{1,3}(?![\w:])|[0-9A-Fa-f]*:[0-9A-Fa-f:.]+"
+    r"(?<![\w:.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)"
+    r"|(?<![\w:])[0-9A-Fa-f]*:[0-9A-Fa-f:.]+(?![\w:])"
 )
 
 

@@ -178,8 +178,14 @@ def _validate_downloaded_size(path: Path, maximum: int) -> None:
 
 def _split_message(text: str, max_len: int = _MAX_MSG_LEN) -> list[str]:
     """Split long text at logical boundaries while respecting Telegram limits."""
+    if max_len <= 0:
+        raise ValueError("max_len must be positive")
     if len(text) <= max_len:
         return [text]
+    if max_len <= 8:
+        return [text[i : i + max_len] for i in range(0, len(text), max_len)]
+    # Reopening and closing a code fence can add eight characters per chunk.
+    max_len -= 8
 
     paragraph_break = "\n\n"
     paragraphs = text.split(paragraph_break)

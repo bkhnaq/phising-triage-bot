@@ -167,16 +167,6 @@ def _request_id_from(request: Request) -> str:
 
 
 @app.middleware("http")
-async def request_context_middleware(request: Request, call_next):
-    request_id = str(uuid.uuid4())
-    request.state.request_id = request_id
-
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
-
-
-@app.middleware("http")
 async def api_key_auth_middleware(request: Request, call_next):
     public_paths = {"/health", "/docs", "/openapi.json", "/redoc"}
     if request.url.path in public_paths:
@@ -208,7 +198,11 @@ async def api_key_auth_middleware(request: Request, call_next):
         )
 
     provided_key = request.headers.get("X-API-Key", "")
-    if not secrets.compare_digest(provided_key, API_KEY):
+    if (
+        not provided_key.isascii()
+        or not API_KEY.isascii()
+        or not secrets.compare_digest(provided_key, API_KEY)
+    ):
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={
@@ -284,6 +278,16 @@ async def rate_limit_middleware(request: Request, call_next):
         )
 
     return await call_next(request)
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 app.add_middleware(
@@ -395,6 +399,12 @@ async def analyze_email(payload: EmailAnalysisRequest, request: Request):
     """
     if not payload.email_raw or not payload.email_raw.strip():
         raise HTTPException(status_code=400, detail="email_raw cannot be empty")
+    try:
+        payload.email_raw.encode("utf-8")
+    except UnicodeError as exc:
+        raise HTTPException(
+            status_code=400, detail="email_raw must be valid Unicode"
+        ) from exc
 
     try:
         from email_analysis.pipeline import PhishingPipeline

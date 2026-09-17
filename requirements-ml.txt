@@ -2,7 +2,7 @@
 
 # Optional offline training and evaluation dependencies
 accelerate>=1.10,<2
-datasets>=4.0,<5
+datasets>=5.0.1,<6
 scikit-learn>=1.9,<2
 joblib>=1.5,<2
 sentencepiece>=0.2,<1

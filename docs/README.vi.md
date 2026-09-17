@@ -27,7 +27,7 @@ Năm email trong [`samples/`](../samples) đều inert và chỉ dùng domain `.
 
 ## Ví dụ báo cáo
 
-Báo cáo hiển thị tóm tắt mối đe dọa, bằng chứng SPF/DKIM/DMARC, IOC, giải thích điểm số và hành động tiếp theo:
+Báo cáo hiển thị bằng chứng từ email, observable, giải thích điểm số và playbook điều tra gợi ý. Enrichment và quyết định phản ứng thuộc hệ thống SOC phía sau. Ví dụ đánh giá:
 
 ```text
 RISK ASSESSMENT
@@ -35,8 +35,6 @@ Score   : 79 / 100
 Severity: HIGH
 Verdict : PHISHING
 
-RECOMMENDED SOC ACTIONS
-• Quarantine the message and block confirmed malicious IOCs.
 ```
 
 ## Năng lực SOC được thể hiện
@@ -45,11 +43,11 @@ RECOMMENDED SOC ACTIONS
 |---|---|
 | Phân tích header và SPF/DKIM/DMARC | Xác thực và triage email |
 | Trích xuất và tóm tắt IOC | Xử lý URL, domain, SHA-256 |
-| URL, redirect, QR và attachment | Điều tra phishing/malware |
-| VirusTotal, OTX, IP reputation, passive DNS | Threat-intelligence enrichment |
+| Phân tích tĩnh URL, QR và attachment | Điều tra phishing/malware |
+| Sự kiện JSONL tương thích Wazuh | Chuyển observable cho enrichment phía sau |
 | Điểm rủi ro có thể giải thích | Ưu tiên và tương quan bằng chứng |
 | AI local Anh–Việt | Inference ML local an toàn và provenance |
-| API/Bot được harden | Validation, SSRF, rate limit, cleanup |
+| API/Bot được harden | Validation, rate limit, cleanup |
 | Báo cáo SOC và action | Giao tiếp analyst và phản ứng sự cố |
 
 ## Pipeline hoạt động như thế nào
@@ -57,7 +55,7 @@ RECOMMENDED SOC ACTIONS
 1. Parse `.eml`, header và body an toàn.
 2. Phân tích xác thực, bất thường header, giả mạo display name và ngôn ngữ.
 3. Trích xuất có giới hạn URL, QR URL, attachment và SHA-256.
-4. Phân tích URL/domain/threat intel có giới hạn; `--offline` tắt enrichment qua mạng.
+4. Phân tích tĩnh URL/domain, không truy cập URL hay tra reputation; `--offline` tắt cả AI từ xa.
 5. Chuẩn hóa primitive evidence; correlation consume đúng evidence ID và đưa final
    finding vào category rủi ro gốc, không tạo category `correlation` riêng.
 6. Áp category cap đúng một lần, sau đó thêm tối đa 10 điểm confirmation giữa các
@@ -66,8 +64,8 @@ RECOMMENDED SOC ACTIONS
 
 AI chỉ là bằng chứng hỗ trợ: category AI được cap tối đa 10 điểm và dùng cùng một
 giá trị cấu hình ở normalized evidence, phép tính category và report. Điểm chạm
-ngưỡng Critical phải có artifact, destination, payload behavior hoặc compromise
-signal đã xác nhận; nếu chưa có, Critical Evidence Gate ghi rõ lý do và cap severity
+ngưỡng Critical phải có lỗi xác thực/alignment người gửi kết hợp bằng chứng phishing
+lấy thông tin đăng nhập độc lập; nếu chưa có, Critical Evidence Gate ghi rõ lý do và cap severity
 ở High. Khi điểm chưa tới ngưỡng Critical, gate có trạng thái `NOT_REQUIRED` và không
 chạy đánh giá critical evidence.
 
@@ -86,7 +84,7 @@ Pipeline phát thêm `analysis_environment` tập trung (`PRODUCTION`, `TEST`, `
 cho từng observable. Report lab ghi action dưới dạng simulated production response và
 thêm hướng dẫn operational safety rõ ràng.
 
-URL fetch chặn địa chỉ private/mixed DNS, pin public IP đã xác thực, xác thực lại redirect, giới hạn bytes/redirect/deadline và cô lập input lỗi.
+Pipeline không truy cập URL trong email hoặc theo redirect. Tra reputation và phản ứng tự động được giao cho hệ thống phía sau nhận sự kiện JSONL.
 
 ## AI local Anh–Việt
 
@@ -179,9 +177,9 @@ docker run --rm --env-file .env -v "${PWD}/artifacts/models/phishing-mmbert-v2:/
 ```powershell
 python -m pytest -q tests -W error
 python -m ruff check .
-python -m black --check api bot cli.py config email_analysis ml report scoring threat_intel main.py tests
-python -m mypy api bot cli.py config email_analysis ml report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
-python -m bandit -r api bot config email_analysis ml report scoring threat_intel -lll
+python -m black --check api bot cli.py config email_analysis evaluation ml report scoring output main.py tests
+python -m mypy api bot cli.py config email_analysis evaluation ml report scoring output --ignore-missing-imports --disable-error-code=import-untyped
+python -m bandit -r api bot config email_analysis evaluation ml report scoring output -lll
 python -m pip_audit
 ```
 

@@ -16,7 +16,7 @@ Usage:
 
 import logging
 import re
-from html.parser import HTMLParser
+from email_analysis.html_parser import EmailHTMLParser
 from urllib.parse import urlparse
 
 from scoring.config import weight
@@ -24,7 +24,7 @@ from scoring.config import weight
 logger = logging.getLogger(__name__)
 
 
-class _FormParser(HTMLParser):
+class _FormParser(EmailHTMLParser):
     """HTML parser that collects forms, password fields, and hidden inputs."""
 
     def __init__(self):
@@ -143,7 +143,10 @@ def detect_credential_harvesting(body_html: str) -> dict:
             method = form.get("method", "")
 
             if method == "POST" and action:
-                parsed = urlparse(action)
+                try:
+                    parsed = urlparse(action)
+                except ValueError:
+                    continue
                 if parsed.scheme in ("http", "https") and parsed.netloc:
                     result["post_endpoints"].append(action)
                     findings.append(f"External POST endpoint: {action}")
@@ -177,7 +180,12 @@ def detect_credential_harvesting(body_html: str) -> dict:
         result["risk_score"] += weight("credential_form_password_correlation")
 
     result["findings"] = findings
-    result["detected"] = bool(findings)
+    # Forms, POST endpoints and hidden fields also occur in ordinary surveys
+    # and subscription preferences. They do not establish credential collection
+    # without a credential input. Keep their metadata for investigation only.
+    result["detected"] = bool(parser.password_inputs)
+    if not result["detected"]:
+        result["risk_score"] = 0
 
     if result["detected"]:
         logger.warning(

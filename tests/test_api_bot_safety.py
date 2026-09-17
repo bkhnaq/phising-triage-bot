@@ -505,6 +505,7 @@ def test_split_message_keeps_markdown_fences_balanced() -> None:
     assert len(chunks) > 1
     for chunk in chunks:
         assert chunk.count("```") % 2 == 0
+        assert len(chunk) <= 500
 
 
 def test_bot_polling_removes_webhook_and_drops_stale_updates(monkeypatch) -> None:
@@ -628,6 +629,31 @@ def test_api_returns_ai_provenance_and_analysis_limits_additively() -> None:
     assert response.ai_verdict["model"] == "mmbert"
     assert response.ai_verdict["fallback_used"] is False
     assert response.analysis_limits == {"urls_truncated": False}
+
+
+@pytest.mark.parametrize("key", [b"\xff", b"\xc3\xa9", b"wrong-key"])
+def test_invalid_api_keys_return_unauthorized(monkeypatch, key) -> None:
+    client, _ = _client_with_auth(monkeypatch)
+    response = client.post("/analyze_email", headers=[(b"X-API-Key", key)], json={})
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_invalid_unicode_email_returns_client_error(monkeypatch) -> None:
+    client, _ = _client_with_auth(monkeypatch)
+    response = client.post(
+        "/analyze_email",
+        content=b'{"email_raw":"Subject: x\\n\\n\\ud800"}',
+        headers={"X-API-Key": "test-key", "Content-Type": "application/json"},
+    )
+    assert response.status_code in {400, 422}
+
+
+def test_auth_error_includes_consistent_request_id(monkeypatch) -> None:
+    client, _ = _client_with_auth(monkeypatch)
+    response = client.post("/analyze_email", json={"email_raw": "Subject: x\n\nbody"})
+    assert response.status_code == 401
+    assert response.headers["X-Request-ID"] == response.json()["request_id"]
 
 
 def test_api_key_authentication_uses_constant_time_comparison(monkeypatch) -> None:

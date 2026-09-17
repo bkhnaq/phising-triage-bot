@@ -10,7 +10,7 @@ Usage:
 
 import logging
 import re
-from html.parser import HTMLParser
+from email_analysis.html_parser import EmailHTMLParser
 from urllib.parse import urlparse
 
 
@@ -104,7 +104,7 @@ def _collect_raw_urls(body_text: str, body_html: str) -> set[str]:
 # ── HTML link extractor ──────────────────────────────────────
 
 
-class _LinkParser(HTMLParser):
+class _LinkParser(EmailHTMLParser):
     """Collect hrefs, visible URLs, and anchor text-to-target relationships."""
 
     def __init__(self):

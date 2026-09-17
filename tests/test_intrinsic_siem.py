@@ -284,15 +284,36 @@ def test_jsonl_write_failure_keeps_analysis_and_event_for_retry(no_network, tmp_
     assert result["report"]
 
 
-def test_event_round_trip_is_deterministic_and_has_no_emoji(no_network, tmp_path):
+def test_event_round_trip_preserves_unicode_with_ascii_jsonl(no_network, tmp_path):
     result = PhishingPipeline(
         upload_dir=str(tmp_path), events_jsonl_path=""
     ).analyze_raw("Subject: Urgent 🔥\n\nPlease read")
     event = result["siem_event"]
     assert serialize_event(event) == serialize_event(build_siem_event(result))
-    assert "🔥" not in json.dumps(event, ensure_ascii=False)
+    assert event["email"]["subject"] == "Urgent 🔥"
+    assert serialize_event(event).isascii()
     assert json.loads(serialize_event(event)) == event
     _assert_wazuh_types(event)
+
+
+def test_siem_preserves_unicode_iocs_and_distinct_urls(no_network, tmp_path):
+    urls = ["https://evil.test/🔒/login", "https://evil.test//login"]
+    message = EmailMessage()
+    message["From"] = "sender@sender.test"
+    message["To"] = "user@recipient.test"
+    message.set_content("\n".join(urls))
+    destination = tmp_path / "events.jsonl"
+    result = PhishingPipeline(
+        upload_dir=str(tmp_path / "uploads"), events_jsonl_path=str(destination)
+    ).analyze_raw(message.as_string())
+    event = json.loads(destination.read_text(encoding="ascii"))
+    assert set(event["observables"]["urls"]) == set(urls)
+    assert event == result["siem_event"]
+    assert {
+        item["value"]
+        for item in event["observable_metadata"].values()
+        if item["type"] == "url"
+    } == set(urls)
 
 
 def test_jsonl_parallel_threads_and_processes_do_not_interleave(tmp_path):

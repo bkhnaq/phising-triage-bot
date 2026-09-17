@@ -27,7 +27,7 @@ The five inert samples in [`samples/`](samples) use only reserved `.test` domain
 
 ## Example Triage Output
 
-The report contains an analyst-friendly threat summary, authentication evidence, IOC summary, score explanation, and verdict-driven next actions:
+The report contains a threat summary, authentication evidence, observables, score explanation, and a suggested investigation playbook. External enrichment and response decisions belong to the downstream SOC workflow. Illustrative assessment:
 
 ```text
 RISK ASSESSMENT
@@ -35,9 +35,6 @@ Score   : 79 / 100
 Severity: HIGH
 Verdict : PHISHING
 
-RECOMMENDED SOC ACTIONS
-• Quarantine the message and block confirmed malicious IOCs.
-• Check whether recipients clicked links, opened attachments, or entered credentials.
 ```
 
 ## SOC Investigation Coverage
@@ -46,19 +43,19 @@ RECOMMENDED SOC ACTIONS
 |---|---|
 | Header and SPF/DKIM/DMARC analysis | Email authentication triage |
 | IOC extraction and summary | URL, domain, and SHA-256 handling |
-| URL, redirect, QR, and attachment triage | Phishing and malware investigation |
-| VirusTotal, OTX, IP reputation, passive DNS | Threat-intelligence enrichment |
+| Static URL, QR, and attachment triage | Phishing and malware investigation |
+| Wazuh-compatible JSONL events | Observable handoff for downstream enrichment |
 | Explainable weighted scoring | Evidence correlation and prioritization |
 | Local English–Vietnamese classifier | Safe local ML inference and provenance |
-| Hardened API and Telegram ingestion | Input validation, SSRF defenses, rate limits, cleanup |
-| SOC report and recommended actions | Analyst communication and incident response |
+| Hardened API and Telegram ingestion | Input validation, rate limits, cleanup |
+| SOC report and suggested playbook | Analyst communication and investigation routing |
 
 ## How the Pipeline Works
 
 1. Parse a `.eml` file and recover headers/body safely.
 2. Check authentication, header anomalies, display-name spoofing, and language signals.
 3. Extract bounded URLs, QR URLs, attachments, and SHA-256 hashes.
-4. Perform bounded URL/domain/threat-intel analysis; `--offline` prevents network enrichment.
+4. Perform static URL/domain analysis without fetching destinations or querying reputation services; `--offline` also disables remote AI.
 5. Normalize primitive evidence; correlation consumes exact primitive IDs and
    emits final findings into their owning risk categories.
 6. Apply category caps once, then add at most 10 points for independent
@@ -69,8 +66,8 @@ RECOMMENDED SOC ACTIONS
 
 AI is supporting evidence only: its category is capped at 10 points and uses the
 same configured value in normalized evidence, category arithmetic, and the report.
-Scores at the Critical threshold require an explicit confirmed-malicious artifact,
-destination, payload behavior, or compromise signal; otherwise the configurable
+Scores at the Critical threshold require independent sender authentication/alignment
+failure together with credential phishing evidence; otherwise the configurable
 Critical Evidence Gate records the reason and caps severity at High. Below that
 threshold the gate is explicitly `NOT_REQUIRED` and is not evaluated.
 
@@ -81,7 +78,7 @@ category confirmation requires at least two independent non-ML technical categor
 is capped at 10, and suppresses overlapping lower-order combinations.
 
 The observable registry deduplicates each normalized URL, domain, IP, or hash across
-parsers and enrichment providers, then retains its strongest classification. Every
+intrinsic parsers, then retains its strongest classification. Every
 record includes `environment`, `exportable`, `export_reason`, and `reputation` fields
 so reserved lab indicators cannot be silently exported to production automation.
 Coverage is calculated over applicable sources only; `NONE_PRESENT` means an analyzer
@@ -94,7 +91,7 @@ response and include explicit operational-safety guidance.
 Use `--lab-mode` to make reserved test context prominent in the report. Custom
 testing headers are informational only and never reduce risk.
 
-Network URL fetching rejects private/mixed DNS answers, pins validated public IPs, revalidates redirects, bounds data/redirects/deadlines, and failure-contains malformed input.
+The pipeline never fetches email URLs or follows redirects. Reputation checks and automated response are left to downstream systems consuming the JSONL events.
 
 ## Local English–Vietnamese AI
 
@@ -189,9 +186,9 @@ docker run --rm --env-file .env -v "${PWD}/artifacts/models/phishing-mmbert-v2:/
 ```powershell
 python -m pytest -q tests -W error
 python -m ruff check .
-python -m black --check api bot cli.py config email_analysis ml report scoring threat_intel main.py tests
-python -m mypy api bot cli.py config email_analysis ml report scoring threat_intel --ignore-missing-imports --disable-error-code=import-untyped
-python -m bandit -r api bot config email_analysis ml report scoring threat_intel -lll
+python -m black --check api bot cli.py config email_analysis evaluation ml report scoring output main.py tests
+python -m mypy api bot cli.py config email_analysis evaluation ml report scoring output --ignore-missing-imports --disable-error-code=import-untyped
+python -m bandit -r api bot config email_analysis evaluation ml report scoring output -lll
 python -m pip_audit
 ```
 

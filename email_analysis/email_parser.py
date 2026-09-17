@@ -62,19 +62,17 @@ def parse_eml_file(file_path: str) -> dict:
 
 
 def _get_body(msg: EmailMessage, content_type: str) -> str:
-    """Extract the first body part matching the given content type."""
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == content_type:
-                payload = part.get_content()
-                if isinstance(payload, str):
-                    return payload
+    """Select the actual body, excluding attachments and nested attached email."""
+    part = msg.get_body(preferencelist=(content_type.split("/", 1)[1],))
+    if part is None:
         return ""
-    else:
-        if msg.get_content_type() == content_type:
-            payload = msg.get_content()
-            return payload if isinstance(payload, str) else ""
-        return ""
+    try:
+        payload = part.get_content()
+    except (LookupError, UnicodeError):
+        logger.warning("Invalid MIME charset; decoding body as UTF-8 with replacement")
+        raw = part.get_payload(decode=True)
+        return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else ""
+    return payload if isinstance(payload, str) else ""
 
 
 def _collect_mime_parts(msg: EmailMessage) -> list[dict]:

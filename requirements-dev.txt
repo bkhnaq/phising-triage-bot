@@ -8,6 +8,6 @@ bandit>=1.7,<2
 pip-audit>=2.7,<3
 setuptools>=83,<84
 pytest>=9.0.3,<10
-httpx2>=2.0,<3
+httpx2>=2.12,<3
 pygments>=2.20,<3
 msgpack>=1.2.1,<2

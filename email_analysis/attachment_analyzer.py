@@ -24,6 +24,8 @@ import os
 import re
 import unicodedata
 import zipfile
+import uuid
+from contextlib import ExitStack
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -264,49 +266,62 @@ def extract_attachments(
     counter = 0
     total_attachments = 0
 
-    for part in _iter_attachment_parts(msg):
-        total_attachments += 1
-        if max_attachments is not None and total_attachments > max(0, max_attachments):
-            break
+    with ExitStack() as cleanup:
+        for part in _iter_attachment_parts(msg):
+            total_attachments += 1
+            if max_attachments is not None and total_attachments > max(
+                0, max_attachments
+            ):
+                break
 
-        payload = part.get_payload(decode=True)
-        if payload is None:
-            continue
+            payload = part.get_payload(decode=True)
+            if payload is None:
+                continue
 
-        # Convert payload to bytes if it's a Message object
-        if isinstance(payload, bytes):
-            payload_bytes = payload
-        else:
-            payload_bytes = str(payload).encode("utf-8")
+            # Convert payload to bytes if it's a Message object
+            if isinstance(payload, bytes):
+                payload_bytes = payload
+            else:
+                payload_bytes = str(payload).encode("utf-8")
 
-        filename = part.get_filename() or f"unknown_{counter}"
-        filename = _sanitize_filename(filename)
-        counter += 1
+            filename = part.get_filename() or f"unknown_{counter}"
+            filename = _sanitize_filename(filename)
+            counter += 1
 
-        sha256_hash = compute_sha256(payload_bytes)
-        saved_path = _safe_attachment_path(save_dir, filename, sha256_hash)
+            sha256_hash = compute_sha256(payload_bytes)
+            saved_path = _safe_attachment_path(save_dir, filename, sha256_hash)
 
-        with open(saved_path, "wb") as f:
-            f.write(payload_bytes)
+            with open(saved_path, "xb") as f:
+                cleanup.callback(_remove_attachment, saved_path)
+                f.write(payload_bytes)
 
-        attachment_info = {
-            "filename": filename,
-            "content_type": part.get_content_type(),
-            "size_bytes": len(payload_bytes),
-            "sha256": sha256_hash,
-            "saved_path": str(saved_path),
-        }
-        attachments.append(attachment_info)
+            attachment_info = {
+                "filename": filename,
+                "content_type": part.get_content_type(),
+                "size_bytes": len(payload_bytes),
+                "sha256": sha256_hash,
+                "saved_path": str(saved_path),
+            }
+            attachments.append(attachment_info)
 
-        logger.info(
-            "Extracted attachment: %s (SHA256: %s, %d bytes)",
-            filename,
-            sha256_hash,
-            len(payload_bytes),
-        )
+            logger.info(
+                "Extracted attachment: %s (SHA256: %s, %d bytes)",
+                filename,
+                sha256_hash,
+                len(payload_bytes),
+            )
+
+        cleanup.pop_all()
 
     logger.info("Total attachments extracted: %d", len(attachments))
     return attachments
+
+
+def _remove_attachment(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not clean incomplete attachment extraction")
 
 
 def count_attachments(msg: EmailMessage) -> int:
@@ -315,10 +330,13 @@ def count_attachments(msg: EmailMessage) -> int:
 
 
 def _iter_attachment_parts(msg: EmailMessage):
-    """Yield MIME parts explicitly marked as attachments."""
+    """Include named files and inline images, which can carry malicious QR codes."""
     for part in msg.walk():
-        content_disposition = str(part.get("Content-Disposition", ""))
-        if "attachment" in content_disposition.lower():
+        if not part.is_multipart() and (
+            part.get_content_disposition() == "attachment"
+            or part.get_filename()
+            or part.get_content_maintype() == "image"
+        ):
             yield part
 
 
@@ -332,7 +350,9 @@ def _sanitize_filename(filename: str) -> str:
 def _safe_attachment_path(save_dir: str, filename: str, sha256_hash: str) -> Path:
     base_dir = Path(save_dir).resolve()
     safe_name = _sanitize_filename(filename)
-    destination = (base_dir / f"{sha256_hash}_{safe_name}").resolve()
+    destination = (
+        base_dir / f"{sha256_hash[:16]}_{uuid.uuid4().hex}_{safe_name}"
+    ).resolve()
     if destination.parent != base_dir:
         raise ValueError("Unsafe attachment path detected")
     return destination
